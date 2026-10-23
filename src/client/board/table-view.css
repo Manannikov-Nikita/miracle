@@ -1,0 +1,93 @@
+.table-view .board-table-scroll td {
+  position: relative;
+  height: var(--table-row-height);
+  max-width: none;
+  box-sizing: border-box;
+}
+.table-view .board-table-scroll th {
+  overflow: hidden;
+}
+.table-view .table-header-sort {
+  display: flex;
+  align-items: center;
+  justify-content: inherit;
+  gap: 5px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: none;
+  text-align: inherit;
+  font: inherit;
+}
+.table-header-sort span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.board-workspace .table-header-sort:disabled {
+  color: inherit;
+  opacity: 1;
+}
+.table-header-sort svg {
+  flex-shrink: 0;
+  color: var(--board-accent);
+}
+.table-cell-text {
+  position: relative;
+  z-index: 1;
+}
+.table-view .table-cell-frozen {
+  background: var(--board-surface, #202329);
+}
+.table-cell-bar {
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  opacity: 0.2;
+  pointer-events: none;
+  max-width: 100%;
+}
+.table-view-wrap .board-table-scroll td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.table-view .board-table-scroll tfoot {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+}
+.table-view .board-table-scroll tfoot td {
+  background: #272b33;
+  border-top: 1px solid var(--board-border);
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.table-view tfoot small {
+  display: block;
+  font:
+    9px/1.5 system-ui,
+    sans-serif;
+  color: var(--board-muted);
+}
+.table-view .board-table-scroll .table-view-spacer td {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.table-view .board-table-footer > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.table-view .board-error button {
+  display: block;
+  margin-top: 8px;
+}
+.table-view .table-header-sort:focus-visible {
+  outline: 1px solid var(--board-accent);
+  outline-offset: -1px;
+}

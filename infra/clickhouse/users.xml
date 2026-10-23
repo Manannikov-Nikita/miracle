@@ -1,0 +1,32 @@
+<clickhouse>
+  <users>
+    <miracle_reader>
+      <password>miracle_reader_local</password>
+      <networks><ip>::/0</ip></networks>
+      <profile>miracle_readonly</profile>
+      <quota>default</quota>
+      <grants>
+        <query>GRANT SELECT ON demo.*</query>
+        <query>GRANT SELECT ON system.tables</query>
+        <query>GRANT SELECT ON system.columns</query>
+      </grants>
+    </miracle_reader>
+  </users>
+  <profiles><miracle_readonly>
+    <readonly>1</readonly>
+    <max_execution_time>120</max_execution_time>
+    <max_result_rows>50000</max_result_rows>
+    <max_result_bytes>20971520</max_result_bytes>
+    <result_overflow_mode>throw</result_overflow_mode>
+    <output_format_json_quote_64bit_integers>1</output_format_json_quote_64bit_integers>
+    <output_format_json_quote_decimals>1</output_format_json_quote_decimals>
+    <constraints>
+      <max_execution_time><min>1</min><max>120</max><changeable_in_readonly/></max_execution_time>
+      <max_result_rows><min>1</min><max>50000</max><changeable_in_readonly/></max_result_rows>
+      <max_result_bytes><min>1</min><max>20971520</max><changeable_in_readonly/></max_result_bytes>
+      <result_overflow_mode><changeable_in_readonly/></result_overflow_mode>
+      <output_format_json_quote_64bit_integers><min>1</min><max>1</max><changeable_in_readonly/></output_format_json_quote_64bit_integers>
+      <output_format_json_quote_decimals><min>1</min><max>1</max><changeable_in_readonly/></output_format_json_quote_decimals>
+    </constraints>
+  </miracle_readonly></profiles>
+</clickhouse>

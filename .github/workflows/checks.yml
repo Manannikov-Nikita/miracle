@@ -1,0 +1,64 @@
+name: Checks
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Test and run / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Dependency notices
+        run: npm run notices && git diff --exit-code -- THIRD_PARTY_NOTICES.md
+      - name: Disposable database engines
+        run: docker compose --profile test up -d --wait postgres clickhouse trino
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:integration
+      - run: npx tsx tests/clickhouse-tls-integration.ts
+      - name: Build native release image
+        run: docker build -t miracle-local-smoke:0.1.0 .
+      - name: Clean install, restart, backup and restore
+        env:
+          MIRACLE_SMOKE_ARCH: ${{ matrix.arch }}
+        run: node tests/local-install-smoke.mjs
+      - name: Build release kit from allowlist
+        run: node scripts/build-release.mjs "$GITHUB_REPOSITORY" 0.1.0
+      - name: Service diagnostics
+        if: failure()
+        run: docker compose --profile test logs --tail 100
+      - name: Remove disposable CI services
+        if: always()
+        run: docker compose --profile test down --volumes
+  windows-launchers:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Parse Windows PowerShell launcher
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'release/local.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Write-Error; exit 1 }
+      - name: Launcher errors and stop from a path with spaces and Cyrillic
+        shell: powershell
+        run: ./tests/windows-launcher-smoke.ps1

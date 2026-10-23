@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Сообщить об уязвимости приватно
+    url: https://github.com/Manannikov-Nikita/miracle/security/advisories/new
+    about: Уязвимости и чувствительные детали не публикуются в открытых issues.
+  - name: Установка и решение проблем
+    url: https://github.com/Manannikov-Nikita/miracle/blob/main/docs/local-installation.md
+    about: Запуск, источники, резервные копии и частые ошибки.

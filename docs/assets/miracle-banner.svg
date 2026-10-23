@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Miracle — от запроса к ясной картине</title>
+  <desc id="desc">Фирменный знак Miracle и абстрактная схема: SQL, таблица, аналитическая доска. Иллюстрация, не снимок интерфейса.</desc>
+  <rect width="1280" height="420" rx="16" fill="#181A1F"/>
+  <path d="M682 0V420M1002 0V420M0 328H1280" stroke="#2C3339"/>
+  <path d="M682 64H1280M682 264H1280" stroke="#242A30"/>
+  <g transform="translate(64 55) skewX(-13)">
+    <rect width="12" height="48" rx="4" fill="#A1C9B9"/>
+    <rect x="20" y="7" width="12" height="34" rx="4" fill="#BCD8CB"/>
+    <rect x="40" y="13" width="12" height="22" rx="4" fill="#829E94"/>
+  </g>
+  <text x="128" y="93" fill="#E6EBF3" font-family="Arial, Helvetica, sans-serif" font-size="48" font-weight="700" letter-spacing="-2">miracle<tspan fill="#9FC5B5">.</tspan></text>
+  <text x="64" y="180" fill="#EDF1F5" font-family="Arial, Helvetica, sans-serif" font-size="43" font-weight="600" letter-spacing="-1">От запроса</text>
+  <text x="64" y="235" fill="#A7CBBB" font-family="Arial, Helvetica, sans-serif" font-size="43" font-weight="600" letter-spacing="-1">к ясной картине.</text>
+  <text x="66" y="283" fill="#9DA9B9" font-family="Arial, Helvetica, sans-serif" font-size="19">SQL, данные и мысли — рядом.</text>
+  <text x="64" y="378" fill="#A7B9B0" font-family="Arial, Helvetica, sans-serif" font-size="14" letter-spacing="2">CLICKHOUSE / TRINO</text>
+  <text x="443" y="378" fill="#8C95A7" font-family="Arial, Helvetica, sans-serif" font-size="14" letter-spacing="2">OPEN SOURCE</text>
+  <g stroke="#63796F" stroke-width="1.5">
+    <path d="M748 167H807Q819 167 819 179V216Q819 228 831 228H896"/>
+    <path d="M966 228H1011Q1023 228 1023 216V147Q1023 135 1035 135H1110"/>
+    <path d="M889 223L896 228L889 233M1103 130L1110 135L1103 140"/>
+  </g>
+  <rect x="721" y="112" width="116" height="88" rx="8" fill="#20272A" stroke="#405049"/>
+  <path d="M763 139L748 154L763 169M795 139L810 154L795 169M785 134L773 174" stroke="#BCD8CB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="885" y="185" width="103" height="86" rx="8" fill="#20272A" stroke="#405049"/>
+  <path d="M902 207H971M902 225H971M902 243H971M924 204V250M951 204V250" stroke="#829E94" stroke-width="2"/>
+  <rect x="1079" y="87" width="142" height="135" rx="8" fill="#20272A" stroke="#405049"/>
+  <path d="M1098 194H1203" stroke="#405049"/>
+  <rect x="1102" y="161" width="15" height="32" rx="2" fill="#637E70"/>
+  <rect x="1129" y="145" width="15" height="48" rx="2" fill="#829E94"/>
+  <rect x="1156" y="129" width="15" height="64" rx="2" fill="#A1C9B9"/>
+  <rect x="1183" y="111" width="15" height="82" rx="2" fill="#BCD8CB"/>
+  <circle cx="748" cy="167" r="4" fill="#BCD8CB"/>
+  <text x="723" y="304" fill="#7D9187" font-family="Arial, Helvetica, sans-serif" font-size="12" letter-spacing="2">01 / SQL</text>
+  <text x="887" y="304" fill="#7D9187" font-family="Arial, Helvetica, sans-serif" font-size="12" letter-spacing="2">02 / ДАННЫЕ</text>
+  <text x="1081" y="304" fill="#A7B9B0" font-family="Arial, Helvetica, sans-serif" font-size="12" letter-spacing="2">03 / КОНТЕКСТ</text>
+  <text x="723" y="378" fill="#8C95A7" font-family="Arial, Helvetica, sans-serif" font-size="14" letter-spacing="1">ВАША ИНФРАСТРУКТУРА. ВАШИ ДАННЫЕ.</text>
+</svg>

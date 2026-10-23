@@ -1,0 +1,22 @@
+name: Предложение
+description: Улучшение рабочего сценария
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу вы решаете?
+      description: Опишите рабочий сценарий и что мешает сейчас.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Желаемый результат
+      description: Что должно стать проще? Пример на синтетических данных поможет понять задачу.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Текущий способ и альтернативы
+      description: Если вы уже обходите ограничение, расскажите как.

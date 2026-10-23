@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.local/
+.env
+.env.*
+!.env.example
+.superpowers/
+coverage/
+.DS_Store
+# Local connection credentials and backup material
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.dump
+*.tar.gz

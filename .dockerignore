@@ -1,0 +1,16 @@
+node_modules
+.git
+.local
+.env
+.env.*
+!.env.example
+dist
+coverage
+*.dump
+# Never send connection credentials or database backups to a build context.
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.tar.gz

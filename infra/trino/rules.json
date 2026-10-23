@@ -1,0 +1,4 @@
+{
+  "catalogs": [{"user": "miracle_reader", "catalog": "tpch", "allow": "read-only"}],
+  "queries": [{"user": "miracle_reader", "allow": ["execute"]}]
+}
