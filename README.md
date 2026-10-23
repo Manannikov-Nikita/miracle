@@ -43,7 +43,7 @@ Miracle помогает пройти весь путь от SQL до объяс
 Нужны **Docker с Compose v2 и браузер**. Локальные Node.js, Git и сборка не требуются. ClickHouse или Trino подключаются отдельно; демонстрационные серверы и данные в комплект не входят.
 
 1. Установите и запустите [Docker](https://docs.docker.com/get-docker/). На Windows выберите Linux containers / WSL 2.
-2. В [**Releases**](https://github.com/Manannikov-Nikita/miracle/releases) скачайте `miracle-0.1.0.zip` и распакуйте целиком. Нужен готовый комплект, а не архив `Source code`.
+2. Скачайте [**miracle-0.1.0.zip**](https://github.com/Manannikov-Nikita/miracle/releases/download/v0.1.0/miracle-0.1.0.zip) из [Releases](https://github.com/Manannikov-Nikita/miracle/releases) и распакуйте целиком. Нужен готовый комплект, а не архив `Source code`.
 3. Запустите скрипт для своей системы:
 
 | Система | Запуск из распакованной папки |
@@ -58,7 +58,7 @@ Miracle помогает пройти весь путь от SQL до объяс
 
 **[Полная инструкция →](docs/local-installation.md)** Подключение локальной СУБД, участники, резервная копия, перенос, обновление и решение проблем.
 
-> Готовый ZIP становится доступен после успешного процесса публикации. Если в Releases пока нет архива, используйте [запуск из исходников](CONTRIBUTING.md#локальный-запуск) или следите за первым выпуском.
+ZIP и готовый Docker-образ доступны публично, без входа в GitHub или GHCR. Рядом с архивом в релизе опубликована контрольная сумма SHA-256.
 
 ## Статус 0.1.0
 
