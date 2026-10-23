@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server/app.js";
 import { bootstrapAdmin } from "../src/server/db.js";
 import { SecretBox } from "../src/server/secrets.js";
+import { dropTestDatabase } from "./test-database.js";
 import {
   certificates,
   tlsServer,
@@ -101,10 +102,13 @@ beforeAll(async () => {
   viewerCsrf = v.json().csrfToken;
 }, 30000);
 afterAll(async () => {
-  if (app) await app.close();
-  if (fixture) await closeTls(fixture.server);
-  await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
-  await admin.end();
+  try {
+    if (app) await app.close();
+    if (fixture) await closeTls(fixture.server);
+    await dropTestDatabase(admin, dbName);
+  } finally {
+    await admin.end();
+  }
 });
 it("encrypts TLS materials and exposes only presence flags to all connection readers", async () => {
   const response = await request("POST", "/api/connections", input());

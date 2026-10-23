@@ -3,6 +3,7 @@ import { buildApp } from "../src/server/app.js";
 import { bootstrapAdmin } from "../src/server/db.js";
 import pg from "pg";
 import type { FastifyInstance } from "fastify";
+import { dropTestDatabase } from "./test-database.js";
 const rootUrl =
   process.env.DATABASE_URL ||
   "postgres://miracle:miracle_local@127.0.0.1:5544/miracle";
@@ -53,9 +54,12 @@ beforeAll(async () => {
   csrf = login.json().csrfToken;
 }, 30000);
 afterAll(async () => {
-  if (app) await app.close();
-  await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
-  await admin.end();
+  try {
+    if (app) await app.close();
+    await dropTestDatabase(admin, dbName);
+  } finally {
+    await admin.end();
+  }
 });
 it("rotates login session, rejects CSRF, origins, unauthenticated reads", async () => {
   expect((await app.inject("/api/connections")).statusCode).toBe(401);

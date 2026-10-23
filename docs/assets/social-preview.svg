@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Miracle — от запроса к ясной картине</title>
+  <desc id="desc">SQL, данные и мысли рядом. Открытая SQL-среда для ClickHouse и Trino. Фирменная иллюстрация Miracle.</desc>
+  <rect width="1280" height="640" fill="#181A1F"/>
+  <path d="M720 0V640M1040 0V640M0 532H1280" stroke="#2C3339"/>
+  <path d="M720 104H1280M720 430H1280" stroke="#242A30"/>
+  <g transform="translate(81 73) skewX(-13)">
+    <rect width="13" height="52" rx="4" fill="#A1C9B9"/>
+    <rect x="22" y="8" width="13" height="37" rx="4" fill="#BCD8CB"/>
+    <rect x="44" y="14" width="13" height="24" rx="4" fill="#829E94"/>
+  </g>
+  <text x="153" y="118" fill="#E6EBF3" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700" letter-spacing="-2.5">miracle<tspan fill="#9FC5B5">.</tspan></text>
+  <text x="80" y="250" fill="#EDF1F5" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="600" letter-spacing="-2">От запроса</text>
+  <text x="80" y="328" fill="#A7CBBB" font-family="Arial, Helvetica, sans-serif" font-size="62" font-weight="600" letter-spacing="-2">к ясной картине.</text>
+  <text x="83" y="393" fill="#9DA9B9" font-family="Arial, Helvetica, sans-serif" font-size="25">SQL, данные и мысли — рядом.</text>
+  <g stroke="#63796F" stroke-width="1.7">
+    <path d="M808 245H850Q864 245 864 259V324Q864 338 878 338H929"/>
+    <path d="M995 338H1032Q1046 338 1046 324V222Q1046 208 1060 208H1128"/>
+    <path d="M921 332L929 338L921 344M1120 202L1128 208L1120 214"/>
+  </g>
+  <rect x="762" y="183" width="121" height="101" rx="8" fill="#20272A" stroke="#405049"/>
+  <path d="M806 213L790 230L806 247M840 213L856 230L840 247M830 208L816 252" stroke="#BCD8CB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="918" y="286" width="111" height="104" rx="8" fill="#20272A" stroke="#405049"/>
+  <path d="M936 311H1012M936 333H1012M936 355H1012M960 307V370M987 307V370" stroke="#829E94" stroke-width="2"/>
+  <rect x="1092" y="149" width="139" height="160" rx="8" fill="#20272A" stroke="#405049"/>
+  <path d="M1111 281H1212" stroke="#405049"/>
+  <rect x="1114" y="242" width="15" height="38" rx="2" fill="#637E70"/>
+  <rect x="1139" y="222" width="15" height="58" rx="2" fill="#829E94"/>
+  <rect x="1164" y="202" width="15" height="78" rx="2" fill="#A1C9B9"/>
+  <rect x="1189" y="180" width="15" height="100" rx="2" fill="#BCD8CB"/>
+  <circle cx="808" cy="245" r="4" fill="#BCD8CB"/>
+  <text x="765" y="470" fill="#7D9187" font-family="Arial, Helvetica, sans-serif" font-size="13" letter-spacing="1.5">01 / SQL</text>
+  <text x="920" y="470" fill="#7D9187" font-family="Arial, Helvetica, sans-serif" font-size="13" letter-spacing="1.5">02 / ДАННЫЕ</text>
+  <text x="1094" y="470" fill="#A7B9B0" font-family="Arial, Helvetica, sans-serif" font-size="13" letter-spacing="1.5">03 / КОНТЕКСТ</text>
+  <text x="82" y="594" fill="#A7B9B0" font-family="Arial, Helvetica, sans-serif" font-size="18" letter-spacing="2">CLICKHOUSE / TRINO</text>
+  <text x="443" y="594" fill="#8C95A7" font-family="Arial, Helvetica, sans-serif" font-size="16" letter-spacing="2">OPEN SOURCE</text>
+  <text x="765" y="594" fill="#8C95A7" font-family="Arial, Helvetica, sans-serif" font-size="15" letter-spacing="0.8">ВАША ИНФРАСТРУКТУРА. ВАШИ ДАННЫЕ.</text>
+</svg>

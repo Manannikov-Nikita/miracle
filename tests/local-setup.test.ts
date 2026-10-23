@@ -6,6 +6,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { buildApp } from "../src/server/app.js";
 import * as database from "../src/server/db.js";
 import { SecretBox } from "../src/server/secrets.js";
+import { dropTestDatabase } from "./test-database.js";
 
 const rootUrl =
   process.env.DATABASE_URL ||
@@ -52,9 +53,12 @@ beforeEach(async () => {
     await app.miracle.db.query("DELETE FROM setup_tokens");
 });
 afterAll(async () => {
-  await app?.close();
-  await management.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
-  await management.end();
+  try {
+    await app?.close();
+    await dropTestDatabase(management, dbName);
+  } finally {
+    await management.end();
+  }
 });
 it("exposes only setup necessity and completes into an authenticated admin session", async () => {
   expect((await app.inject("/api/setup/status")).json()).toEqual({
