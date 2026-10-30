@@ -24,13 +24,13 @@ Miracle работает на вашем компьютере и открыва�
 
 ## Установка
 
-**0.2.0 готовится к выпуску.** Команда ниже станет доступна после публикации архивов для macOS/Linux и install.sh в GitHub Releases. Старый Docker-комплект 0.1.0 относится к другой версии приложения.
+Готовый установщик и архивы доступны в [выпуске 0.2.0](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.2.0).
 
 macOS, Linux и Windows через терминал WSL 2:
 
 ```sh
 curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.sh | sh
-miracle
+~/.local/bin/miracle
 ```
 
 На Windows сначала нужен [WSL 2 с Linux](https://learn.microsoft.com/en-us/windows/wsl/install). Команды установки и запуска выполняются в его терминале; напечатанный адрес откройте в браузере Windows. [Полная инструкция](docs/local-installation.md) содержит требования к WSL, ручную установку, обновление и резервное копирование.

@@ -13,7 +13,9 @@
 - Независимое ревью приложения и установки завершено; обнаруженные проблемы исправлены и проверены регрессионными тестами.
 - `git diff --check`: без ошибок. CodeGraph: индекс актуален, `.codegraph/` исключён из Git.
 
-GitHub Release 0.2.0 ещё не опубликован. GitHub CI проверяет четыре архива: macOS x64/arm64 и Linux x64/arm64. Актуальные результаты доступны в [PR #1](https://github.com/Manannikov-Nikita/miracle/pull/1).
+[GitHub Release 0.2.0 опубликован](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.2.0) из коммита `13a7b7874c9035888ea31795656a6242d45ecb31`. Все четыре архива macOS x64/arm64 и Linux x64/arm64 прошли тесты, сборку, установку, lifecycle и backup/restore в [релизном workflow](https://github.com/Manannikov-Nikita/miracle/actions/runs/41066634992). Отдельная [проверка main](https://github.com/Manannikov-Nikita/miracle/actions/runs/41066586317) также прошла.
+
+После публикации без авторизации скачаны все четыре архива и сверены их SHA-256. Публичный `releases/latest/download/install.sh` совпадает с исходником тега и фиксирует версию 0.2.0. Чистая онлайн-установка macOS arm64 без системного Node.js прошла; скачанный из релиза архив повторно прошёл запуск, переустановку, сохранность данных и backup/restore во временной рабочей области.
 
 ## Интроспекция, запуск по датам и графики
 
