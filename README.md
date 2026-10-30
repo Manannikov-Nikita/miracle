@@ -24,7 +24,7 @@ Miracle работает на вашем компьютере и открыва�
 
 ## Установка
 
-Готовый установщик и архивы доступны в [выпуске 0.2.0](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.2.0).
+Готовый установщик и архивы доступны в [выпуске 0.2.1](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.2.1).
 
 macOS, Linux и Windows через терминал WSL 2:
 
