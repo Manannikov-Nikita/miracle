@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createMetadataStore,
+  type MetadataStore,
+} from "../src/client/metadata-store";
 import type { SchemaTable, SqlFunctionCatalog } from "../src/shared/types";
 import {
   createSqlMetadataLoader,
@@ -112,44 +116,318 @@ describe("SQL suggestions", () => {
   });
 });
 
-describe("editor-owned completion metadata", () => {
-  it("loads schema and referenced columns without Explorer and deduplicates concurrent completions", async () => {
-    const request = vi.fn(async (path: string) =>
-      path.endsWith("/schema")
-        ? [
-            { schema: "demo", name: "sales" },
-            { schema: "demo", name: "customers" },
-          ]
-        : [{ name: "amount", type: "Float64" }],
-    );
-    const loader = createSqlMetadataLoader(
-      request as <T>(path: string) => Promise<T>,
-    );
-    const [first, second] = await Promise.all([
-      loader.tables("conn-a", "SELECT s. FROM demo.sales s"),
-      loader.tables("conn-a", "SELECT s. FROM demo.sales s"),
-    ]);
-    expect(first).toBe(second);
-    expect(first[0].columns?.[0].name).toBe("amount");
-    expect(first[1].columns).toBeUndefined();
-    expect(request.mock.calls.map(([path]) => path)).toEqual([
-      "/api/connections/conn-a/schema",
-      "/api/connections/conn-a/columns?schema=demo&table=sales",
-    ]);
+describe("lazy schema suggestions", () => {
+  it("suggests an unopened or empty schema before any table is available", () => {
+    expect(
+      sqlSuggestions(
+        "SELECT * FROM lake.",
+        "SELECT * FROM lake.",
+        [],
+        {},
+        undefined,
+        {
+          schemas: [{ catalog: "lake", schema: "analytics" }],
+        },
+      ),
+    ).toContainEqual({
+      label: "analytics",
+      insertText: "analytics",
+      kind: "schema",
+    });
   });
-  it("keeps identical table names separate across active connections", async () => {
-    const request = vi.fn(async (path: string) =>
-      path.endsWith("/schema")
-        ? [{ schema: "demo", name: "sales" }]
-        : [
-            {
-              name: path.includes("conn-a") ? "a_column" : "b_column",
-              type: "String",
-            },
-          ],
+  it("filters a large schema by the typed prefix before bounding suggestions", () => {
+    const metadata = Array.from({ length: 4000 }, (_, index) => ({
+      schema: "large",
+      name: `table_${String(index).padStart(4, "0")}`,
+    }));
+    const sql = "SELECT * FROM large.table_39";
+    const suggestions = sqlSuggestions(sql, sql, metadata, {}, undefined, {
+      prefix: "table_39",
+      limit: 200,
+    });
+    expect(suggestions).toHaveLength(100);
+    expect(suggestions[0].label).toBe("table_3900");
+    expect(suggestions[99].label).toBe("table_3999");
+    expect(
+      sqlSuggestions(
+        "SELECT * FROM large.",
+        "SELECT * FROM large.",
+        metadata,
+        {},
+        undefined,
+        { prefix: "", limit: 200 },
+      ),
+    ).toHaveLength(200);
+  });
+  it("matches a schema prefix without requiring the catalog prefix", () => {
+    const sql = "SELECT * FROM anal";
+    expect(
+      sqlSuggestions(sql, sql, [], {}, undefined, {
+        schemas: [{ catalog: "lake", schema: "analytics" }],
+        prefix: "anal",
+        limit: 200,
+      }),
+    ).toContainEqual({
+      label: "lake.analytics",
+      insertText: "lake.analytics",
+      kind: "schema",
+    });
+  });
+  it("keeps schemas and SQL keywords when hundreds of tables share their prefix", () => {
+    const metadata = Array.from({ length: 500 }, (_, index) => ({
+      schema: "select_schema",
+      name: `select_table_${index}`,
+    }));
+    const sql = "SELECT sel";
+    const suggestions = sqlSuggestions(sql, sql, metadata, {}, undefined, {
+      schemas: [{ schema: "select_schema" }],
+      prefix: "sel",
+      limit: 200,
+    });
+    expect(suggestions).toHaveLength(200);
+    expect(suggestions).toContainEqual(
+      expect.objectContaining({ label: "SELECT", kind: "keyword" }),
     );
-    const loader = createSqlMetadataLoader(
-      request as <T>(path: string) => Promise<T>,
+    expect(suggestions).toContainEqual(
+      expect.objectContaining({ label: "select_schema", kind: "schema" }),
+    );
+    expect(suggestions.some((suggestion) => suggestion.kind === "table")).toBe(
+      true,
+    );
+  });
+  it("keeps ClickHouse function completions beside a large set of matching tables", () => {
+    const metadata = Array.from({ length: 500 }, (_, index) => ({
+      schema: "summary",
+      name: `sum_table_${index}`,
+    }));
+    const sql = "SELECT sum";
+    const suggestions = sqlSuggestions(
+      sql,
+      sql,
+      metadata,
+      { engine: "clickhouse" },
+      undefined,
+      {
+        schemas: [{ schema: "summary" }],
+        prefix: "sum",
+        limit: 200,
+      },
+    );
+    expect(suggestions).toHaveLength(200);
+    expect(suggestions).toContainEqual(
+      expect.objectContaining({ label: "sum", kind: "function" }),
+    );
+    expect(suggestions).toContainEqual(
+      expect.objectContaining({ label: "summary", kind: "schema" }),
+    );
+    expect(suggestions.some((suggestion) => suggestion.kind === "table")).toBe(
+      true,
+    );
+  });
+});
+
+const metadataStores: MetadataStore[] = [];
+function completionLoader(request: <T>(path: string) => Promise<T>) {
+  const store = createMetadataStore(request);
+  metadataStores.push(store);
+  return { store, loader: createSqlMetadataLoader(store) };
+}
+afterEach(() => {
+  for (const store of metadataStores.splice(0)) store.dispose();
+});
+
+function metadataRequest(
+  paths: string[],
+  columnFor = (id: string) => "amount",
+) {
+  return async <T>(path: string): Promise<T> => {
+    paths.push(path);
+    const url = new URL(path, "http://local");
+    const id = url.pathname.split("/")[3];
+    const schema = url.searchParams.get("schema") || "demo";
+    const catalog = url.searchParams.get("catalog") || undefined;
+    if (url.pathname.endsWith("/metadata/schemas"))
+      return { items: [{ schema: "demo" }, { schema: "archive" }] } as T;
+    if (url.pathname.endsWith("/metadata/tables"))
+      return {
+        items: [
+          { schema, catalog, name: url.searchParams.get("table") || "sales" },
+        ],
+      } as T;
+    if (url.pathname.endsWith("/metadata/columns"))
+      return {
+        items: [
+          { table: "sales", name: columnFor(id), type: "Float64", position: 1 },
+        ],
+      } as T;
+    throw new Error(`Unexpected metadata endpoint: ${path}`);
+  };
+}
+
+describe("shared lazy completion metadata", () => {
+  it.each([
+    ["SELECT * FROM archive.existing", "SELECT * FROM archive.exi"],
+    [
+      'SELECT * FROM "archive"."sales table"',
+      'SELECT * FROM "archive"."sales ta',
+    ],
+    [
+      "SELECT 'FROM ignored.table' /* JOIN ignored.more */ FROM archive.existing",
+      "SELECT 'FROM ignored.table' /* JOIN ignored.more */ FROM archive.exi",
+    ],
+  ])(
+    "skips exact lookups while the cursor edits a relation identifier in %s",
+    async (sql, beforeCursor) => {
+      const paths: string[] = [];
+      const { loader } = completionLoader(metadataRequest(paths));
+      await loader.tables("conn-a", sql, {}, beforeCursor);
+      expect(
+        paths.some(
+          (path) =>
+            path.includes("/metadata/tables?") &&
+            new URL(path, "http://local").searchParams.has("table"),
+        ),
+      ).toBe(false);
+      expect(
+        paths.some(
+          (path) =>
+            path.includes("/metadata/tables?") &&
+            path.includes("schema=archive"),
+        ),
+      ).toBe(true);
+    },
+  );
+  it("looks up a completed relation after the cursor passes its trailing space", async () => {
+    const paths: string[] = [];
+    const { loader } = completionLoader(metadataRequest(paths));
+    await loader.tables("conn-a", "SELECT * FROM archive.sales ");
+    expect(
+      paths.some(
+        (path) =>
+          path.includes("/metadata/tables?") && path.includes("table=sales"),
+      ),
+    ).toBe(true);
+  });
+  it("does not queue obsolete exact lookups while typing FROM or JOIN before useful alias columns", async () => {
+    const paths: string[] = [];
+    const releases: (() => void)[] = [];
+    let releaseSlowRequests = false;
+    const { loader, store } = completionLoader(async <T>(path: string) => {
+      paths.push(path);
+      const url = new URL(path, "http://local");
+      const table = url.searchParams.get("table");
+      if (url.pathname.endsWith("/metadata/schemas"))
+        return { items: [{ schema: "demo" }] } as T;
+      if (url.pathname.endsWith("/metadata/tables")) {
+        if (table && table !== "sales") {
+          if (!releaseSlowRequests)
+            await new Promise<void>((resolve) => releases.push(resolve));
+          return { items: [] } as T;
+        }
+        return { items: [{ schema: "demo", name: "sales" }] } as T;
+      }
+      if (url.pathname.endsWith("/metadata/columns")) {
+        if (!table && !releaseSlowRequests)
+          await new Promise<void>((resolve) => releases.push(resolve));
+        return {
+          items: [
+            { table: "sales", name: "amount", type: "Float64", position: 1 },
+          ],
+        } as T;
+      }
+      throw new Error(path);
+    });
+    await store.loadTable("conn-a", { schema: "demo", name: "sales" });
+    const requests = [
+      "e",
+      "ex",
+      "exi",
+      "exis",
+      "exist",
+      "existi",
+      "existing",
+    ].map((prefix, index) =>
+      loader.tables(
+        "conn-a",
+        index % 2
+          ? `SELECT * FROM demo.sales s JOIN demo.${prefix}`
+          : `SELECT * FROM demo.${prefix}`,
+      ),
+    );
+    const useful = loader.tables(
+      "conn-a",
+      "SELECT s.am FROM demo.sales s",
+      {},
+      "SELECT s.am",
+    );
+    try {
+      await vi.waitFor(
+        () =>
+          expect(store.getTables("conn-a")[0]?.columns?.[0].name).toBe(
+            "amount",
+          ),
+        { timeout: 500 },
+      );
+      expect(paths.some((path) => /[?&]table=e[^&]*(?:&|$)/.test(path))).toBe(
+        false,
+      );
+    } finally {
+      releaseSlowRequests = true;
+      for (const release of releases) release();
+      await Promise.allSettled([...requests, useful]);
+    }
+  });
+  it("does not invent a table from a partially typed FROM reference", async () => {
+    const paths: string[] = [];
+    const request = metadataRequest(paths);
+    const { loader, store } = completionLoader(async <T>(path: string) => {
+      if (path.includes("/metadata/tables?") && path.includes("table=sal")) {
+        paths.push(path);
+        return { items: [] } as T;
+      }
+      return request<T>(path);
+    });
+    await loader.tables("conn-a", "SELECT * FROM demo.sal");
+    expect(
+      store.getTables("conn-a").some((table) => table.name === "sal"),
+    ).toBe(false);
+    expect(
+      paths.some(
+        (path) =>
+          path.includes("/metadata/columns?") &&
+          /[?&]table=sal(?:&|$)/.test(path),
+      ),
+    ).toBe(false);
+    expect(paths.some((path) => /[?&]table=sal(?:&|$)/.test(path))).toBe(false);
+  });
+  it("resolves unopened qualified tables without the legacy whole-source schema endpoint", async () => {
+    const paths: string[] = [];
+    const { loader } = completionLoader(metadataRequest(paths));
+    const metadata = await loader.tables(
+      "conn-a",
+      "SELECT s. FROM archive.sales s",
+      {},
+      "SELECT s.",
+    );
+    expect(
+      sqlSuggestions("SELECT s. FROM archive.sales s", "SELECT s.", metadata),
+    ).toContainEqual(
+      expect.objectContaining({ label: "amount", kind: "column" }),
+    );
+    expect(paths.some((path) => path.endsWith("/schema"))).toBe(false);
+    expect(
+      paths.some(
+        (path) =>
+          path.includes("/metadata/tables?") && path.includes("schema=archive"),
+      ),
+    ).toBe(true);
+  });
+  it("retains and isolates cached columns while switching sources", async () => {
+    const paths: string[] = [];
+    const { loader, store } = completionLoader(
+      metadataRequest(paths, (id) =>
+        id === "conn-a" ? "a_column" : "b_column",
+      ),
     );
     const first = await loader.tables("conn-a", "SELECT * FROM sales", {
       database: "demo",
@@ -157,18 +435,25 @@ describe("editor-owned completion metadata", () => {
     const second = await loader.tables("conn-b", "SELECT * FROM sales", {
       database: "demo",
     });
-    expect(first[0].columns?.[0].name).toBe("a_column");
-    expect(second[0].columns?.[0].name).toBe("b_column");
+    expect(
+      first.find((table) => table.schema === "demo")?.columns?.[0].name,
+    ).toBe("a_column");
+    expect(
+      second.find((table) => table.schema === "demo")?.columns?.[0].name,
+    ).toBe("b_column");
+    const before = paths.filter((path) => path.includes("table=sales")).length;
+    await loader.tables("conn-a", "SELECT * FROM sales", { database: "demo" });
+    expect(paths.filter((path) => path.includes("table=sales"))).toHaveLength(
+      before,
+    );
+    expect(
+      store.getTables("conn-b").find((table) => table.schema === "demo")
+        ?.columns?.[0].name,
+    ).toBe("b_column");
   });
   it("loads columns for a typed table qualifier before a FROM clause exists", async () => {
-    const request = vi.fn(async (path: string) =>
-      path.endsWith("/schema")
-        ? [{ schema: "demo", name: "sales" }]
-        : [{ name: "amount", type: "Float64" }],
-    );
-    const loader = createSqlMetadataLoader(
-      request as <T>(path: string) => Promise<T>,
-    );
+    const paths: string[] = [];
+    const { loader } = completionLoader(metadataRequest(paths));
     const metadata = await loader.tables("conn-a", "SELECT demo.sales.");
     expect(
       sqlSuggestions("SELECT demo.sales.", "SELECT demo.sales.", metadata),
@@ -176,32 +461,26 @@ describe("editor-owned completion metadata", () => {
       expect.objectContaining({ label: "amount", kind: "column" }),
     );
   });
-  it("retries failed schema and column requests instead of caching failures", async () => {
-    let schemaCalls = 0;
-    let columnCalls = 0;
-    const request = vi.fn(async (path: string) => {
-      if (path.endsWith("/schema")) {
-        if (++schemaCalls === 1) throw new Error("temporary schema failure");
-        return [{ schema: "demo", name: "sales" }];
-      }
-      if (++columnCalls === 1) throw new Error("temporary column failure");
-      return [{ name: "amount", type: "Float64" }];
-    });
-    const loader = createSqlMetadataLoader(
-      request as <T>(path: string) => Promise<T>,
+  it("prioritizes the fully qualified Trino table from the SQL tab context", async () => {
+    const paths: string[] = [];
+    const { loader } = completionLoader(metadataRequest(paths));
+    const metadata = await loader.tables(
+      "conn-a",
+      "SELECT s. FROM lake.archive.sales s",
+      { engine: "trino", catalog: "other", schema: "public" },
+      "SELECT s.",
     );
-    await expect(
-      loader.tables("conn-a", "SELECT * FROM demo.sales"),
-    ).rejects.toThrow("temporary schema failure");
     expect(
-      (await loader.tables("conn-a", "SELECT * FROM demo.sales"))[0].columns,
-    ).toBeUndefined();
-    expect(
-      (await loader.tables("conn-a", "SELECT * FROM demo.sales"))[0]
-        .columns?.[0].name,
+      metadata.find(
+        (table) => table.catalog === "lake" && table.schema === "archive",
+      )?.columns?.[0].name,
     ).toBe("amount");
-    expect(schemaCalls).toBe(2);
-    expect(columnCalls).toBe(2);
+    expect(
+      paths.some(
+        (path) =>
+          path.includes("catalog=lake") && path.includes("schema=archive"),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -466,7 +745,7 @@ describe("function catalog metadata", () => {
         aggregateCombinators: ["If"],
       } as T;
     };
-    const loader = createSqlMetadataLoader(request);
+    const { loader } = completionLoader(request);
     const [first, second] = await Promise.all([
       loader.functionCatalog("a/b"),
       loader.functionCatalog("a/b"),
@@ -483,7 +762,7 @@ describe("function catalog metadata", () => {
   });
   it("removes a failed catalog request so the next completion retries", async () => {
     let attempts = 0;
-    const loader = createSqlMetadataLoader(async <T>() => {
+    const { loader } = completionLoader(async <T>() => {
       if (++attempts === 1) throw new Error("temporary catalog failure");
       return {
         functions: [{ name: "uniq", isAggregate: true }],

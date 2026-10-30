@@ -4,7 +4,7 @@
 
 Miracle — локальный сервис для одного человека. Готовая сборка содержит runtime; PostgreSQL, Docker, Node.js, npm и Git устанавливать не нужно.
 
-**Эта инструкция относится к готовящейся версии 0.2.0.** Адреса установщиков заработают после публикации соответствующего GitHub Release. Docker-комплект 0.1.0 этих файлов не содержит.
+Эта инструкция относится к версии 0.2.0. Используйте установщик и архивы из одного [GitHub Release](https://github.com/Manannikov-Nikita/miracle/releases). Docker-комплект 0.1.0 этих файлов не содержит.
 
 ## macOS и Linux
 
@@ -12,7 +12,7 @@ Miracle — локальный сервис для одного человека
 
 ```sh
 curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.sh | sh
-miracle
+~/.local/bin/miracle
 ```
 
 Установка выполняется в домашний каталог без sudo. Если команда ещё не найдена в PATH, используйте `~/.local/bin/miracle` и следуйте подсказке установщика.

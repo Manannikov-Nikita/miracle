@@ -1,15 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
-import type {
-  Connection,
-  QueryDocument,
-  ResultSet,
-  SchemaTable,
-} from "../shared/types";
+import type { Connection, QueryDocument, ResultSet } from "../shared/types";
 import { api, openLocalSession } from "./api";
+import { createMetadataStore } from "./metadata-store";
 import { Brand, ErrorBox, Modal, Spinner, Toasts } from "./components/UI";
 import Connections from "./components/Connections";
-import Explorer, { type ExplorerKind } from "./components/Explorer";
+import Explorer, {
+  type ExplorerKind,
+  type ExplorerSourceView,
+} from "./components/Explorer";
 import SqlWorkspace, { type SqlSourceRequest } from "./components/SqlWorkspace";
 import BoardWorkspace from "./board/BoardWorkspace";
 import WorkspaceRail, { type PaneMode } from "./components/WorkspaceRail";
@@ -20,7 +19,12 @@ export default function App() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionId, setConnectionId] = useState("");
-  const [schema, setSchema] = useState<SchemaTable[]>([]);
+  const metadata = useMemo(() => createMetadataStore(api), [workspaceId]);
+  const sourceViews = useMemo(
+    () => new Map<string, ExplorerSourceView>(),
+    [workspaceId],
+  );
+  useEffect(() => () => metadata.dispose(), [metadata]);
   const [explorer, setExplorer] = useState<ExplorerKind | null>("sources");
   const [explorerDrawer, setExplorerDrawer] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
@@ -142,7 +146,6 @@ export default function App() {
     if (workspaceId) void loadConnections();
     else {
       setConnections([]);
-      setSchema([]);
     }
   }, [workspaceId, loadConnections]);
   useEffect(() => {
@@ -265,8 +268,8 @@ export default function App() {
             connections={connections}
             activeConnectionId={connectionId}
             onConnectionChange={setConnectionId}
-            schema={schema}
-            onSchemaChange={setSchema}
+            metadata={metadata}
+            sourceViews={sourceViews}
             onOpenConnections={() => setConnectionsOpen(true)}
             onOpenQuery={(q) => {
               setExplorerDrawer(false);
@@ -313,7 +316,7 @@ export default function App() {
                   connections={connections}
                   activeConnectionId={connectionId}
                   onConnectionChange={setConnectionId}
-                  schema={schema}
+                  metadata={metadata}
                   sourceToOpen={sourceToOpen}
                   savedToOpen={savedToOpen}
                   onSourceConsumed={() => setSourceToOpen(null)}
@@ -369,7 +372,13 @@ export default function App() {
         open={connectionsOpen}
         onClose={() => setConnectionsOpen(false)}
         connections={connections}
-        onChanged={loadConnections}
+        onChanged={(id) => {
+          if (id) {
+            metadata.invalidate(id);
+            sourceViews.delete(id);
+          }
+          void loadConnections();
+        }}
         onNotify={notify}
       />
       <Modal

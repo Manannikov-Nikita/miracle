@@ -22,15 +22,23 @@ export default function ResultTable({
   result: ResultSet;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
 }) {
-  const [rows, setRows] = useState<Cell[][]>([]);
+  const [page, setPage] = useState<{
+    resultId: string;
+    offset: number;
+    rows: Cell[][];
+  }>();
   const [offset, setOffset] = useState(0);
+  // Keep rows during refreshes of this page, never under another page's label.
+  const rows =
+    page?.resultId === result.id && page.offset === offset ? page.rows : [];
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
   const parent = useRef<HTMLDivElement>(null);
   const limit = 500;
   useEffect(() => {
     setOffset(0);
-    setRows([]);
+    setPage(undefined);
   }, [result.id]);
   useEffect(() => {
     let valid = true;
@@ -38,7 +46,7 @@ export default function ResultTable({
     setError("");
     getResultRows(result.id, offset, limit)
       .then((r) => {
-        if (valid) setRows(r.rows);
+        if (valid) setPage({ resultId: result.id, offset, rows: r.rows });
       })
       .catch((e) => {
         if (valid) setError(e.message);
@@ -49,7 +57,7 @@ export default function ResultTable({
     return () => {
       valid = false;
     };
-  }, [result.id, offset]);
+  }, [result.id, result.rowCount, result.byteCount, offset, reload]);
   const columns = useMemo<ColumnDef<Cell[]>[]>(
     () =>
       result.columns.map((col, index) => ({
@@ -119,88 +127,96 @@ export default function ResultTable({
   }
   return (
     <div className="result-table-shell">
-      {error ? (
-        <ErrorBox>{error}</ErrorBox>
-      ) : (
-        <div className="result-table-scroll" ref={parent} aria-busy={busy}>
-          <table
-            className="result-table"
-            style={{ width: table.getTotalSize() + 48 }}
+      {error && (
+        <div className="result-refresh-error">
+          <ErrorBox>{error}</ErrorBox>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setReload((value) => value + 1)}
           >
-            <thead>
-              <tr>
-                <th className="row-number" style={{ width: 48 }}>
-                  #
-                </th>
-                {table.getHeaderGroups()[0].headers.map((h) => (
-                  <th key={h.id} style={{ width: h.getSize() }}>
-                    {flexRender(h.column.columnDef.header, h.getContext())}
-                    <div
-                      role="separator"
-                      aria-label={`Ширина столбца ${h.column.id}`}
-                      aria-orientation="vertical"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-                          e.preventDefault();
-                          table.setColumnSizing((s) => ({
-                            ...s,
-                            [h.column.id]: Math.max(
-                              80,
-                              h.getSize() + (e.key === "ArrowRight" ? 16 : -16),
-                            ),
-                          }));
-                        }
-                      }}
-                      onMouseDown={h.getResizeHandler()}
-                      onTouchStart={h.getResizeHandler()}
-                      className={`column-resizer ${h.column.getIsResizing() ? "is-resizing" : ""}`}
-                    />
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {paddingTop > 0 && (
-                <tr aria-hidden="true" className="result-table-spacer">
-                  <td colSpan={columnCount} style={{ height: paddingTop }} />
-                </tr>
-              )}
-              {virtualRows.map((v) => {
-                const row = table.getRowModel().rows[v.index];
-                return (
-                  <tr
-                    key={row.id}
-                    className={`result-data-row${v.index % 2 === 0 ? " is-striped" : ""}`}
-                  >
-                    <td className="row-number">{offset + v.index + 1}</td>
-                    {row.getVisibleCells().map((c) => (
-                      <td
-                        key={c.id}
-                        style={{ width: c.column.getSize() }}
-                        title={cellText(c.getValue() as Cell)}
-                      >
-                        {flexRender(c.column.columnDef.cell, c.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })}
-              {paddingBottom > 0 && (
-                <tr aria-hidden="true" className="result-table-spacer">
-                  <td colSpan={columnCount} style={{ height: paddingBottom }} />
-                </tr>
-              )}
-            </tbody>
-          </table>
-          {!busy && rows.length === 0 && (
-            <div className="table-empty">
-              <Table size={22} />
-              <span>Запрос выполнен. Строк нет.</span>
-            </div>
-          )}
+            Повторить загрузку
+          </button>
         </div>
       )}
+      <div className="result-table-scroll" ref={parent} aria-busy={busy}>
+        <table
+          className="result-table"
+          style={{ width: table.getTotalSize() + 48 }}
+        >
+          <thead>
+            <tr>
+              <th className="row-number" style={{ width: 48 }}>
+                #
+              </th>
+              {table.getHeaderGroups()[0].headers.map((h) => (
+                <th key={h.id} style={{ width: h.getSize() }}>
+                  {flexRender(h.column.columnDef.header, h.getContext())}
+                  <div
+                    role="separator"
+                    aria-label={`Ширина столбца ${h.column.id}`}
+                    aria-orientation="vertical"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                        e.preventDefault();
+                        table.setColumnSizing((s) => ({
+                          ...s,
+                          [h.column.id]: Math.max(
+                            80,
+                            h.getSize() + (e.key === "ArrowRight" ? 16 : -16),
+                          ),
+                        }));
+                      }
+                    }}
+                    onMouseDown={h.getResizeHandler()}
+                    onTouchStart={h.getResizeHandler()}
+                    className={`column-resizer ${h.column.getIsResizing() ? "is-resizing" : ""}`}
+                  />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {paddingTop > 0 && (
+              <tr aria-hidden="true" className="result-table-spacer">
+                <td colSpan={columnCount} style={{ height: paddingTop }} />
+              </tr>
+            )}
+            {virtualRows.map((v) => {
+              const row = table.getRowModel().rows[v.index];
+              return (
+                <tr
+                  key={row.id}
+                  className={`result-data-row${v.index % 2 === 0 ? " is-striped" : ""}`}
+                >
+                  <td className="row-number">{offset + v.index + 1}</td>
+                  {row.getVisibleCells().map((c) => (
+                    <td
+                      key={c.id}
+                      style={{ width: c.column.getSize() }}
+                      title={cellText(c.getValue() as Cell)}
+                    >
+                      {flexRender(c.column.columnDef.cell, c.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+            {paddingBottom > 0 && (
+              <tr aria-hidden="true" className="result-table-spacer">
+                <td colSpan={columnCount} style={{ height: paddingBottom }} />
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {!busy && !error && rows.length === 0 && (
+          <div className="table-empty">
+            <Table size={22} />
+            <span>Запрос выполнен. Строк нет.</span>
+          </div>
+        )}
+      </div>
       <div className="table-footer">
         <span>
           {busy ? <Spinner /> : <span className="status-dot" />}

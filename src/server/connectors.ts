@@ -306,17 +306,29 @@ async function trino(
   }
   return { columns, rows: result.rows, byteCount: result.byteCount };
 }
-export async function engineMetadata(c: EngineConnection, sql: string) {
+export async function engineMetadata(
+  c: EngineConnection,
+  sql: string,
+  options: { signal?: AbortSignal; maxRows?: number } = {},
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
   let cancel: (() => Promise<void>) | undefined;
   try {
+    signal.throwIfAborted();
     return await executeEngine(
       c,
       { connectionId: "metadata", sql },
       crypto.randomUUID(),
-      { timeoutMs: 15000, maxRows: 50000, maxBytes: 20 * 1024 * 1024 },
-      controller.signal,
+      {
+        timeoutMs: 15000,
+        maxRows: options.maxRows ?? 50000,
+        maxBytes: 20 * 1024 * 1024,
+      },
+      signal,
       (fn) => {
         cancel = fn;
       },

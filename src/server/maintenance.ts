@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { Database } from "./db.js";
+import { Database, WORKSPACE_SCHEMA_VERSION } from "./db.js";
 import { DatabaseSync } from "node:sqlite";
 import { loadKey, SecretBox, verifyEncryptionKey } from "./secrets.js";
 const names = ["miracle.sqlite", "encryption.key"] as const;
@@ -40,7 +40,8 @@ function validate(db: Database, dataDir: string) {
   const version = Number(
     db.sqlite.prepare("PRAGMA user_version").get()!.user_version,
   );
-  if (version !== 1) throw new Error("Unsupported workspace schema");
+  if (version < 1 || version > WORKSPACE_SCHEMA_VERSION)
+    throw new Error("Unsupported workspace schema");
   const checks = db.sqlite.prepare("PRAGMA integrity_check").all();
   if (
     checks.length !== 1 ||
@@ -54,6 +55,7 @@ function validate(db: Database, dataDir: string) {
   )
     throw new Error("Workspace encryption key check is missing");
   verifyEncryptionKey(db, new SecretBox(loadKey(dataDir, false)));
+  return version;
 }
 function staging(target: string) {
   mkdirSync(dirname(target), { recursive: true });
@@ -100,7 +102,7 @@ export async function backupWorkspace(
   const db = new Database(dataDir);
   let stage: string | undefined;
   try {
-    validate(db, dataDir);
+    const schemaVersion = validate(db, dataDir);
     stage = staging(destination);
     db.sqlite.prepare("VACUUM INTO ?").run(join(stage, "miracle.sqlite"));
     chmodSync(join(stage, "miracle.sqlite"), 0o600);
@@ -115,7 +117,7 @@ export async function backupWorkspace(
         {
           format: "miracle-workspace",
           version: 1,
-          schemaVersion: 1,
+          schemaVersion,
           files: Object.fromEntries(
             names.map((name) => [name, digest(join(stage!, name))]),
           ),
@@ -146,7 +148,9 @@ export async function restoreWorkspace(
   if (
     manifest.format !== "miracle-workspace" ||
     manifest.version !== 1 ||
-    manifest.schemaVersion !== 1
+    !Number.isInteger(manifest.schemaVersion) ||
+    manifest.schemaVersion < 1 ||
+    manifest.schemaVersion > WORKSPACE_SCHEMA_VERSION
   )
     throw new Error("Unsupported backup manifest");
   const sourceDb = openStoppedWorkspace(source);
@@ -169,7 +173,9 @@ export async function restoreWorkspace(
       if (digest(join(stage, name)) !== manifest.files?.[name])
         throw new Error(`Backup checksum mismatch: ${name}`);
     db = new Database(stage);
-    validate(db, stage);
+    const schemaVersion = validate(db, stage);
+    if (schemaVersion !== manifest.schemaVersion)
+      throw new Error("Backup schema version does not match its manifest");
     db.close();
     db = undefined;
     // Closing SQLite checkpoints and removes its WAL; only the paired files persist.

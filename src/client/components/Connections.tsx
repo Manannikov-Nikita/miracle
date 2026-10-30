@@ -33,7 +33,7 @@ export default function Connections({
   open: boolean;
   onClose: () => void;
   connections: Connection[];
-  onChanged: () => void;
+  onChanged: (id?: string) => void;
   onNotify: (m: string, t?: "error" | "success" | "info") => void;
 }) {
   const [editing, setEditing] = useState<Connection | null | undefined>();
@@ -139,7 +139,7 @@ export default function Connections({
         body: json(body),
       });
       setEditing(undefined);
-      onChanged();
+      onChanged(editing?.id);
       onNotify("Подключение сохранено", "success");
     } catch (e) {
       setError((e as Error).message);
@@ -169,7 +169,7 @@ export default function Connections({
     try {
       await api(`/api/connections/${deleteId}`, { method: "DELETE" });
       setDeleteId("");
-      onChanged();
+      onChanged(deleteId);
       onNotify(
         "Подключение удалено. Сохранённые снимки остаются на досках.",
         "success",

@@ -44,6 +44,13 @@ export function chartOptions(
   const position = spec.legendPosition ?? "top";
   const align = spec.legendAlign ?? "center";
   const vertical = position === "left" || position === "right";
+  const horizontalBar =
+    spec.kind === "bar" && spec.orientation === "horizontal";
+  const categoryName = columns.find((c) => c.id === spec.x)?.name;
+  const valueName = spec.y
+    .map((id) => columns.find((c) => c.id === id)?.name)
+    .filter(Boolean)
+    .join(", ");
   const stacked =
     spec.kind !== "scatter" && spec.stacked && Boolean(spec.series);
   // Reserve a strip for the legend, outside the bounds containing BOTH axes,
@@ -137,39 +144,54 @@ export function chartOptions(
       outerBoundsContain: "all",
     },
     xAxis: {
-      type: spec.kind === "scatter" ? "value" : "category",
-      data: stacked ? series[0]?.xCategories : undefined,
-      name: columns.find((c) => c.id === spec.x)?.name,
+      type: horizontalBar || spec.kind === "scatter" ? "value" : "category",
+      data: !horizontalBar && stacked ? series[0]?.xCategories : undefined,
+      name: horizontalBar ? valueName : categoryName,
       nameLocation: "middle",
       nameGap: 32,
       nameMoveOverlap: true,
       nameTruncate: { maxWidth: 180 },
       axisLabel: {
         color: "#8c95a7",
-        formatter: spec.kind === "scatter" ? formatter : undefined,
+        formatter:
+          horizontalBar || spec.kind === "scatter" ? formatter : undefined,
         width: 90,
         overflow: "truncate",
         hideOverlap: true,
       },
       axisLine: { lineStyle: { color: "#343944" } },
+      splitLine: horizontalBar
+        ? { lineStyle: { color: "#343944" } }
+        : undefined,
     },
     yAxis: {
-      type: "value",
-      name: spec.y
-        .map((id) => columns.find((c) => c.id === id)?.name)
-        .filter(Boolean)
-        .join(", "),
+      type: horizontalBar ? "category" : "value",
+      data: horizontalBar && stacked ? series[0]?.xCategories : undefined,
+      inverse: horizontalBar,
+      name: horizontalBar ? categoryName : valueName,
       nameLocation: "middle",
       nameRotate: 90,
       nameGap: 20,
       nameMoveOverlap: true,
       nameTruncate: { maxWidth: 150 },
-      axisLabel: { color: "#8c95a7", formatter },
-      splitLine: { lineStyle: { color: "#343944" } },
+      axisLabel: {
+        color: "#8c95a7",
+        formatter: horizontalBar ? undefined : formatter,
+        ...(horizontalBar
+          ? { width: 120, overflow: "truncate", hideOverlap: true }
+          : {}),
+      },
+      axisLine: horizontalBar ? { lineStyle: { color: "#343944" } } : undefined,
+      splitLine: horizontalBar
+        ? undefined
+        : { lineStyle: { color: "#343944" } },
     },
     series: series.map(({ metricId, xCategories: _xCategories, ...item }) => ({
       ...item,
       type: spec.kind === "area" ? "line" : spec.kind,
+      // Preserve the source dimension/metric data while moving them to the
+      // physical axes. ECharts uses the same mapping for stacks and tooltips.
+      encode: horizontalBar ? { x: 1, y: 0 } : undefined,
       // A breakdown stacks within each selected metric, never across metrics
       // that happen to share the same display name.
       stack: stacked && metricId ? `metric:${metricId}` : undefined,

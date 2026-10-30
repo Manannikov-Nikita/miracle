@@ -15,7 +15,13 @@ import type {
   QueryRun,
   QuerySource,
   ResultPage,
+  SchemaTable,
 } from "../src/shared/types.js";
+import type {
+  MetadataColumn,
+  MetadataPage,
+  MetadataSchema,
+} from "../src/shared/metadata.js";
 
 const root = mkdtempSync(join(tmpdir(), "miracle-external-integration-"));
 const dataDir = join(root, "data");
@@ -125,6 +131,109 @@ try {
   }
   checks++;
   console.log("PASS real engines, schema discovery and password redaction");
+  async function allMetadata<T>(
+    connectionId: string,
+    kind: string,
+    scope: Record<string, string> = {},
+  ) {
+    const items: T[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      const query = new URLSearchParams({
+        ...scope,
+        limit: "1",
+        ...(cursor ? { cursor } : {}),
+      });
+      const page = await viewer.request<MetadataPage<T>>(
+        "GET",
+        `/api/connections/${connectionId}/metadata/${kind}?${query}`,
+      );
+      assert.ok(page.items.length <= 1, "Metadata page exceeded its limit");
+      items.push(...page.items);
+      cursor = page.nextCursor;
+      if (cursor) {
+        assert.ok(!seen.has(cursor), "Metadata cursor did not advance");
+        seen.add(cursor);
+        assert.ok(seen.size < 1000, "Metadata pagination did not finish");
+      }
+    } while (cursor);
+    return items;
+  }
+  for (const connection of [ch, trino]) {
+    const schema = connection.id === ch.id ? "demo" : "tiny";
+    const scope = {
+      schema,
+      ...(connection.id === trino.id ? { catalog: "tpch" } : {}),
+    };
+    const schemas = await allMetadata<MetadataSchema>(connection.id, "schemas");
+    assert.ok(schemas.some((item) => item.schema === schema));
+    assert.equal(
+      new Set(schemas.map((item) => JSON.stringify(item))).size,
+      schemas.length,
+    );
+    const tables = await allMetadata<SchemaTable>(
+      connection.id,
+      "tables",
+      scope,
+    );
+    assert.ok(tables.length > 1);
+    assert.ok(tables.every((table) => table.schema === schema));
+    assert.equal(
+      new Set(tables.map((table) => table.name)).size,
+      tables.length,
+    );
+    const oldTables = await viewer.request<SchemaTable[]>(
+      "GET",
+      `/api/connections/${connection.id}/schema`,
+    );
+    assert.deepEqual(
+      tables.map((table) => table.name).sort(),
+      oldTables
+        .filter((table) => table.schema === schema)
+        .map((table) => table.name)
+        .sort(),
+    );
+    const columns = await allMetadata<MetadataColumn>(
+      connection.id,
+      "columns",
+      scope,
+    );
+    assert.ok(columns.length > tables.length);
+    assert.equal(
+      new Set(
+        columns.map((column) => JSON.stringify([column.table, column.name])),
+      ).size,
+      columns.length,
+    );
+    const table = tables[0]!.name;
+    const exactTable = await allMetadata<SchemaTable>(connection.id, "tables", {
+      ...scope,
+      table,
+    });
+    assert.deepEqual(exactTable, [tables[0]]);
+    const exactColumns = await allMetadata<MetadataColumn>(
+      connection.id,
+      "columns",
+      { ...scope, table },
+    );
+    assert.deepEqual(
+      exactColumns,
+      columns.filter((column) => column.table === table),
+    );
+    const oldColumns = await viewer.request<{ name: string; type: string }[]>(
+      "GET",
+      `/api/connections/${connection.id}/columns?${new URLSearchParams({ ...scope, table })}`,
+    );
+    assert.deepEqual(
+      exactColumns.map(({ name, type }) => ({ name, type })),
+      oldColumns,
+    );
+  }
+  checks++;
+  console.log(
+    "PASS real paginated metadata, schema scope and exact table/column lookup",
+  );
   await editor.request("POST", "/api/users", { email: "x@example.test" }, 404);
   const noCsrf = new Actor();
   noCsrf.cookie = admin.cookie;
@@ -152,6 +261,58 @@ try {
     assert.equal(result.status, expected, result.error);
     return result;
   }
+  for (const connection of [ch, trino]) {
+    for (const dateRange of [
+      {
+        startDate: "2024-02-28",
+        endDate: "2024-03-01",
+        granularity: "day" as const,
+        retries: 0,
+      },
+      {
+        startDate: "2025-12-22",
+        endDate: "2026-01-05",
+        granularity: "week" as const,
+        retries: 0,
+      },
+      {
+        startDate: "2025-12-01",
+        endDate: "2026-02-01",
+        granularity: "month" as const,
+        retries: 0,
+      },
+    ]) {
+      const expected =
+        dateRange.granularity === "day"
+          ? ["2024-02-28", "2024-02-29", "2024-03-01"]
+          : dateRange.granularity === "week"
+            ? ["2025-12-22", "2025-12-29", "2026-01-05"]
+            : ["2025-12-01", "2026-01-01", "2026-02-01"];
+      const batch = await run({
+        connectionId: connection.id,
+        sql:
+          connection.id === ch.id
+            ? "SELECT toDate({{date}}) AS day, toUInt64(1) AS value"
+            : "SELECT DATE '{{date}}' AS day, CAST(1 AS BIGINT) AS value",
+        dateRange,
+      });
+      assert.equal(batch.batch?.total, 3);
+      assert.equal(batch.batch?.succeeded, 3);
+      const result = await viewer.request<ResultPage>(
+        "GET",
+        `/api/result-sets/${batch.resultSetId}/rows`,
+      );
+      assert.deepEqual(
+        result.rows,
+        expected.map((date) => [date, connection.id === ch.id ? "1" : 1]),
+      );
+      assert.deepEqual(result.result.source.dateRange, dateRange);
+    }
+  }
+  checks++;
+  console.log(
+    "PASS real date batches: inclusive days, calendar weeks/months and combined results",
+  );
   const grouped = await run({
     connectionId: trino.id,
     catalog: "tpch",

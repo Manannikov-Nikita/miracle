@@ -6,6 +6,7 @@ import SqlWorkspace, {
   type SqlSourceRequest,
 } from "../src/client/components/SqlWorkspace";
 import type { Connection, QuerySource } from "../src/shared/types";
+import { createMetadataStore } from "../src/client/metadata-store";
 
 // Monaco requires a browser worker/layout engine. Keep the actual workspace and
 // its tab/context controls, replacing only the editor with an editable textarea.
@@ -115,7 +116,7 @@ describe("chart source SQL tabs", () => {
       workspaceId: "source-tab-test",
       connections,
       activeConnectionId: "trino",
-      schema: [],
+      metadata: createMetadataStore(async <T>() => ({ items: [] }) as T),
       onConnectionChange: vi.fn(),
       onSourceConsumed: vi.fn(),
       onSavedConsumed: vi.fn(),
@@ -129,6 +130,7 @@ describe("chart source SQL tabs", () => {
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    props.metadata.dispose();
     container.remove();
     localStorage.clear();
     Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");

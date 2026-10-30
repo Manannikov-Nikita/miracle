@@ -11,7 +11,12 @@ import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { z } from "zod";
-import { Database, migrate, retention } from "./db.js";
+import {
+  Database,
+  migrate,
+  retention,
+  WORKSPACE_SCHEMA_VERSION,
+} from "./db.js";
 import { loadKey, SecretBox, verifyEncryptionKey } from "./secrets.js";
 import { resolveDataDir, resolvePort } from "./config.js";
 import {
@@ -20,6 +25,12 @@ import {
   validateClickHouseConnection,
 } from "./clickhouseOptions.js";
 import { assertReadOnly } from "./sql.js";
+import { registerMetadataRoutes } from "./metadata.js";
+import {
+  prepareDateBatch,
+  performDateBatch,
+  interruptQueryRuns,
+} from "./date-batch.js";
 import {
   executeEngine,
   engineMetadata,
@@ -91,6 +102,7 @@ const runDto = (r: any): QueryRun => ({
   finishedAt: r.finished_at ? new Date(r.finished_at).toISOString() : undefined,
   rowCount: r.row_count ?? undefined,
   elapsedMs: r.elapsed_ms ?? undefined,
+  batch: r.batch ?? undefined,
 });
 const boardDto = (r: any) => ({
   id: r.id,
@@ -189,6 +201,9 @@ export async function buildApp(
   // The exclusive connection owns even interrupted initialization recovery.
   const db = new Database(dataDir);
   try {
+    const schemaVersion = Number(
+      db.sqlite.prepare("PRAGMA user_version").get()!.user_version,
+    );
     const isNew =
       initialFiles.every((name) =>
         [
@@ -200,23 +215,27 @@ export async function buildApp(
           ".encryption.key.pending",
         ].includes(name),
       ) &&
-      Number(db.sqlite.prepare("PRAGMA user_version").get()!.user_version) ===
-        0 &&
+      schemaVersion === 0 &&
       db.sqlite
         .prepare(
           "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
         )
         .all().length === 0;
+    // Reject incomplete or unsupported schemas before accessing their settings.
+    if (
+      schemaVersion > WORKSPACE_SCHEMA_VERSION ||
+      (!isNew && schemaVersion === 0)
+    )
+      migrate(db);
     const box = new SecretBox(loadKey(dataDir, isNew, options.encryptionKey));
     // A schema is established only together with its UUID and authenticated key.
+    if (!isNew) verifyEncryptionKey(db, box);
     migrate(db, isNew ? () => verifyEncryptionKey(db, box, true) : undefined);
     verifyEncryptionKey(db, box);
     const workspaceId = db.query(
       "SELECT value FROM app_settings WHERE key='workspace_id'",
     ).rows[0].value as string;
-    db.query(
-      "UPDATE query_runs SET status='interrupted',error='Сервер перезапущен во время выполнения',finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status IN ('running','cancelling')",
-    );
+    interruptQueryRuns(db);
     retention(db);
     await app.register(cookie);
     app.decorateRequest("sessionId", null);
@@ -509,6 +528,7 @@ export async function buildApp(
         throw err(400, e.message);
       }
     });
+    registerMetadataRoutes(app, { need, connection });
     app.get("/api/connections/:id/schema", async (req) => {
       need(req);
       const c = await connection(uuid(req));
@@ -636,12 +656,13 @@ export async function buildApp(
     });
     async function startRun(req: FastifyRequest, source: QuerySource) {
       need(req);
+      const engine = await connection(source.connectionId);
+      let batch;
       try {
-        assertReadOnly(source.sql);
+        batch = prepareDateBatch(source, engine);
       } catch (e: any) {
         throw err(400, e.message);
       }
-      const engine = await connection(source.connectionId);
       const id = randomUUID();
       const c = db;
       let created;
@@ -653,8 +674,8 @@ export async function buildApp(
         if (r.rows.length >= limits.maxGlobalRuns)
           throw err(429, "Достигнут лимит одновременных запросов");
         created = c.query(
-          "INSERT INTO query_runs(id,status,source) VALUES(?1,'running',?2) RETURNING *",
-          [id, source],
+          "INSERT INTO query_runs(id,status,source,batch) VALUES(?1,'running',?2,?3) RETURNING *",
+          [id, source, batch],
         ).rows[0];
         c.query("COMMIT");
       } catch (e) {
@@ -667,7 +688,13 @@ export async function buildApp(
         promise?: Promise<void>;
       } = { controller: new AbortController() };
       live.set(id, state);
-      state.promise = performRun(id, engine, source, state);
+      state.promise = batch
+        ? performDateBatch({ db, id, engine, source, state, batch, limits })
+            .catch((error) => app.log.error(error))
+            .finally(() => {
+              live.delete(id);
+            })
+        : performRun(id, engine, source, state);
       return runDto(created);
     }
     async function performRun(
@@ -900,6 +927,16 @@ export async function buildApp(
           resultId,
         ]).rows[0];
         if (!r) throw err(400, "Результат блока не найден");
+        if (
+          c.query(
+            "SELECT id FROM query_runs WHERE result_set_id=?1 AND status IN ('running','cancelling')",
+            [resultId],
+          ).rowCount
+        )
+          throw err(
+            409,
+            "Дождитесь завершения или остановите пакет перед добавлением результата на доску",
+          );
         if (
           document.nodes.some(
             (n) => n.data.resultSetId === resultId && n.data.view === "chart",

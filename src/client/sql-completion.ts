@@ -4,6 +4,8 @@ import type {
   SchemaTable,
   SqlFunctionCatalog,
 } from "../shared/types";
+import type { MetadataSchema } from "../shared/metadata";
+import type { MetadataStore } from "./metadata-store";
 import {
   clickhouseFunctionSuggestions,
   clickhouseKeywords,
@@ -208,13 +210,19 @@ function references(sql: string, context: Context = {}) {
         context.engine !== "clickhouse" ||
         !/\bARRAY\s+$/i.test(code.slice(0, match.index)),
     )
-    .map((match) => ({
-      path: parts(match[1]),
-      alias:
-        match[2] && !dialectReserved.has(match[2].toUpperCase())
-          ? parts(match[2])[0]
-          : undefined,
-    }));
+    .map((match) => {
+      const start =
+        match.index! + /^(?:FROM|JOIN)\s+/i.exec(match[0])![0].length;
+      return {
+        path: parts(match[1]),
+        start,
+        end: start + match[1].length,
+        alias:
+          match[2] && !dialectReserved.has(match[2].toUpperCase())
+            ? parts(match[2])[0]
+            : undefined,
+      };
+    });
 }
 
 export function referencedSqlTables(
@@ -245,11 +253,24 @@ export function sqlSuggestions(
   tables: SchemaTable[],
   context: Context = {},
   catalog?: SqlFunctionCatalog,
+  options: { schemas?: MetadataSchema[]; prefix?: string; limit?: number } = {},
 ): SqlSuggestion[] {
   const scanned = scanSql(beforeCursor, context.engine === "clickhouse");
   if (!scanned.inCode) return [];
   const qualifier = qualifierAtCursor(beforeCursor);
   const suggestions: SqlSuggestion[] = [];
+  const limit = options.limit ?? Infinity;
+  const prefix = options.prefix?.toLocaleLowerCase();
+  const counts = new Map<SqlSuggestion["kind"], number>();
+  const canAdd = (kind: SqlSuggestion["kind"]) =>
+    (counts.get(kind) || 0) < limit;
+  const accepts = (label: string) =>
+    prefix === undefined || label.toLocaleLowerCase().startsWith(prefix);
+  const add = (item: SqlSuggestion) => {
+    if (!canAdd(item.kind)) return;
+    counts.set(item.kind, (counts.get(item.kind) || 0) + 1);
+    suggestions.push(item);
+  };
   const referenced = referencedSqlTables(sql, tables, context);
   const aliasReference =
     qualifier.length === 1
@@ -269,19 +290,26 @@ export function sqlSuggestions(
       : tables.filter((table) => matches(tableParts(table), qualifier))
     : referenced;
   for (const table of columnTables) {
-    for (const column of table.columns || [])
-      suggestions.push({
-        label: column.name,
-        insertText: quote(column.name, context),
-        kind: "column",
-        detail: `${tableParts(table).join(".")} · ${column.type}`,
-      });
+    for (const column of table.columns || []) {
+      if (!canAdd("column")) break;
+      if (accepts(column.name))
+        add({
+          label: column.name,
+          insertText: quote(column.name, context),
+          kind: "column",
+          detail: `${tableParts(table).join(".")} · ${column.type}`,
+        });
+    }
   }
   if (!aliasReference) {
     for (const table of tables) {
+      if (!canAdd("table")) break;
       const path = tableParts(table);
-      if (!qualifier.length || matches(path.slice(0, -1), qualifier))
-        suggestions.push({
+      if (
+        accepts(table.name) &&
+        (!qualifier.length || matches(path.slice(0, -1), qualifier))
+      )
+        add({
           label: table.name,
           insertText: qualifier.length
             ? quote(table.name, context)
@@ -290,22 +318,27 @@ export function sqlSuggestions(
           detail: path.slice(0, -1).join("."),
         });
     }
-    const schemas = new Map<string, string>();
-    for (const table of tables) {
-      const path = tableParts(table).slice(0, -1);
+    const schemas = new Map<string, { insertText: string; name: string }>();
+    for (const scope of options.schemas || tables) {
+      const path = [scope.catalog, scope.schema].filter(
+        (part): part is string => Boolean(part),
+      );
       if (!qualifier.length)
-        schemas.set(
-          path.join("."),
-          path.map((part) => quote(part, context)).join("."),
-        );
+        schemas.set(path.join("."), {
+          insertText: path.map((part) => quote(part, context)).join("."),
+          name: scope.schema,
+        });
       else if (matches(path.slice(0, -1), qualifier))
-        schemas.set(
-          path[path.length - 1],
-          quote(path[path.length - 1], context),
-        );
+        schemas.set(path[path.length - 1], {
+          insertText: quote(path[path.length - 1], context),
+          name: scope.schema,
+        });
     }
-    for (const [label, insertText] of schemas)
-      suggestions.push({ label, insertText, kind: "schema" });
+    for (const [label, { insertText, name }] of schemas) {
+      if (!canAdd("schema")) break;
+      if (accepts(label) || accepts(name))
+        add({ label, insertText, kind: "schema" });
+    }
     if (!qualifier.length) {
       const vocabulary =
         context.engine === "clickhouse"
@@ -317,110 +350,181 @@ export function sqlSuggestions(
               ...clickhouseKeywords,
             ]
           : keywords;
-      suggestions.push(
-        ...vocabulary.map((keyword) =>
-          keywordSuggestion(keyword, scanned.code),
-        ),
-      );
+      for (const keyword of vocabulary) {
+        if (!canAdd("keyword")) break;
+        const item = keywordSuggestion(keyword, scanned.code);
+        if (accepts(item.filterText || item.insertText)) add(item);
+      }
       if (context.engine === "clickhouse") {
         const prefix =
           scanned.code.match(/[\p{L}_$][\p{L}\p{N}_$]*$/u)?.[0] || "";
-        suggestions.push(...clickhouseFunctionSuggestions(prefix, catalog));
+        for (const item of clickhouseFunctionSuggestions(prefix, catalog)) {
+          if (!canAdd("function")) break;
+          if (accepts(item.filterText || item.label)) add(item);
+        }
       }
     }
   }
-  return suggestions;
+  if (suggestions.length <= limit) return suggestions;
+  // Keep every relevant category available when a large schema has hundreds of
+  // identically prefixed tables. Construct at most `limit` items per category,
+  // then interleave them into one bounded list; Monaco ranks the matches.
+  const groups = (
+    ["column", "schema", "keyword", "function", "table"] as const
+  ).map((kind) => suggestions.filter((item) => item.kind === kind));
+  const bounded: SqlSuggestion[] = [];
+  for (let index = 0; bounded.length < limit; index++) {
+    let added = false;
+    for (const group of groups) {
+      if (group[index] && bounded.length < limit) {
+        bounded.push(group[index]);
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
+  return bounded;
 }
 
-// Each connection owns its metadata, independent of the Explorer's visibility or selection.
-// Share in-flight work; remove failed requests so a later completion can retry.
-export function createSqlMetadataLoader(
-  request: <T>(path: string) => Promise<T>,
-) {
-  const schemas = new Map<string, Promise<SchemaTable[]>>();
-  const functionCatalogs = new Map<string, Promise<SqlFunctionCatalog>>();
-  const columns = new Map<
-    string,
-    Promise<NonNullable<SchemaTable["columns"]>>
-  >();
-  function schema(connectionId: string) {
-    let pending = schemas.get(connectionId);
-    if (!pending) {
-      pending = request<SchemaTable[]>(
-        `/api/connections/${encodeURIComponent(connectionId)}/schema`,
-      );
-      schemas.set(connectionId, pending);
-      pending.catch(() => {
-        if (schemas.get(connectionId) === pending) schemas.delete(connectionId);
-      });
-    }
-    return pending;
-  }
+// Explorer and completions use the same store; SQL only supplies foreground
+// priorities. The store continues discovering all other metadata in the background.
+export function createSqlMetadataLoader(metadata: MetadataStore) {
   return {
-    schema,
-    functionCatalog(connectionId: string) {
-      let pending = functionCatalogs.get(connectionId);
-      if (!pending) {
-        pending = request<SqlFunctionCatalog>(
-          `/api/connections/${encodeURIComponent(connectionId)}/functions`,
-        );
-        functionCatalogs.set(connectionId, pending);
-        pending.catch(() => {
-          if (functionCatalogs.get(connectionId) === pending)
-            functionCatalogs.delete(connectionId);
-        });
-      }
-      return pending;
-    },
+    functionCatalog: (connectionId: string) =>
+      metadata.functionCatalog(connectionId),
     async tables(
       connectionId: string,
       sql: string,
       context: Context = {},
       beforeCursor = sql,
     ) {
-      const tables = await schema(connectionId);
+      metadata.activate(connectionId, context);
       const qualifier = qualifierAtCursor(beforeCursor);
-      const referenced = [
-        ...new Set([
-          ...referencedSqlTables(sql, tables, context),
-          ...tables.filter(
-            (table) =>
-              qualifier.length && matches(tableParts(table), qualifier),
+      const scopes = new Map<string, MetadataSchema>();
+      const wanted = new Map<string, SchemaTable>();
+      const addScope = (scope: MetadataSchema) => {
+        scopes.set(JSON.stringify([scope.catalog, scope.schema]), scope);
+      };
+      const addTable = (table: SchemaTable) => {
+        wanted.set(JSON.stringify(tableParts(table)), table);
+      };
+      const defaultSchema = context.schema || context.database;
+      if (defaultSchema)
+        addScope({ catalog: context.catalog, schema: defaultSchema });
+      const resolve = (path: string[]) => {
+        if (path.length === 3)
+          addTable({ catalog: path[0], schema: path[1], name: path[2] });
+        else if (path.length === 2)
+          addTable({
+            catalog: context.catalog,
+            schema: path[0],
+            name: path[1],
+          });
+        else if (path.length === 1 && defaultSchema)
+          addTable({
+            catalog: context.catalog,
+            schema: defaultSchema,
+            name: path[0],
+          });
+      };
+      const sqlReferences = references(sql, context);
+      const cursor = beforeCursor.length;
+      for (const reference of sqlReferences) {
+        const trailingDot =
+          cursor > reference.end &&
+          /^\s*\.\s*$/.test(beforeCursor.slice(reference.end));
+        if (
+          (cursor >= reference.start && cursor <= reference.end) ||
+          trailingDot
+        ) {
+          // Prefixes such as e/ex/exi are schema-list filters, not exact table
+          // requests. Otherwise slow connectors accumulate uncancellable work
+          // ahead of the next useful completion as the user types.
+          const scopePath = trailingDot
+            ? reference.path
+            : reference.path.slice(0, -1);
+          if (scopePath.length === 2)
+            addScope({ catalog: scopePath[0], schema: scopePath[1] });
+          else if (scopePath.length === 1 && scopePath[0] !== context.catalog)
+            addScope({ catalog: context.catalog, schema: scopePath[0] });
+        } else resolve(reference.path);
+      }
+      const alias =
+        qualifier.length === 1 &&
+        sqlReferences.some(
+          (reference) =>
+            reference.alias &&
+            normalize(reference.alias) === normalize(qualifier[0]),
+        );
+      const knownSchemas = metadata.getSnapshot(connectionId).schemas;
+      const matchingSchemas = knownSchemas.filter((scope) =>
+        matches(
+          [scope.catalog, scope.schema].filter((part): part is string =>
+            Boolean(part),
           ),
-        ]),
-      ];
-      await Promise.all(
-        referenced.map(async (table) => {
-          if (table.columns) return;
-          const key = JSON.stringify([
-            connectionId,
-            table.catalog,
-            table.schema,
-            table.name,
-          ]);
-          let pending = columns.get(key);
-          if (!pending) {
-            const query = new URLSearchParams({
-              schema: table.schema,
-              table: table.name,
-              ...(table.catalog ? { catalog: table.catalog } : {}),
-            });
-            pending = request<NonNullable<SchemaTable["columns"]>>(
-              `/api/connections/${encodeURIComponent(connectionId)}/columns?${query}`,
-            );
-            columns.set(key, pending);
-            pending.catch(() => {
-              if (columns.get(key) === pending) columns.delete(key);
-            });
-          }
-          try {
-            table.columns = await pending;
-          } catch {
-            /* Table suggestions remain available when columns fail. */
-          }
-        }),
+          qualifier,
+        ),
       );
-      return tables;
+      const relationQualifier = /\b(?:FROM|JOIN)\s+[^,;]*$/i.test(
+        scanSql(beforeCursor, context.engine === "clickhouse").code,
+      );
+      if (qualifier.length && !alias) {
+        if (matchingSchemas.length) {
+          for (const scope of matchingSchemas) addScope(scope);
+        } else if (relationQualifier && qualifier.length <= 2) {
+          // A bare catalog qualifier only needs schema names, not every table.
+          const isCatalog =
+            qualifier.length === 1 &&
+            (qualifier[0] === context.catalog ||
+              knownSchemas.some((scope) => scope.catalog === qualifier[0]));
+          if (!isCatalog)
+            addScope(
+              qualifier.length === 2
+                ? { catalog: qualifier[0], schema: qualifier[1] }
+                : { catalog: context.catalog, schema: qualifier[0] },
+            );
+        } else resolve(qualifier);
+      }
+      for (const table of referencedSqlTables(
+        sql,
+        metadata.getTables(connectionId),
+        context,
+      ))
+        addTable(table);
+      for (const table of metadata.getTables(connectionId))
+        if (qualifier.length && matches(tableParts(table), qualifier))
+          addTable(table);
+
+      // Start exact SQL targets alongside schema discovery. Neither a long schema
+      // listing nor a huge first table page delays an explicitly named table.
+      const requested = [...wanted.values()].map(async (table) => {
+        await metadata.loadTable(connectionId, table);
+        const discovered = metadata
+          .getTables(connectionId)
+          .find(
+            (candidate) =>
+              candidate.name === table.name &&
+              candidate.schema === table.schema &&
+              (!table.catalog || candidate.catalog === table.catalog),
+          );
+        if (discovered) await metadata.loadColumns(connectionId, discovered);
+      });
+      await Promise.allSettled([
+        metadata.ensureSchemas(connectionId),
+        ...[...scopes.values()].map((scope) =>
+          metadata.loadTables(connectionId, scope),
+        ),
+        ...requested,
+      ]);
+      // A reference without a default schema may become resolvable from pages
+      // discovered while the explicit requests above were running.
+      const cached = metadata.getTables(connectionId);
+      await Promise.allSettled(
+        referencedSqlTables(sql, cached, context)
+          .filter((table) => !table.columns)
+          .map((table) => metadata.loadColumns(connectionId, table)),
+      );
+      return metadata.getTables(connectionId);
     },
   };
 }

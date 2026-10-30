@@ -310,6 +310,61 @@ it("persists compact chart formatting alongside legacy axis labels", async () =>
     (await request("GET", url)).json().document.nodes[0].data.chart,
   ).toEqual({ ...chart, kind: "scatter" });
 });
+it("persists chart orientation across board saves and rejects invalid updates", async () => {
+  const chart = {
+    kind: "bar",
+    x: "region",
+    y: ["revenue"],
+    legend: true,
+  };
+  const document = (settings: typeof chart & { orientation?: unknown }) => ({
+    schemaVersion: 1,
+    nodes: [
+      {
+        id: "orientation",
+        type: "artifact",
+        position: { x: 0, y: 0 },
+        data: { kind: "note", title: "Chart orientation", chart: settings },
+      },
+    ],
+    edges: [],
+  });
+  const created = await request("POST", "/api/boards", {
+    name: "Chart orientation",
+    document: document(chart),
+  });
+  expect(created.statusCode, created.body).toBe(201);
+  const url = `/api/boards/${created.json().id}`;
+  let revision = created.json().revision;
+  expect((await request("GET", url)).json().document).toEqual(document(chart));
+
+  for (const settings of [
+    { ...chart, orientation: "horizontal" },
+    { ...chart, kind: "line", orientation: "horizontal" },
+    { ...chart, orientation: "vertical" },
+  ]) {
+    const updated = await request("PATCH", url, {
+      baseRevision: revision,
+      document: document(settings),
+    });
+    expect(updated.statusCode, updated.body).toBe(200);
+    revision = updated.json().revision;
+    expect((await request("GET", url)).json().document).toEqual(
+      document(settings),
+    );
+  }
+
+  const rejected = await request("PATCH", url, {
+    baseRevision: revision,
+    document: document({ ...chart, orientation: "diagonal" }),
+  });
+  expect(rejected.statusCode, rejected.body).toBe(400);
+  const saved = (await request("GET", url)).json();
+  expect(saved.revision).toBe(revision);
+  expect(saved.document).toEqual(
+    document({ ...chart, orientation: "vertical" }),
+  );
+});
 it("rejects malformed multibyte CSRF tokens without server errors", async () => {
   const res = await app.inject({
     method: "POST",

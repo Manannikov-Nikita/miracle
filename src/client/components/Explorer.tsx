@@ -1,17 +1,18 @@
-import { useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   ArrowClockwise,
-  CaretDown,
   CaretRight,
   ClockCounterClockwise,
   Code,
   Database,
   MagnifyingGlass,
   Plus,
-  Table,
-  Hash,
-  TextT,
-  Trash,
   X,
 } from "@phosphor-icons/react";
 import type {
@@ -19,18 +20,20 @@ import type {
   QueryDocument,
   QueryRun,
   QuerySource,
-  SchemaTable,
 } from "../../shared/types";
 import { api } from "../api";
-import { EmptyState, IconButton, Spinner } from "./UI";
+import { IconButton } from "./UI";
+import type { MetadataStore } from "../metadata-store";
+import SourceSchemaTree, { type ExplorerSourceView } from "./SourceSchemaTree";
+export type { ExplorerSourceView } from "./SourceSchemaTree";
 export type ExplorerKind = "sources" | "queries" | "history";
 export default function Explorer({
   kind,
   connections,
   activeConnectionId,
   onConnectionChange,
-  schema,
-  onSchemaChange,
+  metadata,
+  sourceViews,
   onOpenConnections,
   onOpenQuery,
   onOpenSource,
@@ -42,8 +45,8 @@ export default function Explorer({
   connections: Connection[];
   activeConnectionId: string;
   onConnectionChange: (id: string) => void;
-  schema: SchemaTable[];
-  onSchemaChange: (s: SchemaTable[]) => void;
+  metadata: MetadataStore;
+  sourceViews?: Map<string, ExplorerSourceView>;
   onOpenConnections: () => void;
   onOpenQuery: (q: QueryDocument) => void;
   onOpenSource: (q: QuerySource) => void;
@@ -54,20 +57,28 @@ export default function Explorer({
   const [filter, setFilter] = useState("");
   const [queries, setQueries] = useState<QueryDocument[]>([]);
   const [history, setHistory] = useState<QueryRun[]>([]);
-  const [expanded, setExpanded] = useState(new Set<string>());
+  const localViews = useRef(new Map<string, ExplorerSourceView>());
+  const views = sourceViews || localViews.current;
+  const subscribe = useCallback(
+    (listener: () => void) => metadata.subscribe(activeConnectionId, listener),
+    [metadata, activeConnectionId],
+  );
+  const getSnapshot = useCallback(
+    () => metadata.getSnapshot(activeConnectionId),
+    [metadata, activeConnectionId],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const source = connections.find((c) => c.id === activeConnectionId);
   async function reload() {
+    if (kind === "sources") {
+      if (activeConnectionId) metadata.refresh(activeConnectionId);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      if (kind === "sources" && activeConnectionId)
-        onSchemaChange(
-          await api<SchemaTable[]>(
-            `/api/connections/${activeConnectionId}/schema`,
-          ),
-        );
       if (kind === "queries")
         setQueries(await api<QueryDocument[]>("/api/queries"));
       if (kind === "history")
@@ -79,58 +90,32 @@ export default function Explorer({
     }
   }
   useEffect(() => {
+    if (source && kind === "sources") metadata.activate(source.id, source);
+  }, [metadata, source, kind]);
+  useEffect(() => {
+    if (kind === "sources") return;
     let valid = true;
-    if (kind === "sources" && activeConnectionId) {
-      setLoading(true);
-      setError("");
-      onSchemaChange([]);
-      api<SchemaTable[]>(`/api/connections/${activeConnectionId}/schema`)
-        .then((s) => {
-          if (valid) onSchemaChange(s);
-        })
-        .catch((e) => {
-          if (valid) setError(e.message);
-        })
-        .finally(() => {
-          if (valid) setLoading(false);
-        });
-    } else if (kind !== "sources") void reload();
+    setLoading(true);
+    setError("");
+    const request =
+      kind === "queries"
+        ? api<QueryDocument[]>("/api/queries").then((items) => {
+            if (valid) setQueries(items);
+          })
+        : api<QueryRun[]>("/api/query-runs?limit=30").then((items) => {
+            if (valid) setHistory(items);
+          });
+    void request
+      .catch((e: Error) => {
+        if (valid) setError(e.message);
+      })
+      .finally(() => {
+        if (valid) setLoading(false);
+      });
     return () => {
       valid = false;
     };
-  }, [kind, activeConnectionId, queryRevision]);
-  async function toggle(t: SchemaTable) {
-    const key = `${t.catalog || ""}.${t.schema}.${t.name}`;
-    const next = new Set(expanded);
-    if (next.has(key)) next.delete(key);
-    else {
-      next.add(key);
-      if (!t.columns) {
-        try {
-          const qs = new URLSearchParams({
-            schema: t.schema,
-            table: t.name,
-            ...(t.catalog ? { catalog: t.catalog } : {}),
-          });
-          const columns = await api<{ name: string; type: string }[]>(
-            `/api/connections/${activeConnectionId}/columns?${qs}`,
-          );
-          onSchemaChange(
-            schema.map((s) =>
-              s.name === t.name &&
-              s.schema === t.schema &&
-              s.catalog === t.catalog
-                ? { ...s, columns }
-                : s,
-            ),
-          );
-        } catch (e) {
-          onNotify((e as Error).message, "error");
-        }
-      }
-    }
-    setExpanded(next);
-  }
+  }, [kind, queryRevision]);
   const title =
     kind === "sources"
       ? "Источники данных"
@@ -150,9 +135,18 @@ export default function Explorer({
           <IconButton
             label="Обновить список"
             onClick={reload}
-            disabled={loading}
+            disabled={
+              kind === "sources" ? snapshot.status === "loading" : loading
+            }
           >
-            <ArrowClockwise size={14} className={loading ? "spin" : ""} />
+            <ArrowClockwise
+              size={14}
+              className={
+                (kind === "sources" ? snapshot.status === "loading" : loading)
+                  ? "spin"
+                  : ""
+              }
+            />
           </IconButton>
           {onClose && (
             <IconButton label="Закрыть обозреватель" onClick={onClose}>
@@ -171,6 +165,14 @@ export default function Explorer({
         />
       </div>
       <div className="explorer-body">
+        {kind !== "sources" && error && (
+          <div className="explorer-error" role="alert">
+            {error}
+            <button className="text-button" onClick={reload}>
+              Повторить
+            </button>
+          </div>
+        )}
         {kind === "sources" && (
           <>
             <div className="explorer-section-label">
@@ -191,101 +193,14 @@ export default function Explorer({
               </button>
             ))}
             {source && (
-              <>
-                <div className="explorer-section-label schema-label">
-                  {source.database || source.catalog || "СХЕМЫ"}
-                  <span>{schema.length}</span>
-                </div>
-                {loading && (
-                  <div className="explorer-loading">
-                    <Spinner />
-                    Читаем схему…
-                  </div>
-                )}
-                {error && (
-                  <div className="explorer-error" role="alert">
-                    {error}
-                    <button className="text-button" onClick={reload}>
-                      Повторить
-                    </button>
-                  </div>
-                )}
-                {schema
-                  .filter((t) =>
-                    `${t.schema}.${t.name}`
-                      .toLowerCase()
-                      .includes(filter.toLowerCase()),
-                  )
-                  .map((t) => {
-                    const key = `${t.catalog || ""}.${t.schema}.${t.name}`;
-                    return (
-                      <div key={key}>
-                        <button
-                          className="table-tree-item"
-                          onClick={() => toggle(t)}
-                          onDoubleClick={() =>
-                            onOpenSource({
-                              connectionId: source.id,
-                              sql: `SELECT *\nFROM ${[
-                                t.catalog,
-                                t.schema,
-                                t.name,
-                              ]
-                                .filter((s): s is string => Boolean(s))
-                                .map((s) => `"${s.replaceAll('"', '""')}"`)
-                                .join(".")}\nLIMIT 100;`,
-                              database: source.database,
-                              catalog: t.catalog || source.catalog,
-                              schema: t.schema,
-                            })
-                          }
-                        >
-                          <span>
-                            {expanded.has(key) ? (
-                              <CaretDown size={11} />
-                            ) : (
-                              <CaretRight size={11} />
-                            )}
-                          </span>
-                          <Table size={14} />
-                          <span>{t.name}</span>
-                          <small title={t.schema}>
-                            {t.schema === source.schema ||
-                            t.schema === source.database
-                              ? ""
-                              : t.schema}
-                          </small>
-                        </button>
-                        {expanded.has(key) && (
-                          <div className="columns-tree">
-                            {t.columns ? (
-                              t.columns.map((c, i) => (
-                                <div key={`${c.name}-${i}`}>
-                                  <span>
-                                    {/int|decimal|float|double|numeric/i.test(
-                                      c.type,
-                                    ) ? (
-                                      <Hash size={12} />
-                                    ) : (
-                                      <TextT size={12} />
-                                    )}
-                                  </span>
-                                  <span>{c.name}</span>
-                                  <small>{c.type}</small>
-                                </div>
-                              ))
-                            ) : (
-                              <div>
-                                <Spinner />
-                                Загрузка…
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-              </>
+              <SourceSchemaTree
+                source={source}
+                metadata={metadata}
+                snapshot={snapshot}
+                views={views}
+                filter={filter}
+                onOpenSource={onOpenSource}
+              />
             )}
             {!connections.length && (
               <div className="explorer-placeholder">
