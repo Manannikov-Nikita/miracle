@@ -20,14 +20,12 @@ import type {
   QueryRun,
   QuerySource,
   SchemaTable,
-  User,
 } from "../../shared/types";
 import { api } from "../api";
 import { EmptyState, IconButton, Spinner } from "./UI";
 export type ExplorerKind = "sources" | "queries" | "history";
 export default function Explorer({
   kind,
-  user,
   connections,
   activeConnectionId,
   onConnectionChange,
@@ -41,7 +39,6 @@ export default function Explorer({
   onClose,
 }: {
   kind: ExplorerKind;
-  user: User;
   connections: Connection[];
   activeConnectionId: string;
   onConnectionChange: (id: string) => void;
@@ -145,7 +142,7 @@ export default function Explorer({
       <div className="explorer-heading">
         <strong>{title}</strong>
         <div>
-          {kind === "sources" && user.role === "admin" && (
+          {kind === "sources" && (
             <IconButton label="Добавить источник" onClick={onOpenConnections}>
               <Plus size={14} />
             </IconButton>
@@ -297,11 +294,9 @@ export default function Explorer({
                   Данные начинаются
                   <br />с подключения
                 </p>
-                {user.role === "admin" && (
-                  <button className="button small" onClick={onOpenConnections}>
-                    Добавить источник
-                  </button>
-                )}
+                <button className="button small" onClick={onOpenConnections}>
+                  Добавить источник
+                </button>
               </div>
             )}
           </>
@@ -309,7 +304,7 @@ export default function Explorer({
         {kind === "queries" && (
           <>
             <div className="explorer-section-label">
-              ОБЩИЕ ФАЙЛЫ <span>{queries.length}</span>
+              SQL-ФАЙЛЫ <span>{queries.length}</span>
             </div>
             {queries
               .filter((q) =>
@@ -396,7 +391,7 @@ export default function Explorer({
       </div>
       <div className="explorer-footer">
         <span className="status-dot" />
-        Общая рабочая область
+        Рабочая область
       </div>
     </aside>
   );

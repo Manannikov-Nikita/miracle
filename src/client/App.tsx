@@ -5,35 +5,25 @@ import type {
   QueryDocument,
   ResultSet,
   SchemaTable,
-  User,
 } from "../shared/types";
-import { api, setCsrfToken } from "./api";
-import Auth from "./components/Auth";
-import Setup from "./components/Setup";
+import { api, openLocalSession } from "./api";
 import { Brand, ErrorBox, Modal, Spinner, Toasts } from "./components/UI";
 import Connections from "./components/Connections";
-import Team from "./components/Team";
 import Explorer, { type ExplorerKind } from "./components/Explorer";
 import SqlWorkspace, { type SqlSourceRequest } from "./components/SqlWorkspace";
 import BoardWorkspace from "./board/BoardWorkspace";
 import WorkspaceRail, { type PaneMode } from "./components/WorkspaceRail";
-export default function App({
-  setupToken = null,
-}: {
-  setupToken?: string | null;
-}) {
-  const [setupRequired, setSetupRequired] = useState(false);
-  const [setupCredential, setSetupCredential] = useState(setupToken);
-  const [user, setUser] = useState<User | null>(null);
+export default function App() {
+  const [workspaceId, setWorkspaceId] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [workspaceError, setWorkspaceError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionId, setConnectionId] = useState("");
   const [schema, setSchema] = useState<SchemaTable[]>([]);
   const [explorer, setExplorer] = useState<ExplorerKind | null>("sources");
   const [explorerDrawer, setExplorerDrawer] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
-  const [teamOpen, setTeamOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [queryRevision, setQueryRevision] = useState(0);
   const [sourceToOpen, setSourceToOpen] = useState<SqlSourceRequest | null>(
@@ -64,11 +54,11 @@ export default function App({
     },
     [],
   );
-  function acceptUser(next: User | null) {
+  function acceptWorkspace(next: string) {
     if (next) {
       try {
         const saved = JSON.parse(
-          localStorage.getItem(`miracle:view:${next.id}`) || "{}",
+          localStorage.getItem(`miracle:view:${next}`) || "{}",
         );
         setPaneMode(
           ["sql", "board"].includes(saved.paneMode) ? saved.paneMode : "split",
@@ -86,37 +76,31 @@ export default function App({
         setExplorer("sources");
       }
     }
-    setUser(next);
+    setWorkspaceId(next);
   }
   useEffect(() => {
-    if (user)
+    if (workspaceId)
       localStorage.setItem(
-        `miracle:view:${user.id}`,
+        `miracle:view:${workspaceId}`,
         JSON.stringify({ paneMode, mobileTab, explorer }),
       );
-  }, [user, paneMode, mobileTab, explorer]);
+  }, [workspaceId, paneMode, mobileTab, explorer]);
   function savedLayout() {
     try {
       const saved = JSON.parse(
-        localStorage.getItem(`miracle:workspace-layout:${user?.id}`) || "null",
+        localStorage.getItem(`miracle:workspace-layout:${workspaceId}`) ||
+          "null",
       );
       if (saved?.sql > 5 && saved?.board > 5) return saved;
     } catch {}
     return { sql: 45, board: 55 };
   }
-  async function loadMe() {
+  async function loadWorkspace() {
     setLoading(true);
     setLoadError("");
     try {
-      const status = await api<{ required: boolean }>("/api/setup/status");
-      setSetupRequired(status.required);
-      if (status.required) return;
-      setSetupCredential(null);
-      const r = await api<{ user: User | null; csrfToken: string }>(
-        "/api/auth/me",
-      );
-      setCsrfToken(r.csrfToken);
-      acceptUser(r.user);
+      const session = await openLocalSession();
+      acceptWorkspace(session.workspaceId);
     } catch (e) {
       setLoadError((e as Error).message);
     } finally {
@@ -124,50 +108,47 @@ export default function App({
     }
   }
   useEffect(() => {
-    void loadMe();
-    const unauthorized = () => {
-      setUser(null);
-      setCsrfToken("");
-      notify("Сессия завершена. Войдите снова.", "info");
-    };
-    window.addEventListener("miracle:unauthorized", unauthorized);
+    const changed = (event: Event) =>
+      setWorkspaceError((event as CustomEvent<string>).detail);
+    window.addEventListener("miracle:workspace-changed", changed);
+    void loadWorkspace();
     return () => {
-      window.removeEventListener("miracle:unauthorized", unauthorized);
+      window.removeEventListener("miracle:workspace-changed", changed);
       for (const timer of toastTimers.current) clearTimeout(timer);
     };
   }, []);
   const loadConnections = useCallback(async () => {
-    if (!user) return;
+    if (!workspaceId) return;
     try {
       const c = await api<Connection[]>("/api/connections");
       setConnections(c);
       setConnectionId((id) =>
         c.some((x) => x.id === id)
           ? id
-          : localStorage.getItem(`miracle:connection:${user.id}`) &&
+          : localStorage.getItem(`miracle:connection:${workspaceId}`) &&
               c.some(
                 (x) =>
                   x.id ===
-                  localStorage.getItem(`miracle:connection:${user.id}`),
+                  localStorage.getItem(`miracle:connection:${workspaceId}`),
               )
-            ? localStorage.getItem(`miracle:connection:${user.id}`)!
+            ? localStorage.getItem(`miracle:connection:${workspaceId}`)!
             : c[0]?.id || "",
       );
     } catch (e) {
       notify((e as Error).message, "error");
     }
-  }, [user, notify]);
+  }, [workspaceId, notify]);
   useEffect(() => {
-    if (user) void loadConnections();
+    if (workspaceId) void loadConnections();
     else {
       setConnections([]);
       setSchema([]);
     }
-  }, [user, loadConnections]);
+  }, [workspaceId, loadConnections]);
   useEffect(() => {
-    if (user && connectionId)
-      localStorage.setItem(`miracle:connection:${user.id}`, connectionId);
-  }, [user, connectionId]);
+    if (workspaceId && connectionId)
+      localStorage.setItem(`miracle:connection:${workspaceId}`, connectionId);
+  }, [workspaceId, connectionId]);
   useEffect(() => {
     const media = window.matchMedia("(max-width:1023px)");
     const handler = () => setNarrow(media.matches);
@@ -175,7 +156,7 @@ export default function App({
     return () => media.removeEventListener("change", handler);
   }, []);
   useEffect(() => {
-    if (!user) return;
+    if (!workspaceId) return;
     const handle = requestAnimationFrame(() => {
       if (narrow) {
         group.current?.setLayout(
@@ -188,7 +169,7 @@ export default function App({
       else {
         try {
           const stored = JSON.parse(
-            localStorage.getItem(`miracle:workspace-layout:${user.id}`) ||
+            localStorage.getItem(`miracle:workspace-layout:${workspaceId}`) ||
               "null",
           );
           group.current?.setLayout(
@@ -202,7 +183,7 @@ export default function App({
       }
     });
     return () => cancelAnimationFrame(handle);
-  }, [narrow, mobileTab, paneMode, user]);
+  }, [narrow, mobileTab, paneMode, workspaceId]);
   const showSql = () => {
     if (narrow) setMobileTab("sql");
     else if (paneMode === "board") setPaneMode("split");
@@ -211,23 +192,9 @@ export default function App({
     if (narrow) setMobileTab("board");
     else if (paneMode === "sql") setPaneMode("split");
   };
-  async function logout() {
-    try {
-      await api("/api/auth/logout", { method: "POST" });
-      setUser(null);
-      setConnections([]);
-      setConnectionId("");
-      setSourceToOpen(null);
-      setSavedToOpen(null);
-      setIncomingResult(null);
-      setCsrfToken("");
-      await loadMe();
-    } catch (e) {
-      notify((e as Error).message, "error");
-    }
-  }
   function resetLayout() {
-    if (user) localStorage.removeItem(`miracle:workspace-layout:${user.id}`);
+    if (workspaceId)
+      localStorage.removeItem(`miracle:workspace-layout:${workspaceId}`);
     setPaneMode("split");
     group.current?.setLayout(
       narrow
@@ -253,41 +220,16 @@ export default function App({
       <div className="app-loading">
         <Brand large />
         <ErrorBox>{loadError}</ErrorBox>
-        <button className="button primary" onClick={loadMe}>
+        <button className="button primary" onClick={loadWorkspace}>
           Подключиться снова
         </button>
       </div>
     );
-  if (!user)
-    return (
-      <>
-        {setupRequired ? (
-          <Setup
-            token={setupCredential}
-            onComplete={(next) => {
-              setSetupRequired(false);
-              setSetupCredential(null);
-              acceptUser(next);
-            }}
-            onInitialized={() => {
-              setSetupCredential(null);
-              void loadMe();
-            }}
-          />
-        ) : (
-          <Auth onLogin={acceptUser} />
-        )}
-        <Toasts
-          items={toasts}
-          onDismiss={(id) => setToasts((s) => s.filter((t) => t.id !== id))}
-        />
-      </>
-    );
   return (
     <div className="app-shell">
+      {workspaceError && <ErrorBox>{workspaceError}</ErrorBox>}
       <div className="workspace-body">
         <WorkspaceRail
-          user={user}
           narrow={narrow}
           mode={narrow ? mobileTab : paneMode}
           explorer={narrow && !explorerDrawer ? null : explorer}
@@ -313,16 +255,13 @@ export default function App({
             notify("Размеры панелей восстановлены", "success");
           }}
           onConnections={() => setConnectionsOpen(true)}
-          onTeam={() => setTeamOpen(true)}
           onHelp={() => setHelpOpen(true)}
-          onLogout={logout}
         />
         {explorer && (!narrow || explorerDrawer) && (
           <Explorer
             onClose={narrow ? () => setExplorerDrawer(false) : undefined}
-            key={user.id}
+            key={workspaceId}
             kind={explorer}
-            user={user}
             connections={connections}
             activeConnectionId={connectionId}
             onConnectionChange={setConnectionId}
@@ -351,9 +290,9 @@ export default function App({
             defaultLayout={savedLayout()}
             disabled={narrow}
             onLayoutChanged={(l) => {
-              if (user && !narrow && l.sql > 5 && l.board > 5)
+              if (workspaceId && !narrow && l.sql > 5 && l.board > 5)
                 localStorage.setItem(
-                  `miracle:workspace-layout:${user.id}`,
+                  `miracle:workspace-layout:${workspaceId}`,
                   JSON.stringify(l),
                 );
             }}
@@ -369,7 +308,8 @@ export default function App({
                 inert={narrow ? mobileTab !== "sql" : paneMode === "board"}
               >
                 <SqlWorkspace
-                  user={user}
+                  workspaceId={workspaceId}
+                  key={workspaceId}
                   connections={connections}
                   activeConnectionId={connectionId}
                   onConnectionChange={setConnectionId}
@@ -410,7 +350,8 @@ export default function App({
                 inert={narrow ? mobileTab !== "board" : paneMode === "sql"}
               >
                 <BoardWorkspace
-                  user={user}
+                  workspaceId={workspaceId}
+                  key={workspaceId}
                   incomingResult={incomingResult}
                   onIncomingConsumed={() => setIncomingResult(null)}
                   onOpenSource={(source, name) => {
@@ -427,19 +368,10 @@ export default function App({
       <Connections
         open={connectionsOpen}
         onClose={() => setConnectionsOpen(false)}
-        user={user}
         connections={connections}
         onChanged={loadConnections}
         onNotify={notify}
       />
-      {user.role === "admin" && (
-        <Team
-          open={teamOpen}
-          onClose={() => setTeamOpen(false)}
-          currentUser={user}
-          onNotify={notify}
-        />
-      )}
       <Modal
         open={helpOpen}
         onOpenChange={setHelpOpen}

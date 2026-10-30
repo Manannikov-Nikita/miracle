@@ -36,7 +36,6 @@ import type {
   ResultSet,
   SchemaTable,
   SqlFunctionCatalog,
-  User,
 } from "../../shared/types";
 import { api, json, waitForRun } from "../api";
 import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
@@ -112,7 +111,7 @@ export interface SqlSourceRequest {
   name?: string;
 }
 interface Props {
-  user: User;
+  workspaceId: string;
   connections: Connection[];
   activeConnectionId: string;
   onConnectionChange: (id: string) => void;
@@ -137,7 +136,7 @@ function loadTabs(key: string): Tab[] {
   }
 }
 export default function SqlWorkspace(p: Props) {
-  const storage = `miracle:sql-tabs:${p.user.id}`;
+  const storage = `miracle:sql-tabs:${p.workspaceId}`;
   const [tabs, setTabs] = useState<Tab[]>(() =>
     loadTabs(storage).length
       ? loadTabs(storage)
@@ -412,7 +411,6 @@ export default function SqlWorkspace(p: Props) {
   }, [connection, p.activeConnectionId, p.connections]);
   async function run() {
     const tab = activeRef.current;
-    if (p.user.role === "viewer") return;
     const conn = p.connections.find(
       (c) => c.id === (tab.connectionId || p.activeConnectionId),
     );
@@ -427,7 +425,7 @@ export default function SqlWorkspace(p: Props) {
     if (
       !model ||
       !position ||
-      model.uri.toString() !== `miracle-query://${p.user.id}/${tab.id}.sql`
+      model.uri.toString() !== `miracle-query://${p.workspaceId}/${tab.id}.sql`
     ) {
       p.onNotify("Редактор ещё открывает файл. Повторите запуск.", "info");
       return;
@@ -474,7 +472,6 @@ export default function SqlWorkspace(p: Props) {
     if (!running) void run();
   };
   function formatActive() {
-    if (p.user.role === "viewer") return;
     const editor = editorRef.current;
     const model = editor?.getModel();
     if (!editor || !model) return;
@@ -507,7 +504,6 @@ export default function SqlWorkspace(p: Props) {
   }
   formatAction.current = formatActive;
   saveAction.current = () => {
-    if (p.user.role === "viewer") return;
     setSaveName(activeRef.current.name);
     setSaveError("");
     setSaveOpen(true);
@@ -626,7 +622,7 @@ export default function SqlWorkspace(p: Props) {
       });
       setSaveOpen(false);
       p.onQueriesChanged();
-      p.onNotify("Запрос сохранён для команды", "success");
+      p.onNotify("Запрос сохранён", "success");
     } catch (e) {
       setSaveError((e as Error).message);
     } finally {
@@ -655,7 +651,8 @@ export default function SqlWorkspace(p: Props) {
   try {
     layout =
       JSON.parse(
-        localStorage.getItem(`miracle:editor-layout:${p.user.id}`) || "null",
+        localStorage.getItem(`miracle:editor-layout:${p.workspaceId}`) ||
+          "null",
       ) || undefined;
   } catch {}
   return (
@@ -756,14 +753,12 @@ export default function SqlWorkspace(p: Props) {
           </IconButton>
           <IconButton
             label="Форматировать SQL (⌥⌘L / Ctrl+Alt+L)"
-            disabled={p.user.role === "viewer"}
             onClick={formatActive}
           >
             <TextAlignLeft size={16} />
           </IconButton>
           <IconButton
             label="Сохранить SQL-файл (⌘S / Ctrl+S)"
-            disabled={p.user.role === "viewer"}
             onClick={() => {
               setSaveName(active.name);
               setSaveError("");
@@ -785,7 +780,6 @@ export default function SqlWorkspace(p: Props) {
             <button
               className="button run-button"
               title="Выполнить запрос под курсором или выделенный SQL (⌘ / Ctrl + Enter)"
-              disabled={p.user.role === "viewer"}
               onClick={run}
             >
               <Play weight="fill" size={12} />
@@ -839,7 +833,7 @@ export default function SqlWorkspace(p: Props) {
         defaultLayout={layout || { editor: 55, results: 45 }}
         onLayoutChanged={(l) => {
           localStorage.setItem(
-            `miracle:editor-layout:${p.user.id}`,
+            `miracle:editor-layout:${p.workspaceId}`,
             JSON.stringify(l),
           );
           setResultExpanded((l.results || 0) > 0);
@@ -849,7 +843,7 @@ export default function SqlWorkspace(p: Props) {
         <Panel id="editor" defaultSize="55%" minSize="100px" collapsible>
           <div className="editor-area">
             <Editor
-              path={`miracle-query://${p.user.id}/${active.id}.sql`}
+              path={`miracle-query://${p.workspaceId}/${active.id}.sql`}
               value={active.sql}
               onChange={(value) => patch(active.id, { sql: value || "" })}
               language={sqlLanguageForEngine(connection?.engine)}
@@ -876,7 +870,6 @@ export default function SqlWorkspace(p: Props) {
                 automaticLayout: true,
                 wordWrap: "off",
                 tabSize: 4,
-                readOnly: p.user.role === "viewer",
                 ariaLabel: "Редактор SQL",
                 quickSuggestions: true,
                 overviewRulerLanes: 0,
@@ -944,7 +937,7 @@ export default function SqlWorkspace(p: Props) {
                     </span>
                   </span>
                 )}
-                {result && p.user.role !== "viewer" && (
+                {result && (
                   <>
                     <span
                       role="button"
@@ -1006,20 +999,14 @@ export default function SqlWorkspace(p: Props) {
               <EmptyState
                 icon={<Database size={27} />}
                 title="Подключите первый источник"
-                description={
-                  p.user.role === "admin"
-                    ? "Добавьте ClickHouse или Trino, чтобы выполнить свой первый SQL-запрос."
-                    : "Администратор рабочей области может добавить ClickHouse или Trino."
-                }
+                description="Добавьте ClickHouse или Trino, чтобы выполнить свой первый SQL-запрос."
                 action={
-                  p.user.role === "admin" && (
-                    <button
-                      className="button primary"
-                      onClick={p.onOpenConnections}
-                    >
-                      <Plus size={16} /> Подключить источник
-                    </button>
-                  )
+                  <button
+                    className="button primary"
+                    onClick={p.onOpenConnections}
+                  >
+                    <Plus size={16} /> Подключить источник
+                  </button>
                 }
               />
             ) : (
@@ -1062,7 +1049,7 @@ export default function SqlWorkspace(p: Props) {
         open={saveOpen}
         onOpenChange={setSaveOpen}
         title="Сохранить SQL-файл"
-        description="Запрос будет доступен всей команде."
+        description="Запрос сохранится в вашей рабочей области."
       >
         <form
           onSubmit={(e) => {

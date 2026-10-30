@@ -7,24 +7,14 @@ import {
   FileCode,
   GearSix,
   Question,
-  SignOut,
   SquaresFour,
-  Users,
 } from "@phosphor-icons/react";
-import type { User } from "../../shared/types";
 import type { ExplorerKind } from "./Explorer";
 import { Brand, IconButton } from "./UI";
 
 export type PaneMode = "split" | "sql" | "board";
 
-const roleNames = {
-  admin: "Администратор",
-  editor: "Редактор",
-  viewer: "Наблюдатель",
-};
-
 export default function WorkspaceRail({
-  user,
   narrow,
   mode,
   explorer,
@@ -34,11 +24,8 @@ export default function WorkspaceRail({
   onToggleExplorer,
   onResetLayout,
   onConnections,
-  onTeam,
   onHelp,
-  onLogout,
 }: {
-  user: User;
   narrow: boolean;
   mode: PaneMode;
   explorer: ExplorerKind | null;
@@ -48,9 +35,7 @@ export default function WorkspaceRail({
   onToggleExplorer: (kind: ExplorerKind) => void;
   onResetLayout: () => void;
   onConnections: () => void;
-  onTeam: () => void;
   onHelp: () => void;
-  onLogout: () => void;
 }) {
   return (
     <nav className="activity-bar" aria-label="Рабочая область">
@@ -181,46 +166,9 @@ export default function WorkspaceRail({
         >
           <GearSix size={20} />
         </IconButton>
-        {user.role === "admin" && (
-          <IconButton label="Управление командой" onClick={onTeam}>
-            <Users size={20} />
-          </IconButton>
-        )}
         <IconButton label="Сочетания клавиш" onClick={onHelp}>
           <Question size={20} />
         </IconButton>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <IconButton className="activity-profile" label="Меню пользователя">
-              <span className="avatar small">
-                {(user.name || user.email).slice(0, 2).toUpperCase()}
-              </span>
-            </IconButton>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              className="dropdown-menu profile-menu"
-              side="right"
-              align="end"
-              sideOffset={8}
-              collisionPadding={8}
-            >
-              <div className="profile-info">
-                <strong>{user.name || user.email}</strong>
-                <span>{user.email}</span>
-                <small>{roleNames[user.role]}</small>
-              </div>
-              <DropdownMenu.Separator />
-              <DropdownMenu.Item onSelect={onHelp}>
-                Сочетания клавиш
-              </DropdownMenu.Item>
-              <DropdownMenu.Item onSelect={onLogout}>
-                <SignOut size={15} />
-                Выйти
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
       </div>
     </nav>
   );

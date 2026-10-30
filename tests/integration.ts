@@ -1,11 +1,15 @@
-/** End-to-end API checks with actual PostgreSQL, ClickHouse and Trino; no mocks. */
+/** End-to-end API checks with actual SQLite, ClickHouse and Trino; no mocks. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import pg from "pg";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildApp } from "../src/server/app.js";
-import { bootstrapAdmin } from "../src/server/db.js";
+import {
+  backupWorkspace,
+  restoreWorkspace,
+} from "../src/server/maintenance.js";
 import type {
   Board,
   QueryRun,
@@ -13,39 +17,38 @@ import type {
   ResultPage,
 } from "../src/shared/types.js";
 
-const baseDatabase =
-  process.env.DATABASE_URL ??
-  "postgres://miracle:miracle_local@127.0.0.1:5544/miracle";
-const management = new pg.Pool({ connectionString: baseDatabase });
-const databaseName = `miracle_integration_${Date.now()}`;
-await management.query(`CREATE DATABASE "${databaseName}"`);
-const databaseUrl = new URL(baseDatabase);
-databaseUrl.pathname = `/${databaseName}`;
+const root = mkdtempSync(join(tmpdir(), "miracle-external-integration-"));
+const dataDir = join(root, "data");
+// Match the actual browser origin; fetch owns its Host header.
+const probe = createServer();
+await new Promise<void>((resolve, reject) => {
+  probe.once("error", reject);
+  probe.listen(0, "127.0.0.1", resolve);
+});
+const bound = probe.address();
+if (!bound || typeof bound === "string") throw new Error("No integration port");
+const port = bound.port;
+await new Promise<void>((resolve, reject) =>
+  probe.close((error) => (error ? reject(error) : resolve())),
+);
+const appOrigin = `http://127.0.0.1:${port}`;
 let app: Awaited<ReturnType<typeof buildApp>> | undefined;
 let checks = 0;
 const encryptionKey = randomBytes(32);
 try {
   app = await buildApp({
-    databaseUrl: databaseUrl.toString(),
+    dataDir,
     encryptionKey,
-    appOrigin: "http://127.0.0.1:5178",
+    appOrigin,
     cookieSecure: false,
     limits: {
       timeoutMs: 2500,
       maxRows: 20,
       maxBytes: 4096,
-      maxUserRuns: 2,
-      maxGlobalRuns: 4,
+      maxGlobalRuns: 2,
     },
   });
-  const password = randomBytes(24).toString("base64url");
-  await bootstrapAdmin(
-    app.miracle.db,
-    "admin@example.test",
-    "Integration Admin",
-    password,
-  );
-  let address = await app.listen({ port: 0, host: "127.0.0.1" });
+  let address = await app.listen({ port, host: "127.0.0.1" });
   class Actor {
     cookie = "";
     csrf = "";
@@ -59,6 +62,7 @@ try {
         method,
         headers: {
           "Content-Type": "application/json",
+          Connection: "close",
           ...(this.cookie ? { Cookie: this.cookie } : {}),
           ...(this.csrf ? { "X-CSRF-Token": this.csrf } : {}),
         },
@@ -79,32 +83,10 @@ try {
   const admin = new Actor(),
     viewer = new Actor(),
     editor = new Actor();
-  await admin.request("POST", "/api/auth/login", {
-    email: "admin@example.test",
-    password,
-  });
+  for (const actor of [admin, viewer, editor])
+    await actor.request("GET", "/api/session");
   checks++;
-  console.log("PASS password login and session");
-  for (const [actor, role] of [
-    [viewer, "viewer"],
-    [editor, "editor"],
-  ] as const) {
-    const created = await admin.request(
-      "POST",
-      "/api/users",
-      { email: `${role}@example.test`, name: role, role },
-      201,
-    );
-    const token =
-      new URL(created.activationUrl, "http://localhost").searchParams.get(
-        "token",
-      ) ?? created.activationUrl.split("/").at(-1);
-    await actor.request("POST", "/api/auth/activate", {
-      token,
-      password: randomBytes(24).toString("base64url"),
-      name: role,
-    });
-  }
+  console.log("PASS direct local browser sessions");
   const ch = await admin.request(
     "POST",
     "/api/connections",
@@ -143,19 +125,12 @@ try {
   }
   checks++;
   console.log("PASS real engines, schema discovery and password redaction");
-  await viewer.request("POST", "/api/connections", { name: "Forbidden" }, 403);
-  await editor.request("POST", "/api/users", { email: "x@example.test" }, 403);
-  await viewer.request(
-    "POST",
-    "/api/query-runs",
-    { connectionId: ch.id, sql: "SELECT 1" },
-    403,
-  );
+  await editor.request("POST", "/api/users", { email: "x@example.test" }, 404);
   const noCsrf = new Actor();
   noCsrf.cookie = admin.cookie;
   await noCsrf.request("POST", "/api/boards", { name: "forbidden" }, 403);
   checks++;
-  console.log("PASS roles and CSRF");
+  console.log("PASS removed account routes and CSRF");
   async function run(
     source: QuerySource,
     expected = "completed",
@@ -176,6 +151,42 @@ try {
     }
     assert.equal(result.status, expected, result.error);
     return result;
+  }
+  const grouped = await run({
+    connectionId: trino.id,
+    catalog: "tpch",
+    schema: "tiny",
+    sql: "SELECT orderstatus,count(*) AS orders FROM tpch.tiny.orders GROUP BY orderstatus ORDER BY orderstatus; -- editor delimiter;\n",
+  });
+  const groupedPage = await viewer.request<ResultPage>(
+    "GET",
+    `/api/result-sets/${grouped.resultSetId}/rows`,
+  );
+  assert.deepEqual(
+    groupedPage.rows.map((row) => row[0]),
+    ["F", "O", "P"],
+  );
+  assert.ok(groupedPage.rows.every((row) => Number(row[1]) > 0));
+  const { engineMetadata, quoteLiteral } =
+    await import("../src/server/connectors.js");
+  for (const value of [
+    "name'quote",
+    "name\\slash",
+    "both\\'quote",
+    "кириллица\\name",
+  ]) {
+    const literal = await engineMetadata(
+      {
+        engine: "clickhouse",
+        name: "literal roundtrip",
+        url: ch.url,
+        username: "miracle_reader",
+        password: "miracle_reader_local",
+        database: "demo",
+      },
+      "SELECT " + quoteLiteral(value, "clickhouse") + " AS value",
+    );
+    assert.deepEqual(literal.rows, [[value]]);
   }
   const source = {
     connectionId: ch.id,
@@ -285,7 +296,7 @@ try {
     "PATCH",
     `/api/boards/${board.id}`,
     { baseRevision: board.revision, document: board.document },
-    403,
+    409,
   );
   board = await viewer.request<Board>("GET", `/api/boards/${board.id}`);
   const preservedResult = board.document.nodes[0]!.data.resultSetId;
@@ -403,16 +414,18 @@ try {
   console.log(
     "PASS denied mutations, row/byte/time/concurrency limits and cancellation",
   );
-  // A restart must retain snapshots, boards, sessions and encrypted credentials.
+  // A restart retains snapshots/boards/credentials and renews in-memory sessions.
   await app.close();
   app = await buildApp({
-    databaseUrl: databaseUrl.toString(),
+    dataDir,
     encryptionKey,
-    appOrigin: "http://127.0.0.1:5178",
+    appOrigin,
     cookieSecure: false,
   });
-  const nextAddress = await app.listen({ port: 0, host: "127.0.0.1" });
+  const nextAddress = await app.listen({ port, host: "127.0.0.1" });
   address = nextAddress;
+  for (const actor of [admin, viewer, editor])
+    await actor.request("GET", "/api/session");
   const retained = await viewer.request<ResultPage>(
     "GET",
     `/api/result-sets/${executed.resultSetId}/rows?offset=0&limit=2`,
@@ -475,13 +488,15 @@ try {
   );
   await app.close();
   app = await buildApp({
-    databaseUrl: databaseUrl.toString(),
+    dataDir,
     encryptionKey,
-    appOrigin: "http://127.0.0.1:5178",
+    appOrigin,
     cookieSecure: false,
     limits: { quotaBytes: 1 },
   });
-  address = await app.listen({ port: 0, host: "127.0.0.1" });
+  address = await app.listen({ port, host: "127.0.0.1" });
+  for (const actor of [admin, viewer, editor])
+    await actor.request("GET", "/api/session");
   const quota = await run({ connectionId: ch.id, sql: "SELECT 1" }, "failed");
   assert.match(quota.error ?? "", /Квота хранения/);
   assert.equal(
@@ -495,28 +510,22 @@ try {
   );
   checks++;
   console.log("PASS chart point cap and storage quota without snapshot loss");
-  const execute = promisify(execFile);
-  const backup = await execute(
-    "sh",
-    ["scripts/backup.sh", ".local/integration-backups"],
-    { env: { ...process.env, MIRACLE_BACKUP_DATABASE: databaseName } },
-  );
-  const backupPath = backup.stdout.trim().split("Backup saved: ").at(-1)!;
-  const restore = await execute("sh", [
-    "scripts/restore-rehearsal.sh",
-    backupPath,
-  ]);
-  assert.match(restore.stdout, /Restore rehearsal passed/);
-  console.log(restore.stdout.trim());
+  await app.close();
+  const backupPath = join(root, "backup");
+  await backupWorkspace(dataDir, backupPath);
+  await restoreWorkspace(backupPath, join(root, "restored"));
+  const restored = await buildApp({
+    dataDir: join(root, "restored"),
+    serveStatic: false,
+  });
+  assert.ok(restored.miracle.db.query("SELECT * FROM boards").rows.length);
+  await restored.close();
   checks++;
+  console.log("PASS portable SQLite backup and paired-key restore");
   console.log(
-    "PASS real pg_dump/pg_restore rehearsal into disposable database",
-  );
-  console.log(
-    `Integration passed: ${checks} groups; PostgreSQL + ClickHouse + Trino.`,
+    `Integration passed: ${checks} groups; SQLite + ClickHouse + Trino.`,
   );
 } finally {
   await app?.close();
-  await management.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
-  await management.end();
+  rmSync(root, { recursive: true, force: true });
 }

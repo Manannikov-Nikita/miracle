@@ -1,23 +1,17 @@
 import { beforeAll, afterAll, expect, it } from "vitest";
-import pg from "pg";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server/app.js";
-import { bootstrapAdmin } from "../src/server/db.js";
 import { SecretBox } from "../src/server/secrets.js";
-import { dropTestDatabase } from "./test-database.js";
 import {
   certificates,
   tlsServer,
   closeTls,
   compactResult,
 } from "./clickhouse-fixture.js";
-const databaseUrl =
-  process.env.DATABASE_URL ||
-  "postgres://miracle:miracle_local@127.0.0.1:5544/miracle";
-const admin = new pg.Pool({ connectionString: databaseUrl });
-const dbName = "miracle_tls_test_" + Date.now();
-const target = new URL(databaseUrl);
-target.pathname = "/" + dbName;
+const dataDir = mkdtempSync(join(tmpdir(), "miracle-tls-api-"));
 const key = Buffer.alloc(32, 7);
 let app: FastifyInstance;
 let cookie = "",
@@ -34,6 +28,7 @@ const request = (method: any, url: string, payload?: any, viewer = false) =>
     url,
     payload,
     headers: {
+      host: "127.0.0.1:5178",
       cookie: viewer ? viewerCookie : cookie,
       "x-csrf-token": viewer ? viewerCsrf : csrf,
       origin: "http://127.0.0.1:5178",
@@ -67,48 +62,23 @@ beforeAll(async () => {
     },
     { ca: certs.caCert, requestCert: true, rejectUnauthorized: true },
   );
-  await admin.query(`CREATE DATABASE ${dbName}`);
   app = await buildApp({
-    databaseUrl: target.href,
+    dataDir,
     encryptionKey: key,
-    cookieSecure: false,
+    appOrigin: "http://127.0.0.1:5178",
     serveStatic: false,
   });
-  await bootstrapAdmin(
-    app.miracle.db,
-    "tls-admin@example.test",
-    "Admin",
-    "correct-password-long",
-  );
-  const login = await request("POST", "/api/auth/login", {
-    email: "tls-admin@example.test",
-    password: "correct-password-long",
-  });
+  const login = await request("GET", "/api/session");
   cookie = String(login.headers["set-cookie"]).split(";")[0]!;
   csrf = login.json().csrfToken;
-  await app.miracle.db.query(
-    "INSERT INTO users(id,email,name,role,password_hash) SELECT gen_random_uuid(),'tls-viewer@example.test','Viewer','viewer',password_hash FROM users WHERE email='tls-admin@example.test'",
-  );
-  const v = await app.inject({
-    method: "POST",
-    url: "/api/auth/login",
-    payload: {
-      email: "tls-viewer@example.test",
-      password: "correct-password-long",
-    },
-    headers: { origin: "http://127.0.0.1:5178" },
-  });
-  viewerCookie = String(v.headers["set-cookie"]).split(";")[0]!;
-  viewerCsrf = v.json().csrfToken;
+  const second = await request("GET", "/api/session", undefined, true);
+  viewerCookie = String(second.headers["set-cookie"]).split(";")[0]!;
+  viewerCsrf = second.json().csrfToken;
 }, 30000);
 afterAll(async () => {
-  try {
-    if (app) await app.close();
-    if (fixture) await closeTls(fixture.server);
-    await dropTestDatabase(admin, dbName);
-  } finally {
-    await admin.end();
-  }
+  await app?.close();
+  if (fixture) await closeTls(fixture.server);
+  rmSync(dataDir, { recursive: true, force: true });
 });
 it("encrypts TLS materials and exposes only presence flags to all connection readers", async () => {
   const response = await request("POST", "/api/connections", input());
@@ -124,7 +94,7 @@ it("encrypts TLS materials and exposes only presence flags to all connection rea
     /BEGIN CERTIFICATE|BEGIN PRIVATE|saved-test-password|clientKey"/,
   );
   const row = (
-    await app.miracle.db.query("SELECT * FROM connections WHERE id=$1", [id])
+    await app.miracle.db.query("SELECT * FROM connections WHERE id=?1", [id])
   ).rows[0];
   expect(row.clickhouse_options_encrypted).not.toContain("BEGIN");
   expect(
@@ -169,7 +139,7 @@ it("preserves omitted secrets, replaces settings and validates the fully merged 
     "Basic " + Buffer.from("tls-user:saved-test-password").toString("base64"),
   );
 });
-it("tests unsaved state against saved secrets without writing, and requires admin", async () => {
+it("tests unsaved state against saved secrets without writing, for both local browser sessions", async () => {
   const before = (
     await app.miracle.db.query("SELECT * FROM connections ORDER BY id")
   ).rows;
@@ -187,7 +157,7 @@ it("tests unsaved state against saved secrets without writing, and requires admi
   ).toEqual(before);
   expect(
     (await request("POST", "/api/connections/test", input(), true)).statusCode,
-  ).toBe(403);
+  ).toBe(200);
   expect(
     (
       await request("POST", "/api/connections/test", {
@@ -200,9 +170,9 @@ it("tests unsaved state against saved secrets without writing, and requires admi
   const unsaved = await request("POST", "/api/connections/test", input());
   expect(unsaved.statusCode, unsaved.body).toBe(200);
   expect(
-    (await app.miracle.db.query("SELECT count(*) FROM connections")).rows[0]
-      .count,
-  ).toBe("1");
+    (await app.miracle.db.query("SELECT count(*) AS count FROM connections"))
+      .rows[0].count,
+  ).toBe(1);
 });
 it("rejects unknown settings and secrets safely, supports explicit TLS and option clearing", async () => {
   for (const clickhouse of [
@@ -237,7 +207,7 @@ it("rejects unknown settings and secrets safely, supports explicit TLS and optio
     ).statusCode,
   ).toBe(200);
   const row = (
-    await app.miracle.db.query("SELECT * FROM connections WHERE id=$1", [id])
+    await app.miracle.db.query("SELECT * FROM connections WHERE id=?1", [id])
   ).rows[0];
   expect(row.clickhouse_options_encrypted).toBeNull();
 });

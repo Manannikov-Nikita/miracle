@@ -1,12 +1,17 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
+import { join } from "node:path";
 import type { Database } from "./db.js";
 export class SecretBox {
   constructor(private key: Buffer) {
     if (key.length !== 32)
-      throw new Error(
-        "ENCRYPTION_KEY must contain exactly 32 bytes (base64 or hex)",
-      );
+      throw new Error("Workspace encryption key must contain exactly 32 bytes");
   }
   encrypt(value: string): string {
     const iv = randomBytes(12);
@@ -24,56 +29,67 @@ export class SecretBox {
     ]).toString("utf8");
   }
 }
-export function loadKey(): Buffer {
-  const value = process.env.ENCRYPTION_KEY_FILE
-    ? readFileSync(process.env.ENCRYPTION_KEY_FILE, "utf8").trim()
-    : process.env.ENCRYPTION_KEY;
-  if (!value)
-    throw new Error("ENCRYPTION_KEY or ENCRYPTION_KEY_FILE is required");
-  return Buffer.from(value, /^[a-f\d]{64}$/i.test(value) ? "hex" : "base64");
+export function loadKey(
+  dataDir: string,
+  isNew: boolean,
+  supplied?: Buffer,
+): Buffer {
+  const path = join(dataDir, "encryption.key");
+  if (!existsSync(path)) {
+    if (!isNew)
+      throw new Error(
+        "Workspace encryption key is missing; restore the original encryption.key together with its database",
+      );
+    const pending = join(dataDir, ".encryption.key.pending");
+    if (
+      existsSync(pending) &&
+      Buffer.from(readFileSync(pending, "utf8").trim(), "base64").length !== 32
+    )
+      rmSync(pending);
+    if (!existsSync(pending))
+      writeFileSync(pending, (supplied || randomBytes(32)).toString("base64"), {
+        mode: 0o600,
+        flag: "wx",
+        flush: true,
+      });
+    // Never expose a partially written final key. Only an empty schema may recover
+    // this temporary file after process death, before its SQLite commit exists.
+    renameSync(pending, path);
+  }
+  const key = Buffer.from(readFileSync(path, "utf8").trim(), "base64");
+  if (key.length !== 32) throw new Error("Invalid workspace encryption key");
+  if (supplied && !supplied.equals(key))
+    throw new Error(
+      "Encryption key does not match the saved workspace. Restore the original encryption.key with its database backup.",
+    );
+  return key;
 }
-
-/** Authenticate the key before exposing the workspace or accepting new secrets. */
-export async function verifyEncryptionKey(db: Database, box: SecretBox) {
-  const c = await db.connect();
-  try {
-    await c.query("BEGIN");
-    await c.query("SELECT pg_advisory_xact_lock(67432917)");
-    const saved = (
-      await c.query(
-        "SELECT value FROM app_settings WHERE key='encryption_key_check'",
-      )
-    ).rows[0];
+/** Authenticate the saved key before recovery or accepting new credentials. */
+export function verifyEncryptionKey(
+  db: Database,
+  box: SecretBox,
+  initialize = false,
+) {
+  const saved = db.query(
+    "SELECT value FROM app_settings WHERE key='encryption_key_check'",
+  ).rows[0];
+  if (saved) {
     try {
-      if (saved) {
-        if (box.decrypt(saved.value) !== "miracle-encryption-key-v1")
-          throw new Error("Unexpected sentinel");
-      } else {
-        // An upgraded database may contain credentials before sentinel support.
-        const legacy = await c.query(
-          "SELECT password_encrypted,clickhouse_options_encrypted FROM connections",
-        );
-        for (const row of legacy.rows)
-          for (const value of [
-            row.password_encrypted,
-            row.clickhouse_options_encrypted,
-          ])
-            if (value) box.decrypt(value);
-        await c.query(
-          "INSERT INTO app_settings(key,value) VALUES('encryption_key_check',$1)",
-          [box.encrypt("miracle-encryption-key-v1")],
-        );
-      }
+      if (box.decrypt(saved.value) !== "miracle-encryption-key-v1")
+        throw new Error("sentinel");
     } catch {
       throw new Error(
-        "Encryption key does not match the saved workspace. Restore the original ENCRYPTION_KEY or ENCRYPTION_KEY_FILE together with its database backup; do not generate a replacement key.",
+        "Encryption key does not match the saved workspace. Restore the original encryption.key with its database backup.",
       );
     }
-    await c.query("COMMIT");
-  } catch (e) {
-    await c.query("ROLLBACK");
-    throw e;
-  } finally {
-    c.release();
+  } else {
+    if (!initialize)
+      throw new Error(
+        "Workspace encryption key check is missing; restore a complete backup",
+      );
+    db.query(
+      "INSERT INTO app_settings(key,value) VALUES('encryption_key_check',?1)",
+      [box.encrypt("miracle-encryption-key-v1")],
+    );
   }
 }

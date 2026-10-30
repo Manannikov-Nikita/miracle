@@ -99,12 +99,6 @@ describe("connection form", () => {
         createElement(Connections, {
           open: true,
           onClose: vi.fn(),
-          user: {
-            id: "admin",
-            email: "admin@example.test",
-            name: "Admin",
-            role: "admin",
-          },
           connections: [saved],
           onChanged: vi.fn(),
           onNotify: vi.fn(),

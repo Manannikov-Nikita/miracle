@@ -1,13 +1,5 @@
 import type { TableSpec } from "./tableTypes.js";
 export type { TableSpec, TableColumnOptions } from "./tableTypes.js";
-export type Role = "admin" | "editor" | "viewer";
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: Role;
-  disabled?: boolean;
-}
 export type Engine = "clickhouse" | "trino";
 export interface ClickHouseOptions {
   requestTimeoutMs?: number;

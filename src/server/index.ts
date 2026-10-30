@@ -1,20 +1,21 @@
 import { buildApp } from "./app.js";
+import { resolvePort } from "./config.js";
 const app = await buildApp({
   logger: true,
-  onLockLost: () => {
-    process.exitCode = 1;
-    const deadline = setTimeout(() => process.exit(1), 10000);
-    deadline.unref();
+  controlToken: process.env.MIRACLE_CONTROL_TOKEN,
+  onShutdown: () => {
+    process.exitCode = 0;
   },
 });
-await app.listen({
-  port: Number(process.env.PORT || 3001),
-  host: process.env.HOST || "127.0.0.1",
-});
+try {
+  await app.listen({ port: resolvePort(), host: "127.0.0.1" });
+} catch (error) {
+  await app.close();
+  throw error;
+}
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => {
-    void app
-      .close()
-      .then(() => process.exit(0))
-      .catch(() => process.exit(1));
+    void app.close().catch(() => {
+      process.exitCode = 1;
+    });
   });

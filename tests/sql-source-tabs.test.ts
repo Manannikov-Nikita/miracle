@@ -112,12 +112,7 @@ describe("chart source SQL tabs", () => {
     document.body.append(container);
     root = createRoot(container);
     props = {
-      user: {
-        id: "source-tab-test",
-        name: "Reader",
-        email: "reader@example.test",
-        role: "editor",
-      },
+      workspaceId: "source-tab-test",
       connections,
       activeConnectionId: "trino",
       schema: [],
@@ -198,7 +193,6 @@ describe("chart source SQL tabs", () => {
   it("starts with an empty editable SQL file and a source action when no connections exist", async () => {
     props.connections = [];
     props.activeConnectionId = "";
-    props.user.role = "admin";
     await render();
     expect(editor().value).toBe("");
     expect(tabs()).toHaveLength(1);
@@ -217,6 +211,27 @@ describe("chart source SQL tabs", () => {
     await act(async () => add!.click());
     expect(editor().value).toBe("");
     expect(tabs()).toHaveLength(2);
+  });
+
+  it("recovers SQL edits after reopening and does not import another workspace's drafts", async () => {
+    seed("draft.sql");
+    await render();
+    await clickTab("draft.sql");
+    await editSql("select preserved_local_edit");
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(editor().value).toBe("select preserved_local_edit");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    props.workspaceId = "different-workspace";
+    await render();
+    expect(editor().value).toBe("");
+    expect(tabs()).toHaveLength(1);
+    expect(localStorage.getItem(storage)).toContain(
+      "select preserved_local_edit",
+    );
   });
 
   it("opens the literal chart title and its pinned SQL and query context", async () => {
