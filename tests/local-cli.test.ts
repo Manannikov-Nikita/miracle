@@ -11,7 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-const loader = resolve("node_modules/tsx/dist/loader.mjs");
+import { pathToFileURL } from "node:url";
+const loader = pathToFileURL(resolve("node_modules/tsx/dist/loader.mjs")).href;
 const source = resolve("src/server/cli.ts");
 function cli(...args: string[]) {
   return execFileSync(process.execPath, ["--import", loader, source, ...args], {
