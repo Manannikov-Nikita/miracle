@@ -7,7 +7,8 @@
 ## Global constraints
 
 - Clean installation; no PostgreSQL migration and no changes to existing installations.
-- macOS/Linux arm64+x64, Windows x64. No external runtime, Docker or database dependency.
+- macOS/Linux arm64+x64; Windows uses the Linux edition inside WSL 2. Publish four `.tar.gz` archives, their checksums and one `install.sh`. No external runtime, Docker or database dependency inside the prepared environment.
+- Keep installation/data in the WSL Linux filesystem rather than `/mnt/c`; run commands in the same distribution and open the exact printed loopback URL in a Windows browser.
 - User data and encryption key survive restart/reinstall; only loopback access; no accounts/roles/invites.
 - Preserve all SQL, connector/TLS, snapshot, board/chart/table features and multi-tab revision protection.
 - Follow the spec's `/api/session`, `/api/local/control`, config and maintenance interfaces exactly.
@@ -52,10 +53,10 @@ Own `src/server/cli.ts`, new launcher modules (not backend-owned config/maintena
 - [x] Write failing CLI subprocess tests for start/status/stop/restart, occupied port, paths with spaces, no system runtime and private state. Use a real app after backend becomes available.
 - [x] Implement spec CLI commands. Start a bundled-node child with private token, verify authenticated readiness, persist state; never kill by PID. Call backend maintenance for backup/restore.
 - [x] Reduce production dependencies to actual server imports; move browser/build packages to devDependencies, remove PostgreSQL/password-hashing deps and obsolete scripts. Keep full development build dependency installation.
-- [x] Replace Docker ZIP release with allowlisted native archives and verified Node 24.22.2 runtime; include licenses and checksums. No local keys/data/env files in payload.
-- [x] Implement fixed-version shell/PowerShell installers, OS/arch detection, SHA-256 verification, staged extraction/activation and non-destructive repeat installation. Include manual-download support and PATH instructions.
+- [x] Replace the Docker release with four allowlisted macOS/Linux `.tar.gz` archives and verified Node 24.22.2 runtime; include licenses and checksums. No local keys/data/env files in payload.
+- [x] Implement one fixed-version shell installer for macOS/Linux/WSL 2, OS/arch detection, SHA-256 verification, staged extraction/activation and non-destructive repeat installation. Include manual-download support and PATH instructions.
 - [x] Add behavioral installer tests (not source-text assertions) covering download/hash/extraction failure and preserved prior installation/data. Replace obsolete Docker distribution tests.
-- [x] Update CI to self-contained API tests plus native archive smoke on target platforms; retain optional real connector integration.
+- [x] Update CI to self-contained API tests plus native archive smoke on the four macOS/Linux targets; retain optional real connector integration.
 - [x] Verify release bundle locally on macOS arm64. Do not publish without coordinator release decision.
 
 ## Task 4: Integration, review and documentation
@@ -68,3 +69,12 @@ Coordinator owns design/plan/ledger, human docs, integration verification and fi
 - [x] Inspect browser with real local app: no signup, create/edit source, query/history/board flow, restart and multiple tabs.
 - [x] Independent review of final diff, especially local request security, SQLite locking, installer integrity and data preservation. Fix material findings and rerun affected tests.
 - [x] Report verified behavior, available local artifacts and any platform/remote integration checks left to CI. Publish only after the concrete release has passed its applicable checks and publication is authorized.
+
+## Windows scope update
+
+The user's latest requirement replaces native-Windows delivery with WSL 2. The current spec supersedes the earlier installer/archive approach. Existing verification of other targets remains evidence for those targets only.
+
+- [x] Remove native-Windows packaging paths and keep four macOS/Linux archives plus `install.sh`.
+- [x] Verify WSL CLI guidance: print the exact loopback URL for a Windows browser without requiring Linux GUI tools.
+- [x] Update current installation, operations and release docs for the Linux installer inside WSL 2; preserve unpublished-release and no-PostgreSQL-import statements.
+- [ ] Verify WSL 2 networking and Windows-browser access on an actual Windows/WSL host; report as not run while no such host is available. Linux native CI does not replace this check.

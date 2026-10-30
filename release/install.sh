@@ -6,7 +6,7 @@ fail() { printf '%s\n' "$*" >&2; exit 1; }
 case "$(uname -s)" in
  Darwin) os=darwin; default_root="$HOME/Library/Application Support/Miracle";;
  Linux) os=linux; default_root="${XDG_DATA_HOME:-$HOME/.local/share}/miracle"; ldd --version 2>&1 | head -1 | grep -qiE 'glibc|GNU libc|GNU C Library' || fail 'Miracle requires GNU/Linux with glibc. musl/Alpine is unsupported.';;
- *) fail 'Unsupported operating system. Use install.ps1 on Windows.';;
+ *) fail 'Unsupported operating system. On Windows, run this installer inside WSL2.';;
 esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=x64;; *) fail 'Supported architectures: arm64 and x64.';; esac
 root=${MIRACLE_INSTALL_ROOT:-$default_root}

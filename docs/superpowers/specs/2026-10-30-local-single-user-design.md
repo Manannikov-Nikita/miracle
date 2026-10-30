@@ -2,15 +2,15 @@
 
 ## Intent and agreed scope
 
-Miracle is a personal SQL workspace and board served to the user's browser by one local process. Installation must not require PostgreSQL, Docker, Node.js, npm, Git, or a compiler. The user confirmed a **clean installation with no migration of existing PostgreSQL data**, and support for **macOS, Linux, and Windows**. Existing installations/data must be left untouched.
+Miracle is a personal SQL workspace and board served to the user's browser by one local process. Installation must not require PostgreSQL, Docker, Node.js, npm, Git, or a compiler. The user confirmed a **clean installation with no migration of existing PostgreSQL data**, and support for **macOS, Linux, and Windows through WSL 2**. The updated Windows requirement uses the Linux edition inside WSL 2; no separate Windows installer or archive is shipped. Existing installations/data must be left untouched.
 
 Preserve SQL editing, real ClickHouse/Trino connections, TLS options, saved queries, history, immutable result snapshots, boards, tables, and charts. Remove accounts, login/setup forms, passwords for Miracle itself, invitations, roles, team management, and shared/team messaging. Remote database credentials remain encrypted.
 
 ## Delivery approach
 
-Use platform-specific GitHub release archives containing compiled web/server code, a pinned Node 24 runtime, production dependencies, launchers and license notices. This keeps the existing Fastify/React/ESM stack. A shell installer downloads and verifies a fixed-version `.tar.gz` release for macOS/Linux; a PowerShell equivalent downloads a `.zip` on Windows and uses its native ZIP support. Windows tar was rejected after native CI demonstrated failures creating and extracting Unicode entries. Homebrew/WinGet can later distribute these same artifacts; adding those registries is out of this change. A single executable bundler is unnecessary and introduces additional module/asset compatibility work.
+Use platform-specific GitHub release archives containing compiled web/server code, a pinned Node 24 runtime, production dependencies, shell launchers and license notices. This keeps the existing Fastify/React/ESM stack. One shell installer downloads and verifies a fixed-version `.tar.gz` release for macOS/Linux, including GNU/Linux running inside WSL 2. Publish four archives and their SHA-256 files plus `install.sh`. Homebrew distribution is out of scope. A single executable bundler is unnecessary and introduces additional module/asset compatibility work.
 
-Targets: darwin arm64/x64, GNU/Linux arm64/x64, Windows x64. Reject unsupported OS/architecture/libc with an actionable error. Windows ARM native support and automatic login startup are not promised. Pin Node 24.22.2 and verify upstream SHA-256 before packaging; include its license. Test artifacts on native runners for supported targets.
+Targets: darwin arm64/x64 and GNU/Linux arm64/x64. Windows users need an existing WSL 2 Linux distribution of either supported architecture; see [Microsoft's WSL installation guide](https://learn.microsoft.com/en-us/windows/wsl/install). Reject unsupported OS/architecture/libc with an actionable error. Automatic login startup is not promised. Pin Node 24.22.2 and verify upstream SHA-256 before packaging; include its license. Test the four artifacts on native macOS/Linux runners. WSL-specific networking and Windows-browser access require separate verification; Linux CI alone does not establish that result.
 
 Primary future command, only advertised as usable after an actual release contains the installer:
 
@@ -19,7 +19,9 @@ curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download
 miracle
 ```
 
-Install per OS user, without elevation. Store versioned code separately from data and atomically activate a validated version through a text `current-version` pointer. Root: `~/Library/Application Support/Miracle` on macOS, `${XDG_DATA_HOME:-~/.local/share}/miracle` on Linux, `%LOCALAPPDATA%/Miracle` on Windows. Keep data in `data/`, code in `versions/X.Y.Z/`, logs in `logs/`; Unix launcher is `~/.local/bin/miracle`, Windows launcher is `<root>/bin/miracle.cmd`. PATH guidance must be explicit; do not edit arbitrary shell profiles. Support an installation-root override for tests/manual installs. Reinstall preserves data, requires the app stopped before changing active version, and does not overwrite an already installed version's files.
+Install per OS user, without elevation. Store versioned code separately from data and atomically activate a validated version through a text `current-version` pointer. Root: `~/Library/Application Support/Miracle` on macOS, `${XDG_DATA_HOME:-~/.local/share}/miracle` on Linux, including WSL 2. Keep data in `data/`, code in `versions/X.Y.Z/`, logs in `logs/`. The shell launcher is `~/.local/bin/miracle`. PATH guidance must be explicit; do not edit arbitrary shell profiles. Support an installation-root override for tests/manual installs. Reinstall preserves data, requires the app stopped before changing active version, and does not overwrite an already installed version's files.
+
+In WSL, keep installation and data in the Linux filesystem, not `/mnt/c`, following [Microsoft’s filesystem guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems). Run all CLI commands inside the same distribution. The CLI prints the exact `http://127.0.0.1:PORT` URL and instructs the user to open it in a Windows browser, without requiring a Linux desktop/browser. [Microsoft documents Windows access to WSL services through the local interface](https://learn.microsoft.com/en-us/windows/wsl/networking); retain the exact URL because Host validation remains enabled. The latest Windows delivery decision supersedes earlier native-Windows packaging work.
 
 ## Storage and process model
 
@@ -49,9 +51,9 @@ CLI control uses `POST /api/local/control`, `Authorization: Bearer <private inst
 
 Server maintenance exports `backupWorkspace(dataDir: string, destination: string): Promise<void>` and `restoreWorkspace(source: string, dataDir: string): Promise<void>` from `src/server/maintenance.ts`.
 
-One Node CLI, thin shell/cmd launchers:
+One Node CLI with a thin shell launcher:
 
-- `miracle` / `miracle open`: ensure a background service, open browser, always print URL.
+- `miracle` / `miracle open`: ensure a background service and always print URL. Open the browser on macOS/Linux; in WSL, instruct the user to open the printed URL in a Windows browser.
 - `start [--port N] [--data-dir PATH]`: idempotent, detached, redirected logs, authenticated readiness; occupied port fails clearly.
 - `serve`: foreground service for tests/service managers, no autostart registration.
 - `stop`: authenticated graceful stop and wait; never kill an unrelated process.
@@ -65,6 +67,6 @@ Private runtime state is written only after authenticated readiness and includes
 
 API and storage tests use temporary SQLite directories without PostgreSQL. Verify real two-process exclusion, abrupt exit/restart, encrypted secrets and missing/wrong key, persistence, JSON round trips, atomic snapshots/references, quota/cancellation and stale revisions. UI opens directly, edits sources/queries/boards and reconnects after restart with no account/team controls. Preserve all existing analytical rendering tests.
 
-Run packaged-app lifecycle/install tests from unrelated directories and paths with spaces/Unicode; test repeat install, invalid checksum/download, occupied port, duplicate start, backup/restore and missing key. Native CI must launch bundled Node rather than the system runtime. Keep external ClickHouse/Trino integration coverage distinct from self-contained tests.
+Run packaged-app lifecycle/install tests from unrelated directories and paths with spaces/Unicode; test repeat install, invalid checksum/download, occupied port, duplicate start, backup/restore and missing key. Native macOS/Linux CI must launch bundled Node rather than the system runtime. Record WSL 2 and Windows-browser checks separately; do not claim them when no WSL host was available. Keep external ClickHouse/Trino integration coverage distinct from self-contained tests.
 
 Update installation, usage, operation, contribution, security and release documentation consistently. Build and verify a local native archive before calling implementation complete. A live GitHub installation URL requires publishing release assets; do not claim an unpublished URL works. Publication is separate from local implementation and verification.

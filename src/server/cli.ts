@@ -36,11 +36,6 @@ function installRoot() {
     return resolve(process.env.MIRACLE_INSTALL_ROOT);
   if (process.platform === "darwin")
     return join(homedir(), "Library", "Application Support", "Miracle");
-  if (process.platform === "win32")
-    return join(
-      process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"),
-      "Miracle",
-    );
   return join(
     process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
     "miracle",
@@ -87,15 +82,12 @@ async function storageStopped(dataDir: string) {
   }
 }
 function openBrowser(url: string) {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "rundll32.exe"
-        : "xdg-open";
-  const args =
-    process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) {
+    console.log("Open the URL above in your Windows browser.");
+    return;
+  }
+  const command = process.platform === "darwin" ? "open" : "xdg-open";
+  const child = spawn(command, [url], { detached: true, stdio: "ignore" });
   child.on("error", () => console.error("Open the URL above in your browser."));
   child.unref();
 }
@@ -109,6 +101,8 @@ async function main() {
     return console.log(
       `Miracle ${version}\nUsage: miracle [open|start|serve|stop|status|backup DIRECTORY|restore DIRECTORY]\n  --port N          Local port (default 3001)\n  --data-dir PATH   Workspace directory\n  status --json     Machine-readable state\n  --version         Installed version\n`,
     );
+  if (process.platform === "win32")
+    throw new Error("On Windows, run Miracle inside a WSL2 Linux terminal.");
   if (
     !["open", "start", "serve", "stop", "status", "backup", "restore"].includes(
       command,

@@ -14,6 +14,11 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
+if (!["darwin", "linux"].includes(process.platform))
+  throw new Error(
+    "Miracle supports macOS and Linux. On Windows, run the Linux installer inside WSL2.",
+  );
+
 const [sourceArgument, rootArgument, binArgument] = process.argv.slice(2);
 if (!sourceArgument || !rootArgument)
   throw new Error(
@@ -21,22 +26,13 @@ if (!sourceArgument || !rootArgument)
   );
 const source = resolve(sourceArgument),
   root = resolve(rootArgument);
-const bin = resolve(
-  binArgument ||
-    (process.platform === "win32"
-      ? join(root, "bin")
-      : join(homedir(), ".local", "bin")),
-);
+const bin = resolve(binArgument || join(homedir(), ".local", "bin"));
 const version = JSON.parse(
   await readFile(join(source, "package.json"), "utf8"),
 ).version;
 if (!/^\d+\.\d+\.\d+$/.test(version))
   throw new Error("Invalid package version");
-const nodeAt = (dir) =>
-  join(
-    dir,
-    process.platform === "win32" ? "runtime/node.exe" : "runtime/bin/node",
-  );
+const nodeAt = (dir) => join(dir, "runtime/bin/node");
 const cliAt = (dir) => join(dir, "dist/server/server/cli.js");
 function validate(dir) {
   const result = spawnSync(nodeAt(dir), [cliAt(dir), "--version"], {
@@ -139,35 +135,17 @@ try {
     staging = undefined;
   }
   await mkdir(bin, { recursive: true, mode: 0o700 });
-  if (process.platform === "win32") {
-    if (/[\r\n%]/.test(root))
-      throw new Error(
-        "The installation root cannot contain a percent sign or newline on Windows.",
-      );
-    // Batch files are decoded in the current OEM codepage. Keep this file ASCII;
-    // %~dp0 expands the Unicode bin path natively, and PowerShell decodes the root.
-    const encodedRoot = Buffer.from(root, "utf8").toString("base64");
-    const helper = `$ErrorActionPreference = 'Stop'\r\n$Root = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedRoot}'))\r\n$Version = (Get-Content -LiteralPath (Join-Path $Root 'current-version') -Raw).Trim()\r\nif ($Version -notmatch '^\\d+\\.\\d+\\.\\d+$') { throw 'Invalid Miracle version pointer' }\r\n$env:MIRACLE_INSTALL_ROOT = $Root\r\n$Code = Join-Path $Root ('versions/' + $Version)\r\n& (Join-Path $Code 'runtime/node.exe') (Join-Path $Code 'dist/server/server/cli.js') @args\r\nexit $LASTEXITCODE\r\n`;
-    await writeFile(join(bin, ".miracle-launch.ps1.tmp"), helper);
-    await rename(
-      join(bin, ".miracle-launch.ps1.tmp"),
-      join(bin, "miracle-launch.ps1"),
-    );
-    const launcher = `@echo off\r\nsetlocal DisableDelayedExpansion\r\n"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0miracle-launch.ps1" %*\r\nexit /b %errorlevel%\r\n`;
-    await writeFile(join(bin, ".miracle.cmd.tmp"), launcher);
-    await rename(join(bin, ".miracle.cmd.tmp"), join(bin, "miracle.cmd"));
-  } else {
-    const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
-    const launcher = `#!/bin/sh\nset -eu\nMIRACLE_INSTALL_ROOT=${quote(root)}\nexport MIRACLE_INSTALL_ROOT\nIFS= read -r miracle_version < "$MIRACLE_INSTALL_ROOT/current-version"\ncase "$miracle_version" in *[!0-9.]*|'') echo 'Invalid Miracle version pointer' >&2; exit 1;; esac\nexec "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/runtime/bin/node" "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/dist/server/server/cli.js" "$@"\n`;
-    await writeFile(join(bin, ".miracle.tmp"), launcher, { mode: 0o755 });
-    await chmod(join(bin, ".miracle.tmp"), 0o755);
-    await rename(join(bin, ".miracle.tmp"), join(bin, "miracle"));
-  }
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const launcher = `#!/bin/sh\nset -eu\nMIRACLE_INSTALL_ROOT=${quote(root)}\nexport MIRACLE_INSTALL_ROOT\nIFS= read -r miracle_version < "$MIRACLE_INSTALL_ROOT/current-version"\ncase "$miracle_version" in *[!0-9.]*|'') echo 'Invalid Miracle version pointer' >&2; exit 1;; esac\nexec "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/runtime/bin/node" "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/dist/server/server/cli.js" "$@"\n`;
+  await writeFile(join(bin, ".miracle.tmp"), launcher, { mode: 0o755 });
+  await chmod(join(bin, ".miracle.tmp"), 0o755);
+  await rename(join(bin, ".miracle.tmp"), join(bin, "miracle"));
+
   const pointer = join(root, `.current-version-${process.pid}`);
   await writeFile(pointer, version + "\n", { mode: 0o600 });
   await rename(pointer, join(root, "current-version"));
   console.log(
-    `Miracle ${version} installed.\nRun: ${join(bin, process.platform === "win32" ? "miracle.cmd" : "miracle")}\nAdd ${bin} to PATH if it is not already present.\nData: ${join(root, "data")}`,
+    `Miracle ${version} installed.\nRun: ${join(bin, "miracle")}\nAdd ${bin} to PATH if it is not already present.\nData: ${join(root, "data")}`,
   );
 } finally {
   if (staging) await rm(staging, { recursive: true, force: true });

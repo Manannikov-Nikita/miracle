@@ -32,7 +32,13 @@ afterEach(async () => {
 });
 it("authenticates lifecycle, keeps private state, preserves data on restart, and refuses occupied ports", async () => {
   const root = mkdtempSync(join(tmpdir(), "miracle CLI Проверка "));
-  const env = { ...process.env, MIRACLE_INSTALL_ROOT: root };
+  // WSL needs only the bundled runtime, not Linux GUI tools or PowerShell.
+  const env = {
+    ...process.env,
+    MIRACLE_INSTALL_ROOT: root,
+    WSL_DISTRO_NAME: "Ubuntu",
+    PATH: "",
+  };
   async function run(args: string[], fail = false) {
     return await new Promise<string>((res, rej) => {
       const child = spawn(
@@ -65,7 +71,9 @@ it("authenticates lifecycle, keeps private state, preserves data on restart, and
   await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((r) => probe.close(() => r()));
-  await run(["start", "--port", String(port)]);
+  const opened = await run(["open", "--port", String(port)]);
+  expect(opened).toContain(`http://127.0.0.1:${port}`);
+  expect(opened).toContain("Windows browser");
   const first = JSON.parse(await run(["status", "--json"]));
   expect(first.status).toBe("running");
   expect(JSON.parse(await run(["status", "--json"])).pid).toBe(first.pid);

@@ -24,22 +24,26 @@ curl -fL -o install.sh https://github.com/Manannikov-Nikita/miracle/releases/lat
 sh install.sh
 ```
 
-## Windows
+## Windows через WSL 2
 
-В PowerShell на Windows 10 (1809+) или Windows 11 x64; установщик распаковывает ZIP штатными средствами PowerShell:
+Нужен установленный WSL 2 с дистрибутивом GNU/Linux x64 или ARM64, например Ubuntu. Если он ещё не настроен, используйте [инструкцию Microsoft по установке WSL](https://learn.microsoft.com/en-us/windows/wsl/install). Затем откройте терминал своего Linux-дистрибутива.
 
-```powershell
-Invoke-WebRequest 'https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.ps1' -OutFile "$env:TEMP\miracle-install.ps1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\miracle-install.ps1"
+Выполните в нём ту же установку:
+
+```sh
+curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.sh | sh
+~/.local/bin/miracle
 ```
 
-Используйте полный путь к miracle.cmd, который выведет установщик, или откройте новый терминал после изменения PATH. Native Windows ARM пока не заявлен.
+Установщик выберет Linux-архив по архитектуре WSL. Все команды `miracle` выполняйте в этом же дистрибутиве. Держите программу и рабочую область в домашнем каталоге Linux, например `~/.local/share/miracle`; для `MIRACLE_INSTALL_ROOT` и `--data-dir` также выбирайте Linux-пути, а не `/mnt/c`. Это соответствует [рекомендации Microsoft для файлов Linux-приложений](https://learn.microsoft.com/en-us/windows/wsl/filesystems).
+
+Команда напечатает `http://127.0.0.1:3001` или адрес выбранного порта. Откройте его вручную в браузере Windows. [WSL поддерживает доступ из Windows к локальному Linux-сервису](https://learn.microsoft.com/en-us/windows/wsl/networking). Используйте адрес как напечатано: Miracle проверяет Host, поэтому подмена `127.0.0.1` на имя компьютера или другой адрес не подходит.
 
 ## Первый запуск
 
-`miracle` или `miracle open` запускает сервис в фоне и открывает `http://127.0.0.1:3001`. Если браузер не открылся, перейдите по ссылке из терминала. Аккаунт создавать не нужно: добавьте своё подключение в «Подключениях».
+`miracle` или `miracle open` запускает сервис в фоне и печатает `http://127.0.0.1:3001`. На macOS/Linux команда также открывает браузер; если он не открылся, перейдите по ссылке из терминала. В WSL откройте напечатанный адрес в браузере Windows. Аккаунт создавать не нужно: добавьте своё подключение в «Подключениях».
 
-Источник на том же компьютере доступен через `127.0.0.1` и его порт. `host.docker.internal` для native-приложения не нужен. Демонстрационные серверы и данные не устанавливаются.
+Источник в той же среде, где запущен Miracle, доступен через `127.0.0.1` и его порт. В WSL это адрес Linux-среды. Для источника, запущенного на стороне Windows, адрес зависит от режима сети WSL: в обычном NAT нужен адрес хоста Windows; подробности — в [документации Microsoft о сети WSL](https://learn.microsoft.com/en-us/windows/wsl/networking). Демонстрационные серверы и данные не устанавливаются.
 
 | Команда | Действие |
 | --- | --- |
@@ -57,8 +61,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\miracle-insta
 | ОС | Каталог приложения |
 | --- | --- |
 | macOS | ~/Library/Application Support/Miracle |
-| Linux | ${XDG_DATA_HOME:-~/.local/share}/miracle |
-| Windows | %LOCALAPPDATA%\Miracle |
+| Linux, включая WSL 2 | ${XDG_DATA_HOME:-~/.local/share}/miracle |
 
 Код находится в `versions/`, рабочая область — в `data/`. В ней хранятся `miracle.sqlite` и `encryption.key`. Для отдельной рабочей области используйте `--data-dir PATH` или `MIRACLE_DATA_DIR` с каждой командой.
 
@@ -93,4 +96,4 @@ miracle open --data-dir ./restored-workspace
 
 0.2.0 создаёт новую рабочую область. PostgreSQL-данные старой версии не импортируются и не удаляются.
 
-Для ручной/offline установки скачайте архив нужной платформы, соседний .sha256 и установщик из одного релиза. Задайте `MIRACLE_ARCHIVE` равным пути к архиву. `MIRACLE_INSTALL_ROOT` и `MIRACLE_BIN_DIR` позволяют выбрать каталоги установки; их следует сохранять при последующих обновлениях.
+Для ручной/offline установки скачайте `.tar.gz` нужной платформы, соседний `.sha256` и `install.sh` из одного релиза. Для WSL выбирайте Linux x64 или ARM64. Задайте `MIRACLE_ARCHIVE` равным пути к архиву. `MIRACLE_INSTALL_ROOT` и `MIRACLE_BIN_DIR` позволяют выбрать каталоги установки; их следует сохранять при последующих обновлениях.

@@ -7,9 +7,7 @@ import { resolve, join, dirname } from "node:path";
 import { createServer } from "node:net";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
-  throw Error(
-    "Usage: node tests/local-install-smoke.mjs archive.tar.gz|archive.zip",
-  );
+  throw Error("Usage: node tests/local-install-smoke.mjs archive.tar.gz");
 const root = await mkdtemp(join(tmpdir(), "miracle native Проверка "));
 const install = join(root, "installed code"),
   bin = join(root, "bin"),
@@ -23,10 +21,7 @@ const env = {
 delete env.MIRACLE_DATA_DIR;
 delete env.MIRACLE_CONTROL_TOKEN;
 delete env.APP_ORIGIN;
-const safePath =
-  process.platform === "win32"
-    ? join(process.env.SystemRoot, "System32")
-    : "/usr/bin:/bin";
+const safePath = "/usr/bin:/bin";
 async function command(
   executable,
   args,
@@ -36,7 +31,6 @@ async function command(
     const child = spawn(executable, args, {
       cwd: root,
       env: customEnv,
-      windowsVerbatimArguments: executable.toLowerCase() === "cmd.exe",
     });
     let stdout = "",
       stderr = "";
@@ -50,31 +44,10 @@ async function command(
   });
 }
 async function installArchive() {
-  const installer = join(
-    dirname(archive),
-    process.platform === "win32" ? "install.ps1" : "install.sh",
-  );
-  return process.platform === "win32"
-    ? await command("powershell.exe", [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        installer,
-      ])
-    : await command("sh", [installer]);
+  return await command("sh", [join(dirname(archive), "install.sh")]);
 }
 let node, cli;
 async function run(...args) {
-  if (process.platform === "win32") {
-    const launcher = join(bin, "miracle.cmd");
-    const line =
-      "chcp 437 >nul & call " +
-      [launcher, ...args].map((value) => '"' + value + '"').join(" ");
-    return await command("cmd.exe", ["/d", "/s", "/c", line], {
-      customEnv: { ...env, PATH: safePath },
-    });
-  }
   return await command(join(bin, "miracle"), args, {
     customEnv: { ...env, PATH: safePath },
   });
@@ -96,10 +69,7 @@ try {
   await readFile(
     join(code, "node_modules/@fastify/send/test/fixtures/snow ☃/index.html"),
   );
-  node = join(
-    code,
-    process.platform === "win32" ? "runtime/node.exe" : "runtime/bin/node",
-  );
+  node = join(code, "runtime/bin/node");
   cli = join(code, "dist/server/server/cli.js");
   assert.equal((await command(node, ["--version"])).stdout.trim(), "v24.22.2");
   assert.equal((await run("--version")).stdout.trim(), version);

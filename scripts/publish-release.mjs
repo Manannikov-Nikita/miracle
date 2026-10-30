@@ -20,12 +20,11 @@ const files = [
   "darwin-x64",
   "linux-arm64",
   "linux-x64",
-  "win-x64",
 ].flatMap((target) => {
-  const name = `miracle-${version}-${target}.${target === "win-x64" ? "zip" : "tar.gz"}`;
+  const name = `miracle-${version}-${target}.tar.gz`;
   return [join(output, name), join(output, name + ".sha256")];
 });
-files.push(join(output, "install.sh"), join(output, "install.ps1"));
+files.push(join(output, "install.sh"));
 for (const file of files)
   if (!statSync(file).isFile())
     throw Error("Missing verified release artifact: " + file);

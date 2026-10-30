@@ -24,19 +24,16 @@ jobs:
           pattern: native-*
           path: .local/releases
           merge-multiple: true
-      - name: Require five verified native artifacts
+      - name: Require four verified native artifacts
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win-x64; do
-            extension=tar.gz
-            if [ "$target" = win-x64 ]; then extension=zip; fi
-            test -s ".local/releases/miracle-$version-$target.$extension"
-            (cd .local/releases && sha256sum -c "miracle-$version-$target.$extension.sha256")
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            test -s ".local/releases/miracle-$version-$target.tar.gz"
+            (cd .local/releases && sha256sum -c "miracle-$version-$target.tar.gz.sha256")
           done
           test -s .local/releases/install.sh
-          test -s .local/releases/install.ps1
       - name: Publish native archives and fixed-version installers
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

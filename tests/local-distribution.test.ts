@@ -5,16 +5,14 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
-  cpSync,
   symlinkSync,
-  createWriteStream,
+  existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { pipeline } from "node:stream/promises";
-import yazl from "yazl";
+import { pathToFileURL } from "node:url";
 const folders: string[] = [];
 afterEach(() =>
   folders
@@ -26,9 +24,7 @@ function fixture() {
   folders.push(root);
   const payload = join(root, "payload");
   mkdirSync(join(payload, "runtime/bin"), { recursive: true });
-  if (process.platform === "win32")
-    cpSync(process.execPath, join(payload, "runtime/node.exe"));
-  else symlinkSync(process.execPath, join(payload, "runtime/bin/node"));
+  symlinkSync(process.execPath, join(payload, "runtime/bin/node"));
   mkdirSync(join(payload, "dist/server/server"), { recursive: true });
   writeFileSync(
     join(payload, "package.json"),
@@ -45,6 +41,30 @@ function fixture() {
     bin: join(root, "bin"),
   };
 }
+it("rejects direct Windows installation before touching the workspace", () => {
+  const f = fixture();
+  const platform = join(f.root, "platform.mjs");
+  writeFileSync(
+    platform,
+    "Object.defineProperty(process, 'platform', { value: 'win32' });\n",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      pathToFileURL(platform).href,
+      resolve("release/install.mjs"),
+      f.payload,
+      f.install,
+      f.bin,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/Windows.*WSL2/);
+  expect(existsSync(f.install)).toBe(false);
+  expect(existsSync(f.bin)).toBe(false);
+});
 it("activates immutable code, preserves data, and runs without system Node from Unicode paths", () => {
   const f = fixture();
   mkdirSync(join(f.install, "data"), { recursive: true });
@@ -67,23 +87,11 @@ it("activates immutable code, preserves data, and runs without system Node from 
   expect(readFileSync(join(f.install, "current-version"), "utf8").trim()).toBe(
     "0.2.0",
   );
-  const launch =
-    process.platform === "win32"
-      ? spawnSync(
-          "cmd.exe",
-          [
-            "/d",
-            "/s",
-            "/c",
-            `chcp 437 >nul & call "${join(f.bin, "miracle.cmd")}" --version`,
-          ],
-          { encoding: "utf8", cwd: tmpdir(), windowsVerbatimArguments: true },
-        )
-      : spawnSync(join(f.bin, "miracle"), ["--version"], {
-          encoding: "utf8",
-          cwd: tmpdir(),
-          env: { ...process.env, PATH: "/usr/bin:/bin" },
-        });
+  const launch = spawnSync(join(f.bin, "miracle"), ["--version"], {
+    encoding: "utf8",
+    cwd: tmpdir(),
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
   expect(launch.status, launch.stderr).toBe(0);
   expect(launch.stdout.trim()).toBe("0.2.0");
 });
@@ -106,9 +114,7 @@ it("failed staged validation leaves prior pointer and data intact", () => {
   );
 });
 
-it
-  .skipIf(process.platform === "win32")
-  .each(["download", "checksum", "extraction"])(
+it.each(["download", "checksum", "extraction"])(
   "shell %s failure preserves the old installation and data",
   (failure) => {
     const f = fixture();
@@ -206,77 +212,5 @@ it.each(["timeout", "unauthorized", "malformed"] as const)(
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
     }
-  },
-);
-
-it.skipIf(process.platform !== "win32").each(["paths", "links", "checksum"])(
-  "Windows ZIP %s rejection preserves the old installation and data",
-  async (failure) => {
-    const f = fixture();
-    mkdirSync(join(f.install, "data"), { recursive: true });
-    writeFileSync(join(f.install, "current-version"), "0.1.0\n");
-    writeFileSync(join(f.install, "data/encryption.key"), "retained key");
-    const archive = join(f.root, "payload.zip");
-    const zip = new yazl.ZipFile();
-    zip.addBuffer(
-      Buffer.from("test entry"),
-      "miracle-0.2.0-win-x64/safe/entry",
-      {
-        mode: failure === "links" ? 0o120777 : 0o100644,
-      },
-    );
-    zip.end();
-    await pipeline(zip.outputStream, createWriteStream(archive));
-    if (failure === "paths") {
-      // Equal-length mutation of both ZIP headers; file data/CRC are unchanged.
-      writeFileSync(
-        archive,
-        Buffer.from(
-          readFileSync(archive)
-            .toString("latin1")
-            .replaceAll("safe/entry", "../x/entry"),
-          "latin1",
-        ),
-      );
-    }
-    const hash =
-      failure === "checksum"
-        ? "0".repeat(64)
-        : createHash("sha256").update(readFileSync(archive)).digest("hex");
-    writeFileSync(archive + ".sha256", hash + "  payload.zip\n");
-    const script = join(f.root, "install.ps1");
-    writeFileSync(
-      script,
-      readFileSync(resolve("release/install.ps1"), "utf8")
-        .replaceAll("__VERSION__", "0.2.0")
-        .replaceAll("__REPOSITORY__", "Example/Miracle"),
-    );
-    const result = spawnSync(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          MIRACLE_INSTALL_ROOT: f.install,
-          MIRACLE_BIN_DIR: f.bin,
-          MIRACLE_ARCHIVE: archive,
-        },
-      },
-    );
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(
-      failure === "paths"
-        ? /Unsafe release archive paths/
-        : failure === "links"
-          ? /unsupported links/
-          : /checksum mismatch/,
-    );
-    expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
-      "0.1.0\n",
-    );
-    expect(readFileSync(join(f.install, "data/encryption.key"), "utf8")).toBe(
-      "retained key",
-    );
   },
 );

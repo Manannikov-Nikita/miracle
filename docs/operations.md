@@ -1,35 +1,43 @@
-# Miracle operations
+# Эксплуатация Miracle
 
-Miracle is a personal local service, with SQLite workspace storage and external ClickHouse/Trino analytical sources. Released packages include Node.js. PostgreSQL, Docker and account administration are not runtime dependencies.
+Miracle — личный локальный сервис с рабочей областью SQLite и внешними источниками ClickHouse/Trino. Готовые сборки включают Node.js. PostgreSQL, Docker и управление аккаунтами для работы не нужны.
 
-## Access and lifecycle
+## Доступ и запуск
 
-The API binds to 127.0.0.1, port 3001 by default. Host, Origin, browser-session and CSRF checks protect local data. This edition is not designed for remote hosting; do not expose it through a public reverse proxy.
+API слушает 127.0.0.1, по умолчанию порт 3001. Проверки Host, Origin, браузерной сессии и CSRF защищают локальные данные. Эта версия не предназначена для публичного размещения через reverse proxy.
 
-`miracle` opens the browser and starts the background service if needed. `miracle stop` authenticates to that exact instance and shuts it down gracefully. A stale PID never authorizes killing another process. `miracle serve` runs in the foreground. No login autostart is installed.
+`miracle` запускает фоновый сервис и печатает адрес. На macOS/Linux команда также открывает браузер. `miracle stop` проверяет токен конкретного экземпляра и завершает его работу; одного PID в устаревшем файле недостаточно для остановки процесса. `miracle serve` работает в текущем терминале. Автозапуск при входе в ОС не устанавливается.
 
-One process owns a workspace's SQLite connection exclusively. Ownership is acquired before migration or interrupted-run recovery. After a crash, unfinished runs become interrupted and are not automatically replayed.
+Один процесс удерживает исключительную блокировку SQLite на всё время работы. Блокировка берётся до миграций и восстановления прерванных запросов. После сбоя незавершённые запросы получают статус interrupted и автоматически не повторяются.
 
-## Data and limits
+## Windows через WSL 2
 
-The data directory contains miracle.sqlite and encryption.key. Connection passwords and private TLS material are encrypted. Startup checks their key/database pairing; existing data with a missing/wrong key must not be reinitialized.
+Установка и все команды `miracle` выполняются внутри GNU/Linux x64/ARM64 в WSL 2 тем же `install.sh`, что и на Linux. Подготовка среды описана в [инструкции Microsoft по WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
 
-Transactions and foreign keys preserve snapshots and board references. Versioned migrations reject unsupported newer schemas. Workspace UUIDs separate browser drafts/settings; revisions protect multiple tabs.
+Программу и рабочую область держите в файловой системе Linux, по умолчанию `~/.local/share/miracle`. Для своих путей установки и данных также выбирайте домашний каталог WSL вместо `/mnt/c`; это соответствует [рекомендации Microsoft](https://learn.microsoft.com/en-us/windows/wsl/filesystems).
 
-Default limits: 120 seconds, 50,000 rows or 20 MiB per result, two concurrent runs, 2 GiB result quota. Unreferenced results expire after 24 hours; completed history after 30 days. Board-referenced snapshots remain. Failed refreshes preserve previous results.
+В браузере Windows откройте точный адрес из терминала, например `http://127.0.0.1:3001`. Команда в WSL печатает инструкцию и не требует Linux-браузера. Доступ Windows к локальному Linux-сервису описан в [документации по сети WSL](https://learn.microsoft.com/en-us/windows/wsl/networking). При проблеме сначала проверьте `miracle status` внутри того же дистрибутива. Смена адреса сервиса на публичный интерфейс не является способом настройки WSL.
 
-## Backup and maintenance
+## Данные и ограничения
 
-Stop before `miracle backup DIRECTORY`. It creates a portable directory with a consistent SQLite snapshot, matching key and manifest. Never copy only a live database while WAL may contain data.
+Каталог данных содержит miracle.sqlite и encryption.key. Пароли подключений и приватные TLS-материалы зашифрованы. При запуске проверяется соответствие ключа базе; существующая база с отсутствующим или неверным ключом не переинициализируется.
 
-`miracle restore DIRECTORY --data-dir NEW_DIRECTORY` validates the copy and refuses a nonempty destination. Keep the original backup until verification. Backups contain private credentials. Browser SQL drafts require separate export.
+Транзакции и внешние ключи сохраняют целостность снимков и ссылок досок. Версионные миграции отклоняют более новую неподдерживаемую схему. UUID рабочей области разделяет браузерные черновики и настройки; ревизии защищают от перезаписи из другой вкладки.
 
-Before upgrades: stop, back up, rerun installer. Versioned code is separate from data. Never discard the encryption key to recover from a startup error. There is no PostgreSQL import in 0.2.0; old Docker volumes remain untouched.
+Лимиты по умолчанию: 120 секунд, 50 000 строк или 20 МиБ на результат, два одновременных запроса, 2 ГиБ на результаты. Снимки без ссылок с досок удаляются через 24 часа, завершённая история — через 30 дней. Снимки на досках остаются. Неудачное обновление сохраняет предыдущий результат.
 
-## Development and source connections
+## Резервные копии и обслуживание
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md). API tests use temporary SQLite directories. Real ClickHouse/Trino integration is separate and may use optional Compose fixtures.
+Перед `miracle backup DIRECTORY` остановите сервис. Команда создаёт переносимый каталог с согласованным снимком SQLite, соответствующим ключом и манифестом. Не копируйте только файл работающей базы: часть данных может находиться в WAL.
 
-Use dedicated read-only database users. Miracle's SQL validation supplements source permissions. Native connections use normal host addresses; same-machine sources use 127.0.0.1.
+`miracle restore DIRECTORY --data-dir NEW_DIRECTORY` проверяет копию и отказывается перезаписывать непустой каталог. Сохраняйте исходную копию до проверки восстановления. Копии содержат приватные учётные данные источников. SQL-черновики браузера экспортируйте отдельно.
 
-[.env.example](../.env.example) lists development overrides: MIRACLE_DATA_DIR, PORT and APP_ORIGIN for the Vite proxy. Released CLI startup supplies the exact listener origin. Never put passwords, keys or control tokens in Git, URLs or public diagnostics.
+Перед обновлением остановите сервис, сделайте копию и повторите установку. Версии программы хранятся отдельно от данных. Не удаляйте ключ шифрования ради исправления ошибки запуска. Импорта PostgreSQL в 0.2.0 нет; старые Docker volumes остаются нетронутыми.
+
+## Разработка и источники
+
+См. [CONTRIBUTING.md](../CONTRIBUTING.md). API-тесты используют временные каталоги SQLite. Интеграционные проверки настоящих ClickHouse/Trino запускаются отдельно и могут использовать тестовые Compose-контейнеры.
+
+Используйте отдельного пользователя источника с правами только на чтение. Проверка SQL в Miracle дополняет ограничения базы. Источник в той же среде доступен по 127.0.0.1. В WSL это Linux-среда; для сервера на стороне Windows при стандартном NAT нужен адрес хоста Windows, как описано в [документации Microsoft](https://learn.microsoft.com/en-us/windows/wsl/networking).
+
+[.env.example](../.env.example) содержит параметры разработки: MIRACLE_DATA_DIR, PORT и APP_ORIGIN для Vite proxy. CLI задаёт точный адрес слушающего сервиса. Не помещайте пароли, ключи и управляющие токены в Git, URL или публичные логи.

@@ -8,16 +8,35 @@ import {
   existsSync,
   copyFileSync,
   statSync,
-  createWriteStream,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { pipeline } from "node:stream/promises";
 import { create as createTar, extract as extractTar } from "tar";
-import yazl from "yazl";
+it("rejects a native Windows release target before producing artifacts", () => {
+  const root = mkdtempSync(join(tmpdir(), "miracle unsupported release "));
+  const output = join(root, "output");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/build-release.mjs",
+        "Example/Miracle",
+        "0.2.0",
+        output,
+        "win-x64",
+      ],
+      { cwd: resolve(import.meta.dirname, ".."), encoding: "utf8" },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/Unsupported release target/);
+    expect(existsSync(output)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 it.each([
   [
     "publishes executable LF bootstrap scripts even from a CRLF checkout",
@@ -29,7 +48,6 @@ it.each([
     true,
     "linux-x64",
   ],
-  ["publishes a Windows ZIP with Unicode filenames", false, "win-x64"],
 ])(
   "%s",
   async (_name, nativeCreationFails, target) => {
@@ -37,8 +55,7 @@ it.each([
     const local = resolve(import.meta.dirname, "../.local");
     mkdirSync(local, { recursive: true });
     const fixture = mkdtempSync(join(local, "miracle release fixture "));
-    const windows = target === "win-x64";
-    const extension = windows ? "zip" : "tar.gz";
+    const extension = "tar.gz";
     const runtimeTop = `node-v24.22.2-${target}`;
     try {
       for (const path of [
@@ -76,7 +93,7 @@ it.each([
         "dist/server/index.js",
         "release/install.mjs",
         `upstream/${runtimeTop}/LICENSE`,
-        `upstream/${runtimeTop}/${windows ? "node.exe" : "bin/node"}`,
+        `upstream/${runtimeTop}/bin/node`,
       ])
         writeFileSync(join(fixture, path), "fixture\n");
       writeFileSync(
@@ -91,29 +108,11 @@ it.each([
       const bootstrap =
         "#!/bin/sh\r\nprintf '%s\\n' '__REPOSITORY__ __VERSION__'\r\n";
       writeFileSync(join(fixture, "release/install.sh"), bootstrap);
-      writeFileSync(
-        join(fixture, "release/install.ps1"),
-        "$Version = '__VERSION__'\r\n$Repository = '__REPOSITORY__'\r\n",
-      );
       const runtime = join(fixture, `runtime.${extension}`);
-      if (windows) {
-        const zip = new yazl.ZipFile();
-        zip.addFile(
-          join(fixture, "upstream", runtimeTop, "node.exe"),
-          `${runtimeTop}/node.exe`,
-        );
-        zip.addFile(
-          join(fixture, "upstream", runtimeTop, "LICENSE"),
-          `${runtimeTop}/LICENSE`,
-        );
-        zip.end();
-        await pipeline(zip.outputStream, createWriteStream(runtime));
-      } else {
-        await createTar(
-          { file: runtime, cwd: join(fixture, "upstream"), gzip: true },
-          [runtimeTop],
-        );
-      }
+      await createTar(
+        { file: runtime, cwd: join(fixture, "upstream"), gzip: true },
+        [runtimeTop],
+      );
       writeFileSync(
         join(fixture, "release/node-checksums.json"),
         JSON.stringify({
@@ -133,11 +132,7 @@ import { basename } from 'node:path';
 const cp = createRequire(import.meta.url)('node:child_process');
 const original = cp.execFileSync;
 cp.execFileSync = function (file, args, options) {
-  if (/^tar(?:\\.exe)?$/i.test(basename(file)) && args[0].includes('c')) {
-    const error = new Error('Native tar creation failed: 0xC0000005');
-    error.status = 3221225477;
-    throw error;
-  }
+  if (basename(file) === 'tar') throw new Error('No system archive tool is available to the builder');
   return original(file, args, options);
 };
 syncBuiltinESMExports();
@@ -165,34 +160,7 @@ syncBuiltinESMExports();
       expect(existsSync(archive), "platform-specific release archive").toBe(
         true,
       );
-      if (windows) {
-        // Use the Windows consumer's .NET reader on Windows and an independent
-        // native ZIP reader elsewhere; do not round-trip through the writer.
-        const unpacked =
-          process.platform === "win32"
-            ? spawnSync(
-                "powershell.exe",
-                [
-                  "-NoProfile",
-                  "-Command",
-                  "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:MIRACLE_TEST_ZIP, $env:MIRACLE_TEST_DEST)",
-                ],
-                {
-                  encoding: "utf8",
-                  env: {
-                    ...process.env,
-                    MIRACLE_TEST_ZIP: archive,
-                    MIRACLE_TEST_DEST: extracted,
-                  },
-                },
-              )
-            : spawnSync("unzip", ["-q", archive, "-d", extracted], {
-                encoding: "utf8",
-              });
-        expect(unpacked.status, unpacked.stderr).toBe(0);
-      } else {
-        await extractTar({ file: archive, cwd: extracted, chmod: true });
-      }
+      await extractTar({ file: archive, cwd: extracted, chmod: true });
       const payload = join(extracted, `miracle-0.2.0-${target}`);
       expect(
         readFileSync(join(payload, "dist/client/snow ☃/данные.txt"), "utf8"),
@@ -200,23 +168,17 @@ syncBuiltinESMExports();
       expect(
         readFileSync(join(payload, "dist/server/executable.sh"), "utf8"),
       ).toBe("#!/bin/sh\nexit 0\n");
-      if (process.platform !== "win32")
-        expect(
-          statSync(join(payload, "dist/server/executable.sh")).mode & 0o777,
-        ).toBe(0o755);
+      expect(
+        statSync(join(payload, "dist/server/executable.sh")).mode & 0o777,
+      ).toBe(0o755);
       expect(readFileSync(join(output, "install.sh"), "utf8")).toBe(
         "#!/bin/sh\nprintf '%s\\n' 'Example/Miracle 0.2.0'\n",
       );
-      expect(readFileSync(join(output, "install.ps1"), "utf8")).toBe(
-        "$Version = '0.2.0'\n$Repository = 'Example/Miracle'\n",
-      );
-      if (process.platform !== "win32") {
-        const installed = spawnSync("sh", [join(output, "install.sh")], {
-          encoding: "utf8",
-        });
-        expect(installed.status, installed.stderr).toBe(0);
-        expect(installed.stdout).toBe("Example/Miracle 0.2.0\n");
-      }
+      const installed = spawnSync("sh", [join(output, "install.sh")], {
+        encoding: "utf8",
+      });
+      expect(installed.status, installed.stderr).toBe(0);
+      expect(installed.stdout).toBe("Example/Miracle 0.2.0\n");
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
@@ -249,37 +211,34 @@ it("refuses an unverified runtime before producing or replacing a release archiv
     rmSync(output, { recursive: true, force: true });
   }
 });
-it.skipIf(process.platform === "win32")(
-  "refuses to replace assets of an existing GitHub release",
-  () => {
-    const folder = mkdtempSync(join(tmpdir(), "miracle immutable release "));
-    try {
-      const tools = join(folder, "tools");
-      mkdirSync(tools);
-      const mutation = join(folder, "mutation");
-      writeFileSync(
-        join(tools, "gh"),
-        '#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 0; fi\nprintf changed > "$RELEASE_MUTATION"\n',
-        { mode: 0o755 },
-      );
-      const result = spawnSync(
-        process.execPath,
-        ["scripts/publish-release.mjs", "v0.2.0", folder],
-        {
-          cwd: resolve(import.meta.dirname, ".."),
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            PATH: tools + ":" + process.env.PATH,
-            RELEASE_MUTATION: mutation,
-          },
+it("refuses to replace assets of an existing GitHub release", () => {
+  const folder = mkdtempSync(join(tmpdir(), "miracle immutable release "));
+  try {
+    const tools = join(folder, "tools");
+    mkdirSync(tools);
+    const mutation = join(folder, "mutation");
+    writeFileSync(
+      join(tools, "gh"),
+      '#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 0; fi\nprintf changed > "$RELEASE_MUTATION"\n',
+      { mode: 0o755 },
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/publish-release.mjs", "v0.2.0", folder],
+      {
+        cwd: resolve(import.meta.dirname, ".."),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: tools + ":" + process.env.PATH,
+          RELEASE_MUTATION: mutation,
         },
-      );
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toMatch(/already exists|immutable/i);
-      expect(existsSync(mutation)).toBe(false);
-    } finally {
-      rmSync(folder, { recursive: true, force: true });
-    }
-  },
-);
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/already exists|immutable/i);
+    expect(existsSync(mutation)).toBe(false);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});

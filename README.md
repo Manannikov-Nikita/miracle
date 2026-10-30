@@ -24,20 +24,20 @@ Miracle работает на вашем компьютере и открыва�
 
 ## Установка
 
-**0.2.0 готовится к выпуску.** Команда ниже станет доступна после публикации native-архивов и install.sh в GitHub Releases. Старый Docker-комплект 0.1.0 относится к другой версии приложения.
+**0.2.0 готовится к выпуску.** Команда ниже станет доступна после публикации архивов для macOS/Linux и install.sh в GitHub Releases. Старый Docker-комплект 0.1.0 относится к другой версии приложения.
 
-macOS и Linux:
+macOS, Linux и Windows через терминал WSL 2:
 
 ```sh
 curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.sh | sh
 miracle
 ```
 
-Для Windows предусмотрен PowerShell-установщик. [Полная инструкция](docs/local-installation.md) содержит команду, ручную установку, обновление и резервное копирование.
+На Windows сначала нужен [WSL 2 с Linux](https://learn.microsoft.com/en-us/windows/wsl/install). Команды установки и запуска выполняются в его терминале; напечатанный адрес откройте в браузере Windows. [Полная инструкция](docs/local-installation.md) содержит требования к WSL, ручную установку, обновление и резервное копирование.
 
-Комплект содержит Node.js; устанавливать runtime, npm или Git отдельно не нужно. Сборки: macOS Intel/Apple Silicon, GNU/Linux x64/ARM64, Windows x64. ClickHouse или Trino подключаются отдельно.
+Комплект содержит Node.js; устанавливать runtime, npm или Git отдельно не нужно. Четыре сборки: macOS Intel/Apple Silicon и GNU/Linux x64/ARM64. В WSL 2 используется Linux-сборка. ClickHouse или Trino подключаются отдельно.
 
-`miracle` запускает сервис и открывает `http://127.0.0.1:3001`. Рабочая область открывается сразу, без входа.
+`miracle` запускает сервис и печатает `http://127.0.0.1:3001`. На macOS/Linux команда также открывает браузер; в WSL перейдите по напечатанному адресу в браузере Windows. Рабочая область открывается сразу, без входа.
 
 ```sh
 miracle status
