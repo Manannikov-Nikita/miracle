@@ -67,6 +67,13 @@ function legacy(path: string) {
   );
   return db;
 }
+function legacyTwo(path: string) {
+  const db = legacy(path);
+  db.sqlite.exec(
+    "ALTER TABLE query_runs ADD COLUMN batch TEXT CHECK(batch IS NULL OR json_valid(batch)); PRAGMA user_version=2;",
+  );
+  return db;
+}
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   for (const path of roots.splice(0))
@@ -84,42 +91,51 @@ const progress = {
 };
 
 describe("date batch storage migration", () => {
-  it("upgrades an existing version-one workspace without changing rows, identity or key", () => {
-    const path = makeRoot();
-    const db = legacy(path);
-    const key = readFileSync(join(path, "encryption.key"));
-    const credential = db.query("SELECT password_encrypted FROM connections")
-      .rows[0].password_encrypted;
-    migrate(db);
-    expect(version(db)).toBe(2);
-    expect(
-      db.query("SELECT value FROM app_settings WHERE key='workspace_id'")
-        .rows[0].value,
-    ).toBe("existing-workspace");
-    expect(db.query("SELECT rows FROM result_chunks").rows[0].rows).toEqual([
-      ["keep"],
-    ]);
-    expect(
-      db.query("SELECT batch FROM query_runs WHERE id='old-run'").rows[0].batch,
-    ).toBeNull();
-    expect(
-      db.query("SELECT password_encrypted FROM connections").rows[0]
-        .password_encrypted,
-    ).toBe(credential);
-    expect(readFileSync(join(path, "encryption.key"))).toEqual(key);
-    db.query("UPDATE query_runs SET batch=?1 WHERE id='old-run'", [progress]);
-    migrate(db);
-    expect(
-      db.query("SELECT batch FROM query_runs WHERE id='old-run'").rows[0].batch,
-    ).toEqual(progress);
-    expect(() =>
-      db.query("UPDATE query_runs SET batch='broken' WHERE id='old-run'"),
-    ).toThrow();
-  });
+  it.each([1, 2])(
+    "upgrades version %i without changing rows, identity or key",
+    (schemaVersion) => {
+      const path = makeRoot();
+      const db = schemaVersion === 1 ? legacy(path) : legacyTwo(path);
+      const key = readFileSync(join(path, "encryption.key"));
+      const credential = db.query("SELECT password_encrypted FROM connections")
+        .rows[0].password_encrypted;
+      migrate(db);
+      expect(version(db)).toBe(3);
+      expect(
+        db.query("SELECT trino_options_encrypted FROM connections").rows[0]
+          .trino_options_encrypted,
+      ).toBeNull();
+      expect(
+        db.query("SELECT value FROM app_settings WHERE key='workspace_id'")
+          .rows[0].value,
+      ).toBe("existing-workspace");
+      expect(db.query("SELECT rows FROM result_chunks").rows[0].rows).toEqual([
+        ["keep"],
+      ]);
+      expect(
+        db.query("SELECT batch FROM query_runs WHERE id='old-run'").rows[0]
+          .batch,
+      ).toBeNull();
+      expect(
+        db.query("SELECT password_encrypted FROM connections").rows[0]
+          .password_encrypted,
+      ).toBe(credential);
+      expect(readFileSync(join(path, "encryption.key"))).toEqual(key);
+      db.query("UPDATE query_runs SET batch=?1 WHERE id='old-run'", [progress]);
+      migrate(db);
+      expect(
+        db.query("SELECT batch FROM query_runs WHERE id='old-run'").rows[0]
+          .batch,
+      ).toEqual(progress);
+      expect(() =>
+        db.query("UPDATE query_runs SET batch='broken' WHERE id='old-run'"),
+      ).toThrow();
+    },
+  );
   it("initializes the new schema and encryption sentinel atomically", () => {
     const path = makeRoot();
     const db = fresh(path);
-    expect(version(db)).toBe(2);
+    expect(version(db)).toBe(3);
     expect(
       db.query("SELECT value FROM app_settings WHERE key='workspace_id'")
         .rows[0].value,
@@ -147,22 +163,43 @@ describe("date batch storage migration", () => {
       ).rows,
     ).toEqual([]);
   });
+  it("rolls back the whole version-one upgrade if adding connection TLS storage fails", () => {
+    const db = legacy(makeRoot());
+    db.sqlite.exec(
+      "ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT;",
+    );
+    expect(() => migrate(db)).toThrow(/duplicate column/);
+    expect(version(db)).toBe(1);
+    expect(
+      db.query(
+        "SELECT name FROM pragma_table_info('query_runs') WHERE name='batch'",
+      ).rows,
+    ).toEqual([]);
+    expect(db.query("SELECT rows FROM result_chunks").rows[0].rows).toEqual([
+      ["keep"],
+    ]);
+  });
   it("refuses a future workspace without lowering its schema version", () => {
     const db = fresh(makeRoot());
-    db.sqlite.exec("PRAGMA user_version=3");
+    db.sqlite.exec("PRAGMA user_version=4");
     expect(() => migrate(db)).toThrow(/newer/);
-    expect(version(db)).toBe(3);
+    expect(version(db)).toBe(4);
   });
 });
 
 describe("versioned workspace backups", () => {
-  it.each([1, 2])(
+  it.each([1, 2, 3])(
     "preserves version %i on backup/restore, then permits upgrading old backups",
     async (schemaVersion) => {
       const root = makeRoot();
       const path = join(root, "data");
-      const db = schemaVersion === 1 ? legacy(path) : fresh(path);
-      if (schemaVersion === 2)
+      const db =
+        schemaVersion === 1
+          ? legacy(path)
+          : schemaVersion === 2
+            ? legacyTwo(path)
+            : fresh(path);
+      if (schemaVersion >= 2)
         db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES('batch','interrupted','{}',?1)",
           [progress],
@@ -188,7 +225,12 @@ describe("versioned workspace backups", () => {
       ).toBe(identity);
       expect(readFileSync(join(restored, "encryption.key"))).toEqual(key);
       migrate(copy);
-      expect(version(copy)).toBe(2);
+      expect(version(copy)).toBe(3);
+      expect(
+        copy.query(
+          "SELECT name FROM pragma_table_info('connections') WHERE name='trino_options_encrypted'",
+        ).rows,
+      ).toHaveLength(1);
       if (schemaVersion === 1)
         expect(
           copy.query("SELECT rows FROM result_chunks").rows[0].rows,
@@ -226,13 +268,13 @@ describe("versioned workspace backups", () => {
     await backupWorkspace(path, backup);
     const manifestPath = join(backup, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.schemaVersion = 3;
+    manifest.schemaVersion = 4;
     writeFileSync(manifestPath, JSON.stringify(manifest));
     await expect(
       restoreWorkspace(backup, join(root, "restored")),
     ).rejects.toThrow(/Unsupported backup/);
     const future = open(path);
-    future.sqlite.exec("PRAGMA user_version=3");
+    future.sqlite.exec("PRAGMA user_version=4");
     future.close();
     await expect(backupWorkspace(path, join(root, "future"))).rejects.toThrow(
       /Unsupported workspace/,

@@ -1,10 +1,11 @@
 // Runs the native release using only its bundled runtime, from unrelated Unicode paths.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { createServer } from "node:net";
+import { createServer as createHttpsServer } from "node:https";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
   throw Error("Usage: node tests/local-install-smoke.mjs archive.tar.gz");
@@ -46,7 +47,7 @@ async function command(
 async function installArchive() {
   return await command("sh", [join(dirname(archive), "install.sh")]);
 }
-let node, cli;
+let node, cli, trinoServer;
 async function run(...args) {
   return await command(join(bin, "miracle"), args, {
     customEnv: { ...env, PATH: safePath },
@@ -96,6 +97,91 @@ try {
   }
   let browser = await session();
   const workspaceId = browser.body.workspaceId;
+  // Exercise the installed runtime against a synthetic private CA, never a real source.
+  const certificateFile = join(root, "fixture-ca.pem");
+  const keyFile = join(root, "fixture-key.pem");
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=Miracle native TLS fixture",
+      "-addext",
+      "subjectAltName=IP:127.0.0.1",
+      "-keyout",
+      keyFile,
+      "-out",
+      certificateFile,
+    ],
+    { stdio: "ignore" },
+  );
+  const caCert = await readFile(certificateFile, "utf8");
+  trinoServer = createHttpsServer(
+    { key: await readFile(keyFile), cert: caCert },
+    async (req, res) => {
+      for await (const chunk of req) {
+        /* Drain the statement body. */
+      }
+      if (req.method !== "POST" || req.url !== "/v1/statement") {
+        res.writeHead(404).end();
+        return;
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          columns: [{ name: "version", type: "varchar" }],
+          data: [["native-trino-tls"]],
+        }),
+      );
+    },
+  );
+  await new Promise((resolve, reject) => {
+    trinoServer.once("error", reject);
+    trinoServer.listen(0, "127.0.0.1", resolve);
+  });
+  const trinoInput = {
+    name: "Native Trino TLS",
+    engine: "trino",
+    username: "fixture-reader",
+    url: `https://127.0.0.1:${trinoServer.address().port}`,
+  };
+  async function post(path, payload) {
+    return await fetch(`http://127.0.0.1:${port}${path}`, {
+      method: "POST",
+      headers: {
+        cookie: browser.cookie,
+        "x-csrf-token": browser.body.csrfToken,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+  const untrusted = await post("/api/connections/test", trinoInput);
+  assert.equal(untrusted.status, 400);
+  assert.match((await untrusted.json()).error, /CA|сертификат/i);
+  const trusted = await post("/api/connections", {
+    ...trinoInput,
+    trino: { tls: { caCert } },
+  });
+  assert.equal(trusted.status, 201, await trusted.clone().text());
+  const trinoConnection = await trusted.json();
+  assert.equal(trinoConnection.trino.tls.hasCaCert, true);
+  assert(!JSON.stringify(trinoConnection).includes("BEGIN CERTIFICATE"));
+  async function verifySavedTrino() {
+    const response = await post(
+      `/api/connections/${trinoConnection.id}/test`,
+      {},
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal((await response.json()).version, "native-trino-tls");
+  }
+  await verifySavedTrino();
   const response = await fetch(`http://127.0.0.1:${port}/api/boards`, {
     method: "POST",
     headers: {
@@ -127,6 +213,7 @@ try {
   await run("start", "--port", String(port));
   browser = await session();
   assert.equal(browser.body.workspaceId, workspaceId);
+  await verifySavedTrino();
   assert.equal(
     (
       await fetch(`http://127.0.0.1:${port}/api/boards/${board.id}`, {
@@ -141,13 +228,14 @@ try {
   await run("start", "--data-dir", restored, "--port", String(port));
   browser = await session();
   assert.equal(browser.body.workspaceId, workspaceId);
+  await verifySavedTrino();
   await run("stop", "--data-dir", restored);
   const prodPackages = await readdir(join(code, "node_modules"));
   assert(!prodPackages.includes("pg"));
   assert(!prodPackages.includes("react"));
   assert(!prodPackages.includes("@node-rs"));
   console.log(
-    `PASS: ${process.platform}-${process.arch}, install/reinstall, immutable code, authenticated lifecycle, persistence, backup/restore, private state, no system runtime`,
+    `PASS: ${process.platform}-${process.arch}, install/reinstall, immutable code, authenticated lifecycle, Trino HTTPS CA persistence and backup/restore, private state, no system runtime`,
   );
 } finally {
   if (node && cli) {
@@ -155,6 +243,10 @@ try {
     await run("stop", "--data-dir", join(root, "restored workspace")).catch(
       () => {},
     );
+  }
+  if (trinoServer) {
+    trinoServer.closeAllConnections();
+    await new Promise((resolve) => trinoServer.close(resolve));
   }
   await rm(root, { recursive: true, force: true });
 }

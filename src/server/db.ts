@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 const timestamp = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
-export const WORKSPACE_SCHEMA_VERSION = 2;
+export const WORKSPACE_SCHEMA_VERSION = 3;
 const jsonFields = new Set(["source", "document", "columns", "rows", "batch"]);
 /** One prepared-statement connection owns the workspace until close. */
 export class Database {
@@ -89,10 +89,14 @@ export function migrate(db: Database, initialize?: () => void) {
   if (version > WORKSPACE_SCHEMA_VERSION)
     throw new Error("Workspace schema is newer than this version of Miracle");
   if (version === WORKSPACE_SCHEMA_VERSION) return;
-  if (version === 1) {
+  if (version === 1 || version === 2) {
     db.transaction(() => {
+      if (version === 1)
+        db.sqlite.exec(
+          "ALTER TABLE query_runs ADD COLUMN batch TEXT CHECK(batch IS NULL OR json_valid(batch));",
+        );
       db.sqlite.exec(
-        "ALTER TABLE query_runs ADD COLUMN batch TEXT CHECK(batch IS NULL OR json_valid(batch)); PRAGMA user_version=2;",
+        "ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT; PRAGMA user_version=3;",
       );
     });
     return;
@@ -102,7 +106,7 @@ export function migrate(db: Database, initialize?: () => void) {
   db.transaction(() => {
     db.sqlite.exec(`
  CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
- CREATE TABLE connections(id TEXT PRIMARY KEY,name TEXT NOT NULL,engine TEXT NOT NULL,url TEXT NOT NULL,username TEXT NOT NULL,password_encrypted TEXT NOT NULL,database_name TEXT,catalog TEXT,schema_name TEXT,clickhouse_options_encrypted TEXT,created_at TEXT NOT NULL DEFAULT ${timestamp});
+ CREATE TABLE connections(id TEXT PRIMARY KEY,name TEXT NOT NULL,engine TEXT NOT NULL,url TEXT NOT NULL,username TEXT NOT NULL,password_encrypted TEXT NOT NULL,database_name TEXT,catalog TEXT,schema_name TEXT,clickhouse_options_encrypted TEXT,trino_options_encrypted TEXT,created_at TEXT NOT NULL DEFAULT ${timestamp});
  CREATE TABLE queries(id TEXT PRIMARY KEY,name TEXT NOT NULL,source TEXT NOT NULL CHECK(json_valid(source)),revision INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL DEFAULT ${timestamp});
  CREATE TABLE query_runs(id TEXT PRIMARY KEY,status TEXT NOT NULL,source TEXT NOT NULL CHECK(json_valid(source)),result_set_id TEXT,error TEXT,started_at TEXT NOT NULL DEFAULT ${timestamp},finished_at TEXT,row_count INTEGER,elapsed_ms INTEGER,batch TEXT CHECK(batch IS NULL OR json_valid(batch)));
  CREATE TABLE result_sets(id TEXT PRIMARY KEY,columns TEXT NOT NULL CHECK(json_valid(columns)),row_count INTEGER NOT NULL,byte_count INTEGER NOT NULL,source TEXT NOT NULL CHECK(json_valid(source)),created_at TEXT NOT NULL DEFAULT ${timestamp});
@@ -110,7 +114,7 @@ export function migrate(db: Database, initialize?: () => void) {
  CREATE TABLE boards(id TEXT PRIMARY KEY,name TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,document TEXT NOT NULL CHECK(json_valid(document)),updated_at TEXT NOT NULL DEFAULT ${timestamp});
  CREATE TABLE board_result_refs(board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,result_set_id TEXT NOT NULL REFERENCES result_sets(id) ON DELETE RESTRICT,PRIMARY KEY(board_id,result_set_id));
  CREATE INDEX runs_status ON query_runs(status); CREATE INDEX runs_started ON query_runs(started_at); CREATE INDEX refs_result ON board_result_refs(result_set_id);
- PRAGMA user_version=2;
+ PRAGMA user_version=3;
  `);
     db.query("INSERT INTO app_settings(key,value) VALUES('workspace_id',?1)", [
       randomUUID(),

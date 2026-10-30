@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { clickhouseOptionsSchema } from "./clickhouseOptions.js";
+import { trinoOptionsSchema } from "./trinoOptions.js";
 import { tableSpecSchema } from "./tableValidation.js";
 import { dateRangeDates } from "../shared/date-batch.js";
 export const dateRangeSchema = z
@@ -36,6 +37,7 @@ export const connectionSchema = z
     catalog: z.string().max(200).optional(),
     schema: z.string().max(200).optional(),
     clickhouse: clickhouseOptionsSchema.optional(),
+    trino: trinoOptionsSchema.optional(),
   })
   .strict();
 const identifier = z.string().min(1).max(200);

@@ -24,7 +24,8 @@ it("prints help without accessing or initializing a workspace", () => {
   expect(cli("--help")).toContain("backup DIRECTORY");
 });
 it("reports installed version without a service", () => {
-  expect(cli("--version").trim()).toBe("0.2.0");
+  const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+  expect(cli("--version").trim()).toBe(manifest.version);
 });
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {

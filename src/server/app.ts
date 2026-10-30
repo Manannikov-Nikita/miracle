@@ -24,6 +24,11 @@ import {
   publicClickHouseOptions,
   validateClickHouseConnection,
 } from "./clickhouseOptions.js";
+import {
+  mergeTrinoOptions,
+  publicTrinoOptions,
+  validateTrinoConnection,
+} from "./trinoOptions.js";
 import { assertReadOnly } from "./sql.js";
 import { registerMetadataRoutes } from "./metadata.js";
 import {
@@ -388,6 +393,11 @@ export async function buildApp(
         ? JSON.parse(box.decrypt(r.clickhouse_options_encrypted))
         : undefined;
     }
+    function savedTrinoOptions(r: any) {
+      return r.trino_options_encrypted
+        ? JSON.parse(box.decrypt(r.trino_options_encrypted))
+        : undefined;
+    }
     function connectionDto(r: any) {
       return {
         id: r.id,
@@ -400,6 +410,7 @@ export async function buildApp(
         schema: r.schema_name || undefined,
         hasPassword: !!r.password_encrypted,
         clickhouse: publicClickHouseOptions(savedClickHouseOptions(r)),
+        trino: publicTrinoOptions(savedTrinoOptions(r)),
         createdAt: new Date(r.created_at).toISOString(),
       };
     }
@@ -410,6 +421,7 @@ export async function buildApp(
         ...connectionDto(r),
         password: r.password_encrypted ? box.decrypt(r.password_encrypted) : "",
         clickhouse: savedClickHouseOptions(r),
+        trino: savedTrinoOptions(r),
       };
     }
     app.get("/api/connections", async (req) => {
@@ -423,6 +435,7 @@ export async function buildApp(
       try {
         b.url = validateConnectionUrl(b.url);
         validateClickHouseConnection(b);
+        validateTrinoConnection(b);
       } catch (e: any) {
         throw err(400, e.message);
       }
@@ -430,6 +443,7 @@ export async function buildApp(
         ...b,
         password: b.password || "",
         clickhouse: b.clickhouse || undefined,
+        trino: b.trino || undefined,
       };
     }
     function mergedConnection(
@@ -447,15 +461,18 @@ export async function buildApp(
         catalog: patch.catalog ?? old.catalog,
         schema: patch.schema ?? old.schema,
         clickhouse: mergeClickHouseOptions(old.clickhouse, patch.clickhouse),
+        trino: mergeTrinoOptions(old.trino, patch.trino),
       });
     }
     const encryptedOptions = (c: EngineConnection) =>
       c.clickhouse ? box.encrypt(JSON.stringify(c.clickhouse)) : null;
+    const encryptedTrinoOptions = (c: EngineConnection) =>
+      c.trino ? box.encrypt(JSON.stringify(c.trino)) : null;
     app.post("/api/connections", async (req, reply) => {
       need(req);
       const b = validateConnection(req.body);
       const r = db.query(
-        "INSERT INTO connections(id,name,engine,url,username,password_encrypted,database_name,catalog,schema_name,clickhouse_options_encrypted) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING *",
+        "INSERT INTO connections(id,name,engine,url,username,password_encrypted,database_name,catalog,schema_name,clickhouse_options_encrypted,trino_options_encrypted) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) RETURNING *",
         [
           randomUUID(),
           b.name,
@@ -467,6 +484,7 @@ export async function buildApp(
           b.catalog,
           b.schema,
           encryptedOptions(b),
+          encryptedTrinoOptions(b),
         ],
       ).rows[0];
       reply.code(201);
@@ -478,7 +496,7 @@ export async function buildApp(
       const patch = connectionSchema.partial().parse(req.body);
       const b = mergedConnection(await connection(id), patch);
       const r = db.query(
-        "UPDATE connections SET name=?2,engine=?3,url=?4,username=?5,password_encrypted=?6,database_name=?7,catalog=?8,schema_name=?9,clickhouse_options_encrypted=?10 WHERE id=?1 RETURNING *",
+        "UPDATE connections SET name=?2,engine=?3,url=?4,username=?5,password_encrypted=?6,database_name=?7,catalog=?8,schema_name=?9,clickhouse_options_encrypted=?10,trino_options_encrypted=?11 WHERE id=?1 RETURNING *",
         [
           id,
           b.name,
@@ -490,6 +508,7 @@ export async function buildApp(
           b.catalog,
           b.schema,
           encryptedOptions(b),
+          encryptedTrinoOptions(b),
         ],
       ).rows[0];
       return connectionDto(r);
