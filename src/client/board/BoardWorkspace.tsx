@@ -24,7 +24,6 @@ import type {
   QueryRun,
   QuerySource,
   ResultSet,
-  User,
 } from "../../shared/types";
 import { api, waitForRun } from "../api";
 import { Select } from "../components/Select";
@@ -55,7 +54,7 @@ import { snapResizedNode, type ResizeSides } from "./resize-snapping";
 import "./board.css";
 export { createResultNode } from "./model";
 export interface BoardWorkspaceProps {
-  user: User;
+  workspaceId: string;
   incomingResult?: ResultSet | null;
   onIncomingConsumed: () => void;
   onOpenSource: (source: QuerySource, title: string) => void;
@@ -65,7 +64,7 @@ const nodeTypes = { artifact: ArtifactNode };
 // Documents store explicit sizes, while transient React Flow measurements are not persisted.
 const boardFitOptions = { padding: 0.15, includeHiddenNodes: true };
 function Workspace({
-  user,
+  workspaceId,
   incomingResult,
   onIncomingConsumed,
   onOpenSource,
@@ -79,7 +78,7 @@ function Workspace({
     [],
   );
   const workspaceRef = useRef<HTMLElement>(null);
-  const store = useBoard(user, notify);
+  const store = useBoard(workspaceId, notify);
   const { board, editable, change } = store;
   const flow = useReactFlow<ArtifactFlowNode>();
   const [selected, setSelected] = useState<string | null>(null);
@@ -631,7 +630,7 @@ function Workspace({
       {store.conflict && (
         <div className="board-conflict" role="alert">
           <span>
-            Доска изменена другим участником. Ваш черновик сохранён локально.
+            Доска изменена в другой вкладке. Ваш черновик сохранён локально.
           </span>
           <button onClick={() => openDialog("copy")}>Сохранить копию</button>
           <button onClick={() => void store.reload()}>
@@ -920,7 +919,7 @@ function Workspace({
         <span>
           {board
             ? `${board.document.nodes.length} блоков · ${board.document.edges.length} связей`
-            : "Общее рабочее пространство"}
+            : "Рабочая область"}
         </span>
         <span>
           Shift + клик: выбрать несколько · рамка: фон · панорама: пробел + фон
@@ -947,10 +946,10 @@ function Workspace({
             </Dialog.Title>
             <Dialog.Description>
               {dialog === "delete"
-                ? `Доска «${board?.name}» будет удалена для всех участников.`
+                ? `Доска «${board?.name}» будет удалена.`
                 : dialog === "copy"
                   ? "Копия сохранит ваши блоки и закреплённые снимки."
-                  : "Доска доступна участникам рабочего пространства."}
+                  : "Доска сохранится в вашей рабочей области."}
             </Dialog.Description>
             <form
               onSubmit={(e) => {

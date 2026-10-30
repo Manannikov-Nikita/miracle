@@ -127,6 +127,8 @@ export function chartSeries(
   rows: Cell[][],
   spec: ChartSpec,
 ) {
+  const categoryAxis =
+    spec.kind === "bar" && spec.orientation === "horizontal" ? "Y" : "X";
   const xi = columns.findIndex((c) => c.id === spec.x);
   const ys = spec.y.map((id) => columns.findIndex((c) => c.id === id));
   const si = spec.series ? columns.findIndex((c) => c.id === spec.series) : -1;
@@ -152,7 +154,7 @@ export function chartSeries(
   for (const row of rows) {
     const rawX = row[xi];
     if (rawX !== null && !["string", "number", "boolean"].includes(typeof rawX))
-      throw new Error("Ось X не поддерживает массивы и объекты.");
+      throw new Error(`Ось ${categoryAxis} не поддерживает массивы и объекты.`);
     const x =
       spec.kind === "scatter"
         ? chartNumber(rawX, columns[xi])
@@ -177,7 +179,7 @@ export function chartSeries(
         const categories = stackedCategories.get(key) ?? new Set();
         if (categories.has(x))
           throw new Error(
-            "Для накопления нужна одна строка на сочетание X и разбивки. Сгруппируйте значения в SQL (GROUP BY).",
+            `Для накопления нужна одна строка на сочетание ${categoryAxis} и разбивки. Сгруппируйте значения в SQL (GROUP BY).`,
           );
         categories.add(x);
         stackedCategories.set(key, categories);

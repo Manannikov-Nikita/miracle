@@ -1,43 +1,5 @@
-name: miracle
+name: miracle-connectors
 services:
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: miracle
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-miracle_local}
-      POSTGRES_DB: miracle
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5544}:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: [CMD-SHELL, "pg_isready -U miracle -d miracle"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-  app:
-    build: .
-    profiles: [app]
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://miracle:${POSTGRES_PASSWORD:-miracle_local}@postgres:5432/miracle
-      ENCRYPTION_KEY_FILE: /run/secrets/encryption_key
-      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3001}
-      COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      HOST: 0.0.0.0
-      PORT: 3001
-    ports:
-      - "127.0.0.1:${APP_PORT:-3001}:3001"
-    secrets: [encryption_key]
-    restart: unless-stopped
-    healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
     profiles: [test]
@@ -68,8 +30,4 @@ services:
       timeout: 5s
       retries: 60
 volumes:
-  postgres-data:
   clickhouse-data:
-secrets:
-  encryption_key:
-    file: ${ENCRYPTION_KEY_PATH:-./.local/encryption.key}

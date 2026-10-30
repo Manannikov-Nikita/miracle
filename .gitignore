@@ -5,6 +5,7 @@ dist/
 .env.*
 !.env.example
 .superpowers/
+.codegraph/
 coverage/
 .DS_Store
 # Local connection credentials and backup material

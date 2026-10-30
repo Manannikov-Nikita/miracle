@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { loader, type OnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor/editor/editor.api.js";
 import "monaco-editor/languages/definitions/sql/register.js";
@@ -27,24 +27,29 @@ import {
   TextAlignLeft,
   FolderOpen,
   DownloadSimple,
+  CalendarBlank,
 } from "@phosphor-icons/react";
 import type {
   Connection,
+  DateRangeOptions,
   QueryDocument,
   QueryRun,
   QuerySource,
   ResultSet,
   SchemaTable,
   SqlFunctionCatalog,
-  User,
 } from "../../shared/types";
-import { api, json, waitForRun } from "../api";
+import { api, ApiRequestError, json } from "../api";
+import { hasDatePlaceholder } from "../../shared/date-batch";
+import DateBatchDialog from "./DateBatchDialog";
+import DateBatchProgress from "./DateBatchProgress";
 import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
 import ResultTable from "./ResultTable";
 import { Select } from "./Select";
 import { formatSql, sqlFileName } from "../sql-files";
 import { sqlStatementAt } from "../sql-statements";
 import { createSqlMetadataLoader, sqlSuggestions } from "../sql-completion";
+import type { MetadataStore } from "../metadata-store";
 import {
   clickhouseSqlConfiguration,
   clickhouseSqlLanguage,
@@ -104,6 +109,7 @@ interface Tab {
   revision?: number;
   resultSetId?: string;
   runId?: string;
+  dateRange?: DateRangeOptions;
   cursor?: { lineNumber: number; column: number };
   scrollTop?: number;
 }
@@ -112,11 +118,11 @@ export interface SqlSourceRequest {
   name?: string;
 }
 interface Props {
-  user: User;
+  workspaceId: string;
   connections: Connection[];
   activeConnectionId: string;
   onConnectionChange: (id: string) => void;
-  schema: SchemaTable[];
+  metadata: MetadataStore;
   sourceToOpen?: SqlSourceRequest | null;
   savedToOpen?: QueryDocument | null;
   onSourceConsumed: () => void;
@@ -137,7 +143,7 @@ function loadTabs(key: string): Tab[] {
   }
 }
 export default function SqlWorkspace(p: Props) {
-  const storage = `miracle:sql-tabs:${p.user.id}`;
+  const storage = `miracle:sql-tabs:${p.workspaceId}`;
   const [tabs, setTabs] = useState<Tab[]>(() =>
     loadTabs(storage).length
       ? loadTabs(storage)
@@ -174,12 +180,31 @@ export default function SqlWorkspace(p: Props) {
   }, [active.id]);
   const [results, setResults] = useState<Record<string, ResultSet>>({});
   const [runs, setRuns] = useState<Record<string, QueryRun>>({});
+  const [trackingErrors, setTrackingErrors] = useState<
+    Record<string, { message: string; paused: boolean }>
+  >({});
+  const mounted = useRef(true);
   const [saving, setSaving] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [batchRequest, setBatchRequest] = useState<{
+    tabId: string;
+    source: QuerySource;
+    initial?: DateRangeOptions;
+  } | null>(null);
+  const [launchingTabs, setLaunchingTabs] = useState(new Set<string>());
+  const launchingRef = useRef(new Set<string>());
+  const [executionSql, setExecutionSql] = useState(active.sql);
+  const executableSqlReader = useRef<() => string | null | undefined>(
+    () => undefined,
+  );
+
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const completionMetadata = useRef(createSqlMetadataLoader(api));
+  const completionMetadata = useMemo(
+    () => createSqlMetadataLoader(p.metadata),
+    [p.metadata],
+  );
   const pollers = useRef(new Map<string, AbortController>());
   const runAction = useRef<() => void>(() => {});
   const formatAction = useRef<() => void>(() => {});
@@ -195,8 +220,19 @@ export default function SqlWorkspace(p: Props) {
   const [cursor, setCursor] = useState({ lineNumber: 1, column: 1 });
   const activeRun = runs[active.id];
   const result = results[active.id];
+  // Progress already explains these summaries; keep specific execution errors.
+  const summarizedBatchError =
+    activeRun?.batch &&
+    ((activeRun.status === "failed" &&
+      activeRun.error ===
+        `Не удалось выполнить ${activeRun.batch.failed} из ${activeRun.batch.total} дат. Успешные результаты сохранены.`) ||
+      (activeRun.status === "cancelled" &&
+        activeRun.error ===
+          "Пакет остановлен. Успешные результаты сохранены."));
+  const runError = summarizedBatchError ? undefined : activeRun?.error;
   const running =
     activeRun && ["running", "cancelling"].includes(activeRun.status);
+  const launching = launchingTabs.has(active.id);
   const connection = p.connections.find(
     (c) => c.id === (active.connectionId || p.activeConnectionId),
   );
@@ -230,38 +266,108 @@ export default function SqlWorkspace(p: Props) {
     pollers.current.get(tabId)?.abort();
     const controller = new AbortController();
     pollers.current.set(tabId, controller);
+    const valid = () =>
+      mounted.current &&
+      !controller.signal.aborted &&
+      pollers.current.get(tabId) === controller &&
+      tabsRef.current.some((tab) => tab.id === tabId);
+    let resultVersion = "";
+    let failures = 0;
+    const clearTrackingError = () =>
+      setTrackingErrors((current) => {
+        if (!current[tabId]) return current;
+        const next = { ...current };
+        delete next[tabId];
+        return next;
+      });
+    clearTrackingError();
+    const wait = (delay: number) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          controller.signal.removeEventListener("abort", abort);
+          resolve();
+        }, delay);
+        const abort = () => {
+          clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+        controller.signal.addEventListener("abort", abort, { once: true });
+      });
     try {
-      const final = await waitForRun(
-        id,
-        (r) => setRuns((s) => ({ ...s, [tabId]: r })),
-        controller.signal,
-      );
-      if (final.status === "completed" && final.resultSetId) {
-        const saved = await api<ResultSet>(
-          `/api/result-sets/${final.resultSetId}`,
-          { signal: controller.signal },
-        );
-        setResults((s) => ({ ...s, [tabId]: saved }));
-        patch(tabId, { resultSetId: saved.id });
-      } else if (final.status === "failed" || final.status === "interrupted")
-        p.onNotify(final.error || "Запрос не завершён", "error");
-    } catch (e) {
-      if ((e as Error).name !== "AbortError")
-        p.onNotify((e as Error).message, "error");
+      while (valid()) {
+        let delay = 600;
+        try {
+          const update = await api<QueryRun>(`/api/query-runs/${id}`, {
+            signal: controller.signal,
+          });
+          if (!valid()) return;
+          setRuns((current) => ({ ...current, [tabId]: update }));
+          const terminal = !["running", "cancelling"].includes(update.status);
+          if (
+            update.resultSetId &&
+            (update.batch || update.status === "completed")
+          ) {
+            const version = `${update.resultSetId}:${update.rowCount ?? ""}:${update.batch?.completed ?? ""}`;
+            if (version !== resultVersion || terminal) {
+              const saved = await api<ResultSet>(
+                `/api/result-sets/${update.resultSetId}`,
+                { signal: controller.signal },
+              );
+              if (!valid()) return;
+              resultVersion = version;
+              setResults((current) => ({ ...current, [tabId]: saved }));
+              patch(tabId, { resultSetId: saved.id });
+            }
+          }
+          failures = 0;
+          clearTrackingError();
+          if (terminal) {
+            if (update.status === "failed" || update.status === "interrupted")
+              p.onNotify(update.error || "Запрос не завершён", "error");
+            return;
+          }
+        } catch (error) {
+          if (!valid() || (error as Error).name === "AbortError") return;
+          failures++;
+          const retryable =
+            !(error instanceof ApiRequestError) ||
+            error.status >= 500 ||
+            [408, 429].includes(error.status);
+          const paused = !retryable || failures >= 5;
+          setTrackingErrors((current) => ({
+            ...current,
+            [tabId]: { message: (error as Error).message, paused },
+          }));
+          if (paused) return;
+          delay = Math.min(5000, 600 * 2 ** (failures - 1));
+        }
+        await wait(delay);
+      }
+    } catch (error) {
+      if ((error as Error).name !== "AbortError" && valid())
+        p.onNotify((error as Error).message, "error");
     } finally {
       if (pollers.current.get(tabId) === controller)
         pollers.current.delete(tabId);
     }
   }
   useEffect(() => {
+    mounted.current = true;
     for (const t of tabs) {
       if (t.resultSetId)
         api<ResultSet>(`/api/result-sets/${t.resultSetId}`)
-          .then((r) => setResults((s) => ({ ...s, [t.id]: r })))
+          .then((r) => {
+            if (
+              mounted.current &&
+              tabsRef.current.some((tab) => tab.id === t.id)
+            )
+              setResults((s) => (s[t.id] ? s : { ...s, [t.id]: r }));
+          })
           .catch(() => {});
       if (t.runId) void track(t.id, t.runId);
     }
     return () => {
+      mounted.current = false;
       for (const c of pollers.current.values()) c.abort();
     };
   }, []);
@@ -304,12 +410,21 @@ export default function SqlWorkspace(p: Props) {
   }, [p.savedToOpen]);
   useEffect(() => {
     if (connection?.id)
-      void completionMetadata.current.schema(connection.id).catch(() => {});
+      p.metadata.activate(connection.id, {
+        database: active.database ?? connection.database,
+        catalog: active.catalog ?? connection.catalog,
+        schema: active.schema ?? connection.schema,
+      });
     if (connection?.engine === "clickhouse")
-      void completionMetadata.current
-        .functionCatalog(connection.id)
-        .catch(() => {});
-  }, [connection]);
+      void completionMetadata.functionCatalog(connection.id).catch(() => {});
+  }, [
+    connection,
+    active.database,
+    active.catalog,
+    active.schema,
+    p.metadata,
+    completionMetadata,
+  ]);
   useEffect(() => {
     const provider = monaco.languages.registerCompletionItemProvider(
       ["sql", clickhouseSqlLanguageId],
@@ -339,19 +454,21 @@ export default function SqlWorkspace(p: Props) {
             startColumn: word.startColumn,
             endColumn: word.endColumn,
           };
-          let tables: SchemaTable[] = [];
+          let tables: SchemaTable[] = connectionId
+            ? p.metadata.getTables(connectionId)
+            : [];
           let functions: SqlFunctionCatalog | undefined;
           let metadataReady = true;
           if (connectionId) {
             const requests = [
-              completionMetadata.current
+              completionMetadata
                 .tables(connectionId, sql, context, beforeCursor)
                 .then((value) => {
                   tables = value;
                 }),
               ...(context.engine === "clickhouse"
                 ? [
-                    completionMetadata.current
+                    completionMetadata
                       .functionCatalog(connectionId)
                       .then((value) => {
                         functions = value;
@@ -382,6 +499,24 @@ export default function SqlWorkspace(p: Props) {
               (activeRef.current.connectionId || p.activeConnectionId)
           )
             return { suggestions: [] };
+          // Requests that exceed the deadline still publish incremental cache
+          // pages; retain those suggestions while the rest is loading.
+          if (connectionId) tables = p.metadata.getTables(connectionId);
+          const snapshot = connectionId
+            ? p.metadata.getSnapshot(connectionId)
+            : undefined;
+          const suggestions = sqlSuggestions(
+            sql,
+            beforeCursor,
+            tables,
+            context,
+            functions,
+            {
+              schemas: snapshot?.schemas,
+              prefix: word.word,
+              limit: 200,
+            },
+          );
           const kinds = {
             keyword: monaco.languages.CompletionItemKind.Keyword,
             table: monaco.languages.CompletionItemKind.Struct,
@@ -392,14 +527,12 @@ export default function SqlWorkspace(p: Props) {
           return {
             // ClickHouse combinators are generated from the growing function
             // prefix; ask Monaco to refresh instead of filtering the first list.
-            incomplete: !metadataReady || context.engine === "clickhouse",
-            suggestions: sqlSuggestions(
-              sql,
-              beforeCursor,
-              tables,
-              context,
-              functions,
-            ).map((suggestion) => ({
+            incomplete:
+              !metadataReady ||
+              !snapshot?.complete ||
+              suggestions.length >= 200 ||
+              context.engine === "clickhouse",
+            suggestions: suggestions.map((suggestion) => ({
               ...suggestion,
               kind: kinds[suggestion.kind],
               range,
@@ -409,37 +542,91 @@ export default function SqlWorkspace(p: Props) {
       },
     );
     return () => provider.dispose();
-  }, [connection, p.activeConnectionId, p.connections]);
+  }, [
+    connection,
+    p.activeConnectionId,
+    p.connections,
+    p.metadata,
+    completionMetadata,
+  ]);
+  function readExecutableSql() {
+    const tab = activeRef.current;
+    const selectedConnection = p.connections.find(
+      (item) => item.id === (tab.connectionId || p.activeConnectionId),
+    );
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const position = editor?.getPosition();
+    if (
+      !model ||
+      !position ||
+      model.uri.toString() !== `miracle-query://${p.workspaceId}/${tab.id}.sql`
+    )
+      return undefined;
+    const selection = editor?.getSelection();
+    const selected = selection ? model.getValueInRange(selection).trim() : "";
+    return (
+      selected ||
+      sqlStatementAt(
+        model.getValue(),
+        model.getOffsetAt(position),
+        selectedConnection?.engine ?? "clickhouse",
+      )
+    );
+  }
+  function updateExecutableSql() {
+    const sql = executableSqlReader.current();
+    if (sql !== undefined) setExecutionSql(sql ?? "");
+  }
+  // Monaco keeps mount listeners for its lifetime; read the current connection.
+  executableSqlReader.current = readExecutableSql;
+  useEffect(() => {
+    updateExecutableSql();
+  }, [active.id, active.sql, connection?.engine]);
+  const dateMode = hasDatePlaceholder(executionSql, connection?.engine);
+  async function startRun(tabId: string, source: QuerySource) {
+    if (launchingRef.current.has(tabId)) return;
+    launchingRef.current.add(tabId);
+    setLaunchingTabs(new Set(launchingRef.current));
+    pollers.current.get(tabId)?.abort();
+    try {
+      const started = await api<QueryRun>("/api/query-runs", {
+        method: "POST",
+        body: json(source),
+      });
+      if (!mounted.current || !tabsRef.current.some((tab) => tab.id === tabId))
+        return;
+      setRuns((current) => ({ ...current, [tabId]: started }));
+      patch(tabId, {
+        runId: started.id,
+        connectionId: source.connectionId,
+        ...(source.dateRange ? { dateRange: source.dateRange } : {}),
+      });
+      if (!resultExpanded) {
+        group.current?.setLayout({ editor: 55, results: 45 });
+        setResultExpanded(true);
+      }
+      void track(tabId, started.id);
+    } finally {
+      launchingRef.current.delete(tabId);
+      if (mounted.current) setLaunchingTabs(new Set(launchingRef.current));
+    }
+  }
   async function run() {
     const tab = activeRef.current;
-    if (p.user.role === "viewer") return;
+    if (launchingRef.current.has(tab.id) || batchRequest) return;
     const conn = p.connections.find(
-      (c) => c.id === (tab.connectionId || p.activeConnectionId),
+      (item) => item.id === (tab.connectionId || p.activeConnectionId),
     );
     if (!conn) {
       p.onOpenConnections();
       return;
     }
-    const editor = editorRef.current;
-    const model = editor?.getModel();
-    const selection = editor?.getSelection();
-    const position = editor?.getPosition();
-    if (
-      !model ||
-      !position ||
-      model.uri.toString() !== `miracle-query://${p.user.id}/${tab.id}.sql`
-    ) {
+    const sql = readExecutableSql();
+    if (sql === undefined) {
       p.onNotify("Редактор ещё открывает файл. Повторите запуск.", "info");
       return;
     }
-    const selected = selection ? model.getValueInRange(selection).trim() : "";
-    const sql =
-      selected ||
-      sqlStatementAt(
-        model.getValue(),
-        model.getOffsetAt(position),
-        conn.engine,
-      );
     if (!sql) {
       p.onNotify(
         "Нет SQL для запуска. Поставьте курсор на запрос или выделите SQL.",
@@ -447,34 +634,28 @@ export default function SqlWorkspace(p: Props) {
       );
       return;
     }
+    const source: QuerySource = {
+      connectionId: conn.id,
+      sql,
+      database: tab.database ?? conn.database,
+      catalog: tab.catalog ?? conn.catalog,
+      schema: tab.schema ?? conn.schema,
+    };
     p.onConnectionChange(conn.id);
+    if (hasDatePlaceholder(sql, conn.engine)) {
+      setBatchRequest({ tabId: tab.id, source, initial: tab.dateRange });
+      return;
+    }
     try {
-      const started = await api<QueryRun>("/api/query-runs", {
-        method: "POST",
-        body: json({
-          connectionId: conn.id,
-          sql,
-          database: tab.database ?? conn.database,
-          catalog: tab.catalog ?? conn.catalog,
-          schema: tab.schema ?? conn.schema,
-        }),
-      });
-      setRuns((s) => ({ ...s, [tab.id]: started }));
-      patch(tab.id, { runId: started.id, connectionId: conn.id });
-      if (!resultExpanded) {
-        group.current?.setLayout({ editor: 55, results: 45 });
-        setResultExpanded(true);
-      }
-      void track(tab.id, started.id);
-    } catch (e) {
-      p.onNotify((e as Error).message, "error");
+      await startRun(tab.id, source);
+    } catch (error) {
+      p.onNotify((error as Error).message, "error");
     }
   }
   runAction.current = () => {
-    if (!running) void run();
+    if (!running && !launching) void run();
   };
   function formatActive() {
-    if (p.user.role === "viewer") return;
     const editor = editorRef.current;
     const model = editor?.getModel();
     if (!editor || !model) return;
@@ -507,7 +688,6 @@ export default function SqlWorkspace(p: Props) {
   }
   formatAction.current = formatActive;
   saveAction.current = () => {
-    if (p.user.role === "viewer") return;
     setSaveName(activeRef.current.name);
     setSaveError("");
     setSaveOpen(true);
@@ -568,6 +748,7 @@ export default function SqlWorkspace(p: Props) {
       saveAction.current(),
     );
     editor.onDidChangeCursorPosition((e) => {
+      updateExecutableSql();
       setCursor(e.position);
       patch(activeRef.current.id, {
         cursor: {
@@ -576,6 +757,9 @@ export default function SqlWorkspace(p: Props) {
         },
       });
     });
+    editor.onDidChangeCursorSelection(updateExecutableSql);
+    editor.onDidChangeModel(updateExecutableSql);
+    updateExecutableSql();
     editor.onDidScrollChange((e) => {
       patch(activeRef.current.id, { scrollTop: e.scrollTop });
     });
@@ -615,6 +799,9 @@ export default function SqlWorkspace(p: Props) {
             database: t.database ?? c.database,
             catalog: t.catalog ?? c.catalog,
             schema: t.schema ?? c.schema,
+            ...(hasDatePlaceholder(t.sql, c.engine) && t.dateRange
+              ? { dateRange: t.dateRange }
+              : {}),
             ...(t.queryId ? { baseRevision: t.revision } : {}),
           }),
         },
@@ -626,7 +813,7 @@ export default function SqlWorkspace(p: Props) {
       });
       setSaveOpen(false);
       p.onQueriesChanged();
-      p.onNotify("Запрос сохранён для команды", "success");
+      p.onNotify("Запрос сохранён", "success");
     } catch (e) {
       setSaveError((e as Error).message);
     } finally {
@@ -655,7 +842,8 @@ export default function SqlWorkspace(p: Props) {
   try {
     layout =
       JSON.parse(
-        localStorage.getItem(`miracle:editor-layout:${p.user.id}`) || "null",
+        localStorage.getItem(`miracle:editor-layout:${p.workspaceId}`) ||
+          "null",
       ) || undefined;
   } catch {}
   return (
@@ -756,14 +944,12 @@ export default function SqlWorkspace(p: Props) {
           </IconButton>
           <IconButton
             label="Форматировать SQL (⌥⌘L / Ctrl+Alt+L)"
-            disabled={p.user.role === "viewer"}
             onClick={formatActive}
           >
             <TextAlignLeft size={16} />
           </IconButton>
           <IconButton
             label="Сохранить SQL-файл (⌘S / Ctrl+S)"
-            disabled={p.user.role === "viewer"}
             onClick={() => {
               setSaveName(active.name);
               setSaveError("");
@@ -784,12 +970,23 @@ export default function SqlWorkspace(p: Props) {
           ) : (
             <button
               className="button run-button"
-              title="Выполнить запрос под курсором или выделенный SQL (⌘ / Ctrl + Enter)"
-              disabled={p.user.role === "viewer"}
+              title={
+                dateMode
+                  ? "Выполнить запрос для диапазона дат (⌘ / Ctrl + Enter)"
+                  : "Выполнить запрос под курсором или выделенный SQL (⌘ / Ctrl + Enter)"
+              }
+              disabled={launching}
               onClick={run}
             >
-              <Play weight="fill" size={12} />
-              Выполнить<span className="shortcut">⌘ ↵</span>
+              {launching ? (
+                <Spinner />
+              ) : dateMode ? (
+                <CalendarBlank size={14} />
+              ) : (
+                <Play weight="fill" size={12} />
+              )}
+              {launching ? "Запускаем…" : dateMode ? "По датам" : "Выполнить"}
+              <span className="shortcut">⌘ ↵</span>
             </button>
           )}
         </div>
@@ -839,7 +1036,7 @@ export default function SqlWorkspace(p: Props) {
         defaultLayout={layout || { editor: 55, results: 45 }}
         onLayoutChanged={(l) => {
           localStorage.setItem(
-            `miracle:editor-layout:${p.user.id}`,
+            `miracle:editor-layout:${p.workspaceId}`,
             JSON.stringify(l),
           );
           setResultExpanded((l.results || 0) > 0);
@@ -849,7 +1046,7 @@ export default function SqlWorkspace(p: Props) {
         <Panel id="editor" defaultSize="55%" minSize="100px" collapsible>
           <div className="editor-area">
             <Editor
-              path={`miracle-query://${p.user.id}/${active.id}.sql`}
+              path={`miracle-query://${p.workspaceId}/${active.id}.sql`}
               value={active.sql}
               onChange={(value) => patch(active.id, { sql: value || "" })}
               language={sqlLanguageForEngine(connection?.engine)}
@@ -876,7 +1073,6 @@ export default function SqlWorkspace(p: Props) {
                 automaticLayout: true,
                 wordWrap: "off",
                 tabSize: 4,
-                readOnly: p.user.role === "viewer",
                 ariaLabel: "Редактор SQL",
                 quickSuggestions: true,
                 overviewRulerLanes: 0,
@@ -944,16 +1140,21 @@ export default function SqlWorkspace(p: Props) {
                     </span>
                   </span>
                 )}
-                {result && p.user.role !== "viewer" && (
+                {result && (
                   <>
                     <span
                       role="button"
                       tabIndex={0}
                       className="result-drag-handle"
-                      draggable
+                      draggable={!(activeRun?.batch && running)}
+                      aria-disabled={Boolean(activeRun?.batch && running)}
                       aria-label="Перетащить результат на доску"
                       title="Перетащить результат на доску"
                       onDragStart={(e) => {
+                        if (activeRun?.batch && running) {
+                          e.preventDefault();
+                          return;
+                        }
                         e.dataTransfer.setData(
                           "application/x-miracle-result",
                           JSON.stringify(result),
@@ -963,7 +1164,8 @@ export default function SqlWorkspace(p: Props) {
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          p.onResult(result);
+                          if (!(activeRun?.batch && running))
+                            p.onResult(result);
                         }
                       }}
                     >
@@ -971,6 +1173,12 @@ export default function SqlWorkspace(p: Props) {
                     </span>
                     <button
                       className="button small add-to-board"
+                      disabled={Boolean(activeRun?.batch && running)}
+                      title={
+                        activeRun?.batch && running
+                          ? "Дождитесь завершения серии, чтобы закрепить снимок"
+                          : undefined
+                      }
                       onClick={() => p.onResult(result)}
                     >
                       На доску
@@ -988,12 +1196,35 @@ export default function SqlWorkspace(p: Props) {
                 </IconButton>
               </div>
             </div>
-            {activeRun?.error && (
+            {activeRun?.batch && <DateBatchProgress run={activeRun} />}
+            {trackingErrors[active.id] && (
               <div className="query-error">
-                <ErrorBox>{activeRun.error}</ErrorBox>
-                {result && (
-                  <small>Показан предыдущий успешный результат.</small>
-                )}
+                <ErrorBox>{trackingErrors[active.id].message}</ErrorBox>
+                <small>
+                  {trackingErrors[active.id].paused
+                    ? "Не удалось обновить статус или результат. Выполнение на сервере продолжается независимо от этой вкладки."
+                    : "Связь с сервером прервалась. Повторяем обновление…"}
+                </small>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    const runId = activeRun?.id || active.runId;
+                    if (runId) void track(active.id, runId);
+                  }}
+                >
+                  Обновить результат
+                </button>
+              </div>
+            )}
+            {runError && (
+              <div className="query-error">
+                <ErrorBox>{runError}</ErrorBox>
+              </div>
+            )}
+            {result && activeRun && result.id !== activeRun.resultSetId && (
+              <div className="query-error">
+                <small>Показан результат предыдущего запуска.</small>
               </div>
             )}
             {result ? (
@@ -1006,20 +1237,14 @@ export default function SqlWorkspace(p: Props) {
               <EmptyState
                 icon={<Database size={27} />}
                 title="Подключите первый источник"
-                description={
-                  p.user.role === "admin"
-                    ? "Добавьте ClickHouse или Trino, чтобы выполнить свой первый SQL-запрос."
-                    : "Администратор рабочей области может добавить ClickHouse или Trino."
-                }
+                description="Добавьте ClickHouse или Trino, чтобы выполнить свой первый SQL-запрос."
                 action={
-                  p.user.role === "admin" && (
-                    <button
-                      className="button primary"
-                      onClick={p.onOpenConnections}
-                    >
-                      <Plus size={16} /> Подключить источник
-                    </button>
-                  )
+                  <button
+                    className="button primary"
+                    onClick={p.onOpenConnections}
+                  >
+                    <Plus size={16} /> Подключить источник
+                  </button>
                 }
               />
             ) : (
@@ -1030,7 +1255,9 @@ export default function SqlWorkspace(p: Props) {
                 }
                 description={
                   running
-                    ? "Результат сохранится после завершения запроса."
+                    ? activeRun?.batch
+                      ? "Строки появятся после первого успешного запроса."
+                      : "Результат сохранится после завершения запроса."
                     : "Выберите источник, напишите SQL и нажмите «Выполнить»."
                 }
                 action={
@@ -1047,6 +1274,21 @@ export default function SqlWorkspace(p: Props) {
           </div>
         </Panel>
       </Group>
+      <DateBatchDialog
+        open={Boolean(batchRequest)}
+        initial={batchRequest?.initial}
+        onOpenChange={(open) => {
+          if (!open) setBatchRequest(null);
+        }}
+        onSubmit={async (options) => {
+          if (!batchRequest) return;
+          await startRun(batchRequest.tabId, {
+            ...batchRequest.source,
+            dateRange: options,
+          });
+          setBatchRequest(null);
+        }}
+      />
       <div className="sql-bottom-bar">
         <span>
           <span className="status-dot" />
@@ -1062,7 +1304,7 @@ export default function SqlWorkspace(p: Props) {
         open={saveOpen}
         onOpenChange={setSaveOpen}
         title="Сохранить SQL-файл"
-        description="Запрос будет доступен всей команде."
+        description="Запрос сохранится в вашей рабочей области."
       >
         <form
           onSubmit={(e) => {

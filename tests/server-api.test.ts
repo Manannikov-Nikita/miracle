@@ -1,28 +1,25 @@
 import { beforeAll, afterAll, expect, it } from "vitest";
 import { buildApp } from "../src/server/app.js";
-import { bootstrapAdmin } from "../src/server/db.js";
-import pg from "pg";
 import type { FastifyInstance } from "fastify";
-import { dropTestDatabase } from "./test-database.js";
-const rootUrl =
-  process.env.DATABASE_URL ||
-  "postgres://miracle:miracle_local@127.0.0.1:5544/miracle";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { apiEngineFixture } from "./api-engine-fixture.js";
+const dataDir = mkdtempSync(join(tmpdir(), "miracle-api-"));
+let fixture: Awaited<ReturnType<typeof apiEngineFixture>>;
 let app: FastifyInstance;
-let cookie = "";
-let csrf = "";
-let viewerCookie = "";
-let viewerCsrf = "";
-let resultId = "";
-const admin = new pg.Pool({ connectionString: rootUrl });
-const dbName = "miracle_test_" + Date.now();
-const u = new URL(rootUrl);
-u.pathname = "/" + dbName;
+let cookie = "",
+  csrf = "",
+  viewerCookie = "",
+  viewerCsrf = "",
+  resultId = "";
 async function request(method: any, url: string, payload?: any, v = false) {
   const res = await app.inject({
     method,
     url,
     payload,
     headers: {
+      host: "127.0.0.1:5178",
       cookie: v ? viewerCookie : cookie,
       "x-csrf-token": v ? viewerCsrf : csrf,
       origin: "http://127.0.0.1:5178",
@@ -31,109 +28,66 @@ async function request(method: any, url: string, payload?: any, v = false) {
   return res;
 }
 beforeAll(async () => {
-  await admin.query(`CREATE DATABASE ${dbName}`);
+  fixture = await apiEngineFixture();
   app = await buildApp({
-    databaseUrl: u.href,
-    encryptionKey: Buffer.alloc(32, 3),
-    cookieSecure: false,
+    dataDir,
+    appOrigin: "http://127.0.0.1:5178",
     serveStatic: false,
-    limits: { maxRows: 10, maxBytes: 10000, timeoutMs: 5000 },
+    limits: { maxRows: 10, maxBytes: 10000, timeoutMs: 5000, maxGlobalRuns: 4 },
   });
-  await bootstrapAdmin(
-    app.miracle.db,
-    "admin@example.test",
-    "Admin",
-    "correct-password-long",
-  );
-  const login = await request("POST", "/api/auth/login", {
-    email: "admin@example.test",
-    password: "correct-password-long",
-  });
-  expect(login.statusCode).toBe(200);
+  const login = await request("GET", "/api/session");
+  expect(login.statusCode, login.body).toBe(200);
   cookie = String(login.headers["set-cookie"]).split(";")[0]!;
   csrf = login.json().csrfToken;
-}, 30000);
+  const second = await request("GET", "/api/session", undefined, true);
+  viewerCookie = String(second.headers["set-cookie"]).split(";")[0]!;
+  viewerCsrf = second.json().csrfToken;
+});
 afterAll(async () => {
-  try {
-    if (app) await app.close();
-    await dropTestDatabase(admin, dbName);
-  } finally {
-    await admin.end();
-  }
+  await app?.close();
+  await fixture?.close();
+  rmSync(dataDir, { recursive: true, force: true });
 });
-it("rotates login session, rejects CSRF, origins, unauthenticated reads", async () => {
-  expect((await app.inject("/api/connections")).statusCode).toBe(401);
+it("rejects unauthenticated reads, CSRF and cross-origin writes", async () => {
   expect(
     (
       await app.inject({
-        method: "POST",
-        url: "/api/boards",
-        headers: { cookie },
-        payload: { name: "X" },
+        url: "/api/connections",
+        headers: { host: "127.0.0.1:5178" },
       })
     ).statusCode,
-  ).toBe(403);
-  expect(
-    (
-      await app.inject({
-        method: "POST",
-        url: "/api/boards",
-        headers: { cookie, "x-csrf-token": csrf, origin: "http://evil.test" },
-        payload: { name: "X" },
-      })
-    ).statusCode,
-  ).toBe(403);
-  expect(
-    (
-      await request(
-        "PATCH",
-        "/api/users/" + (await request("GET", "/api/auth/me")).json().user.id,
-        { disabled: true },
-      )
-    ).statusCode,
-  ).toBe(409);
-});
-it("invites without exposing password, activates once, enforces viewer role and reset revocation", async () => {
-  const invite = await request("POST", "/api/users", {
-    email: "viewer@example.test",
-    name: "Viewer",
-    role: "viewer",
-  });
-  expect(invite.statusCode).toBe(201);
-  expect(invite.json().user.password_hash).toBeUndefined();
-  const token = new URL(invite.json().activationUrl).searchParams.get("token");
-  const activated = await app.inject({
-    method: "POST",
-    url: "/api/auth/activate",
-    payload: { token, password: "viewer-password-long" },
-  });
-  expect(activated.statusCode).toBe(200);
-  viewerCookie = String(activated.headers["set-cookie"]).split(";")[0]!;
-  viewerCsrf = activated.json().csrfToken;
-  expect(
-    (
-      await request("POST", "/api/auth/activate", {
-        token,
-        password: "viewer-password-long",
-      })
-    ).statusCode,
-  ).toBe(400);
-  expect(
-    (await request("POST", "/api/boards", { name: "no" }, true)).statusCode,
-  ).toBe(403);
-  expect((await request("GET", "/api/users", undefined, true)).statusCode).toBe(
-    403,
-  );
-  await request("POST", "/api/users/" + invite.json().user.id + "/reset", {});
-  expect(
-    (await request("GET", "/api/boards", undefined, true)).statusCode,
   ).toBe(401);
+  expect(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/boards",
+        headers: { host: "127.0.0.1:5178", cookie },
+        payload: { name: "Bad" },
+      })
+    ).statusCode,
+  ).toBe(403);
+  expect(
+    (
+      await app.inject({
+        method: "POST",
+        url: "/api/boards",
+        headers: {
+          host: "127.0.0.1:5178",
+          cookie,
+          origin: "http://evil.test",
+          "x-csrf-token": csrf,
+        },
+        payload: { name: "Bad" },
+      })
+    ).statusCode,
+  ).toBe(403);
 });
 it("rejects malicious SQL before execution, saves queries optimistically and persists real results", async () => {
   const c = await request("POST", "/api/connections", {
     name: "CH",
     engine: "clickhouse",
-    url: "http://127.0.0.1:18123",
+    url: fixture.url,
     username: "miracle_reader",
     password: "miracle_reader_local",
     database: "demo",
@@ -229,7 +183,7 @@ it("validates graph and result references, rejects stale revisions, retains refe
     ).statusCode,
   ).toBe(409);
   await app.miracle.db.query(
-    "UPDATE result_sets SET created_at=now()-interval '2 days' WHERE id=$1",
+    "UPDATE result_sets SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-2 days') WHERE id=?1",
     [resultId],
   );
   const { retention } = await import("../src/server/db.js");
@@ -356,6 +310,61 @@ it("persists compact chart formatting alongside legacy axis labels", async () =>
     (await request("GET", url)).json().document.nodes[0].data.chart,
   ).toEqual({ ...chart, kind: "scatter" });
 });
+it("persists chart orientation across board saves and rejects invalid updates", async () => {
+  const chart = {
+    kind: "bar",
+    x: "region",
+    y: ["revenue"],
+    legend: true,
+  };
+  const document = (settings: typeof chart & { orientation?: unknown }) => ({
+    schemaVersion: 1,
+    nodes: [
+      {
+        id: "orientation",
+        type: "artifact",
+        position: { x: 0, y: 0 },
+        data: { kind: "note", title: "Chart orientation", chart: settings },
+      },
+    ],
+    edges: [],
+  });
+  const created = await request("POST", "/api/boards", {
+    name: "Chart orientation",
+    document: document(chart),
+  });
+  expect(created.statusCode, created.body).toBe(201);
+  const url = `/api/boards/${created.json().id}`;
+  let revision = created.json().revision;
+  expect((await request("GET", url)).json().document).toEqual(document(chart));
+
+  for (const settings of [
+    { ...chart, orientation: "horizontal" },
+    { ...chart, kind: "line", orientation: "horizontal" },
+    { ...chart, orientation: "vertical" },
+  ]) {
+    const updated = await request("PATCH", url, {
+      baseRevision: revision,
+      document: document(settings),
+    });
+    expect(updated.statusCode, updated.body).toBe(200);
+    revision = updated.json().revision;
+    expect((await request("GET", url)).json().document).toEqual(
+      document(settings),
+    );
+  }
+
+  const rejected = await request("PATCH", url, {
+    baseRevision: revision,
+    document: document({ ...chart, orientation: "diagonal" }),
+  });
+  expect(rejected.statusCode, rejected.body).toBe(400);
+  const saved = (await request("GET", url)).json();
+  expect(saved.revision).toBe(revision);
+  expect(saved.document).toEqual(
+    document({ ...chart, orientation: "vertical" }),
+  );
+});
 it("rejects malformed multibyte CSRF tokens without server errors", async () => {
   const res = await app.inject({
     method: "POST",
@@ -395,7 +404,7 @@ it("reserves concurrency atomically and cancels an owned ClickHouse query", asyn
 });
 it("does not publish a snapshot when aggregate result quota is full", async () => {
   await app.miracle.db.query(
-    "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES(gen_random_uuid(),$1,0,$2,$3)",
+    "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES('00000000-0000-4000-8000-999999999999',?1,0,?2,?3)",
     [
       JSON.stringify([]),
       2 * 1024 ** 3,
@@ -416,14 +425,8 @@ it("does not publish a snapshot when aggregate result quota is full", async () =
   expect(run.error).toContain("Квота");
   expect(run.resultSetId).toBeUndefined();
 });
-it("keeps viewer metadata fields literal with ClickHouse quotes and backslashes", async () => {
-  const login = await app.inject({
-    method: "POST",
-    url: "/api/auth/login",
-    payload: { email: "viewer@example.test", password: "viewer-password-long" },
-  });
-  expect(login.statusCode).toBe(200);
-  const readerCookie = String(login.headers["set-cookie"]).split(";")[0]!;
+it("keeps local session metadata fields literal with ClickHouse quotes and backslashes", async () => {
+  const readerCookie = viewerCookie;
   const conn = (await request("GET", "/api/connections")).json()[0];
   const normal = await app.inject({
     method: "GET",
@@ -432,7 +435,7 @@ it("keeps viewer metadata fields literal with ClickHouse quotes and backslashes"
       conn.id +
       "/columns?" +
       new URLSearchParams({ schema: "demo", table: "sales" }),
-    headers: { cookie: readerCookie },
+    headers: { host: "127.0.0.1:5178", cookie: readerCookie },
   });
   expect(normal.statusCode).toBe(200);
   expect(
@@ -454,46 +457,11 @@ it("keeps viewer metadata fields literal with ClickHouse quotes and backslashes"
         conn.id +
         "/columns?" +
         new URLSearchParams(fields),
-      headers: { cookie: readerCookie },
+      headers: { host: "127.0.0.1:5178", cookie: readerCookie },
     });
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toEqual([]);
   }
-  const { engineMetadata, quoteLiteral } =
-    await import("../src/server/connectors.js");
-  for (const value of [
-    "name'quote",
-    "name\\slash",
-    "both\\'quote",
-    "кириллица\\name",
-  ]) {
-    const result = await engineMetadata(
-      {
-        engine: "clickhouse",
-        name: "roundtrip",
-        url: "http://127.0.0.1:18123",
-        username: "miracle_reader",
-        password: "miracle_reader_local",
-        database: "demo",
-      },
-      "SELECT " + quoteLiteral(value, "clickhouse") + " AS value",
-    );
-    expect(result.rows).toEqual([[value]]);
-  }
-});
-it("does not count an unactivated invitation as a replacement for the last usable admin", async () => {
-  const me = (await request("GET", "/api/auth/me")).json().user;
-  const invited = await request("POST", "/api/users", {
-    email: "pending-admin@example.test",
-    name: "Pending admin",
-    role: "admin",
-  });
-  expect(invited.statusCode).toBe(201);
-  const disabled = await request("PATCH", "/api/users/" + me.id, {
-    disabled: true,
-  });
-  expect(disabled.statusCode, disabled.body).toBe(409);
-  expect((await request("GET", "/api/auth/me")).json().user.id).toBe(me.id);
 });
 
 it("reads complete bounded table snapshots without re-running SQL and retains table settings", async () => {
@@ -505,39 +473,42 @@ it("reads complete bounded table snapshots without re-running SQL and retains ta
   };
   const data = Array.from({ length: 501 }, (_, i) => [String(i + 1)]);
   await app.miracle.db.query(
-    "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES($1,$2,501,4000,$3)",
+    "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES(?1,?2,501,4000,?3)",
     [id, JSON.stringify(columns), JSON.stringify(source)],
   );
   for (let i = 0; i < 2; i++)
     await app.miracle.db.query(
-      "INSERT INTO result_chunks(result_set_id,chunk_index,rows) VALUES($1,$2,$3)",
+      "INSERT INTO result_chunks(result_set_id,chunk_index,rows) VALUES(?1,?2,?3)",
       [id, i, JSON.stringify(data.slice(i * 500, (i + 1) * 500))],
     );
   const countBefore = (
-    await app.miracle.db.query("SELECT count(*) FROM query_runs")
+    await app.miracle.db.query("SELECT count(*) AS count FROM query_runs")
   ).rows[0].count;
   const response = await request("GET", `/api/result-sets/${id}/table`);
   expect(response.statusCode, response.body).toBe(200);
   expect(response.json().rows).toEqual(data);
   expect(
-    (await app.inject({ method: "GET", url: `/api/result-sets/${id}/table` }))
-      .statusCode,
+    (
+      await app.inject({
+        method: "GET",
+        url: `/api/result-sets/${id}/table`,
+        headers: { host: "127.0.0.1:5178" },
+      })
+    ).statusCode,
   ).toBe(401);
-  const viewer = await app.inject({
-    method: "POST",
-    url: "/api/auth/login",
-    payload: { email: "viewer@example.test", password: "viewer-password-long" },
-  });
-  expect(viewer.statusCode).toBe(200);
+  const viewer = { headers: { "set-cookie": viewerCookie } };
   const viewerResponse = await app.inject({
     method: "GET",
     url: `/api/result-sets/${id}/table`,
-    headers: { cookie: String(viewer.headers["set-cookie"]).split(";")[0] },
+    headers: {
+      host: "127.0.0.1:5178",
+      cookie: String(viewer.headers["set-cookie"]).split(";")[0],
+    },
   });
   expect(viewerResponse.statusCode).toBe(200);
   expect(
-    (await app.miracle.db.query("SELECT count(*) FROM query_runs")).rows[0]
-      .count,
+    (await app.miracle.db.query("SELECT count(*) AS count FROM query_runs"))
+      .rows[0].count,
   ).toBe(countBefore);
   const table = {
     version: 1,
@@ -571,14 +542,14 @@ it("reads complete bounded table snapshots without re-running SQL and retains ta
       .nodes[0].data.table,
   ).toEqual(table);
   await app.miracle.db.query(
-    "UPDATE result_sets SET row_count=50001 WHERE id=$1",
+    "UPDATE result_sets SET row_count=50001 WHERE id=?1",
     [id],
   );
   expect(
     (await request("GET", `/api/result-sets/${id}/table`)).statusCode,
   ).toBe(422);
   await app.miracle.db.query(
-    "UPDATE result_sets SET row_count=501,byte_count=20971521 WHERE id=$1",
+    "UPDATE result_sets SET row_count=501,byte_count=20971521 WHERE id=?1",
     [id],
   );
   expect(
@@ -589,7 +560,9 @@ it("reads complete bounded table snapshots without re-running SQL and retains ta
 it("reads the live ClickHouse function catalog without exposing credentials or internal combinators", async () => {
   const conn = (await request("GET", "/api/connections")).json()[0];
   const url = `/api/connections/${conn.id}/functions`;
-  expect((await app.inject(url)).statusCode).toBe(401);
+  expect(
+    (await app.inject({ url, headers: { host: "127.0.0.1:5178" } })).statusCode,
+  ).toBe(401);
   const response = await request("GET", url);
   expect(response.statusCode, response.body).toBe(200);
   const catalog = response.json();
@@ -619,4 +592,57 @@ it("reads the live ClickHouse function catalog without exposing credentials or i
       await request("GET", `/api/connections/${trino.json().id}/functions`)
     ).json(),
   ).toEqual({ functions: [], aggregateCombinators: [] });
+});
+it("rolls back a board document and all result references together when a referenced snapshot is absent", async () => {
+  const result = app.miracle.db.query(
+    "SELECT id,source FROM result_sets WHERE row_count=501",
+  ).rows[0];
+  const resultId = result.id as string;
+  const source = result.source;
+  const document = {
+    schemaVersion: 1,
+    nodes: [
+      {
+        id: "snapshot",
+        type: "artifact",
+        position: { x: 0, y: 0 },
+        data: {
+          kind: "result",
+          title: "Pinned",
+          source,
+          resultSetId: resultId,
+        },
+      },
+    ],
+    edges: [],
+  };
+  const created = await request("POST", "/api/boards", {
+    name: "Atomic refs",
+    document,
+  });
+  expect(created.statusCode, created.body).toBe(201);
+  const board = created.json();
+  const missing = {
+    ...document,
+    nodes: [
+      {
+        ...document.nodes[0],
+        data: { ...document.nodes[0].data, resultSetId: crypto.randomUUID() },
+      },
+    ],
+  };
+  const rejected = await request("PATCH", `/api/boards/${board.id}`, {
+    baseRevision: board.revision,
+    document: missing,
+  });
+  expect(rejected.statusCode, rejected.body).toBe(400);
+  expect((await request("GET", `/api/boards/${board.id}`)).json()).toEqual(
+    board,
+  );
+  expect(
+    app.miracle.db.query(
+      "SELECT result_set_id FROM board_result_refs WHERE board_id=?1",
+      [board.id],
+    ).rows,
+  ).toEqual([{ result_set_id: resultId }]);
 });

@@ -6,6 +6,7 @@ import { chartSeries, defaultChart, isNumericColumn } from "./model";
 import { chartOptions } from "./chartOptions";
 import ChartCanvas from "./ChartCanvas";
 import TableView from "./TableView";
+import ChartTypePicker from "./ChartTypePicker";
 
 function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   const [rows, setRows] = useState<Cell[][] | null>(null);
@@ -58,7 +59,7 @@ function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   return (
     <ChartCanvas
       option={prepared.option}
-      label={`График: ${spec.kind}, ${rows.length} строк полного снимка`}
+      label={`График: ${spec.kind}${spec.kind === "bar" && spec.orientation === "horizontal" ? ", горизонтальный" : ""}, ${rows.length} строк полного снимка`}
     />
   );
 }
@@ -74,30 +75,39 @@ export function ChartSettings({
   disabled?: boolean;
 }) {
   const set = (patch: Partial<ChartSpec>) => onChange({ ...spec, ...patch });
+  const horizontal = spec.kind === "bar" && spec.orientation === "horizontal";
+  const categoryAxis = horizontal ? "Ось Y" : "Ось X";
+  const metricAxis = horizontal ? "Ось X" : "Ось Y";
+  const sortLabel = horizontal ? "Порядок Y" : "Порядок X";
   const verticalLegend =
     spec.legendPosition === "left" || spec.legendPosition === "right";
   return (
     <fieldset className="board-chart-settings" disabled={disabled}>
       <legend>Настройки графика · весь снимок</legend>
+      <ChartTypePicker
+        value={spec.kind}
+        orientation={spec.orientation}
+        disabled={disabled}
+        onChange={(kind) => set({ kind })}
+      />
+      {spec.kind === "bar" && (
+        <label>
+          <input
+            type="checkbox"
+            checked={horizontal}
+            onChange={(event) =>
+              set({
+                orientation: event.target.checked ? "horizontal" : "vertical",
+              })
+            }
+          />
+          Горизонтально
+        </label>
+      )}
       <label>
-        Тип
+        {categoryAxis}
         <Select
-          aria-label="Тип"
-          disabled={disabled}
-          value={spec.kind}
-          onValueChange={(value) => set({ kind: value as ChartSpec["kind"] })}
-          options={[
-            { value: "bar", label: "Столбцы" },
-            { value: "line", label: "Линии" },
-            { value: "area", label: "Область" },
-            { value: "scatter", label: "Точки" },
-          ]}
-        />
-      </label>
-      <label>
-        Ось X
-        <Select
-          aria-label="Ось X"
+          aria-label={categoryAxis}
           disabled={disabled}
           value={spec.x}
           onValueChange={(value) => set({ x: value })}
@@ -105,7 +115,7 @@ export function ChartSettings({
         />
       </label>
       <div className="board-y-fields">
-        Ось Y
+        {metricAxis}
         {result.columns.filter(isNumericColumn).map((c) => (
           <label key={c.id}>
             <input
@@ -165,9 +175,9 @@ export function ChartSettings({
         />
       </label>
       <label>
-        Порядок X
+        {sortLabel}
         <Select
-          aria-label="Порядок X"
+          aria-label={sortLabel}
           disabled={disabled}
           value={spec.sort ?? "none"}
           onValueChange={(value) => set({ sort: value as ChartSpec["sort"] })}

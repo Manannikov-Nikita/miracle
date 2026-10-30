@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  Board,
-  BoardDocument,
-  BoardSummary,
-  User,
-} from "../../shared/types";
+import type { Board, BoardDocument, BoardSummary } from "../../shared/types";
 import { api } from "../api";
 import { emptyDocument } from "./model";
 function persist(key: string, value: unknown) {
@@ -16,10 +11,10 @@ function persist(key: string, value: unknown) {
     return false;
   }
 }
-export const draftKey = (userId: string, boardId: string) =>
-  `miracle:board-draft:${userId}:${boardId}`;
+export const draftKey = (workspaceId: string, boardId: string) =>
+  `miracle:board-draft:${workspaceId}:${boardId}`;
 export function useBoard(
-  user: User,
+  workspaceId: string,
   notify: (text: string, tone?: "error" | "success" | "info") => void,
 ) {
   const [list, setList] = useState<BoardSummary[]>([]);
@@ -36,7 +31,6 @@ export function useBoard(
   const loadSequence = useRef(0);
   const mounted = useRef(true);
   const [historyTick, setHistoryTick] = useState(0);
-  const editable = user.role !== "viewer";
   const assign = useCallback((value: Board | null) => {
     current.current = value;
     setBoard(value);
@@ -58,36 +52,34 @@ export function useBoard(
         let local: Board = loaded;
         let restored = false;
         setConflict(false);
-        if (editable) {
-          try {
-            const raw = localStorage.getItem(draftKey(user.id, id));
-            if (raw) {
-              const draft = JSON.parse(raw) as {
-                document: BoardDocument;
-                baseRevision: number;
+        try {
+          const raw = localStorage.getItem(draftKey(workspaceId, id));
+          if (raw) {
+            const draft = JSON.parse(raw) as {
+              document: BoardDocument;
+              baseRevision: number;
+            };
+            if (
+              draft.document?.schemaVersion === 1 &&
+              Array.isArray(draft.document.nodes) &&
+              Array.isArray(draft.document.edges)
+            ) {
+              local = {
+                ...loaded,
+                revision: draft.baseRevision,
+                document: draft.document,
               };
-              if (
-                draft.document?.schemaVersion === 1 &&
-                Array.isArray(draft.document.nodes) &&
-                Array.isArray(draft.document.edges)
-              ) {
-                local = {
-                  ...loaded,
-                  revision: draft.baseRevision,
-                  document: draft.document,
-                };
-                restored = JSON.stringify(draft.document) !== saved.current;
-                if (!restored) local = loaded;
-                setConflict(restored && draft.baseRevision !== loaded.revision);
-              }
-            } else setConflict(false);
-          } catch {
-            setConflict(false);
-          }
+              restored = JSON.stringify(draft.document) !== saved.current;
+              if (!restored) local = loaded;
+              setConflict(restored && draft.baseRevision !== loaded.revision);
+            }
+          } else setConflict(false);
+        } catch {
+          setConflict(false);
         }
         assign(local);
         try {
-          localStorage.setItem(`miracle:selected-board:${user.id}`, id);
+          localStorage.setItem(`miracle:selected-board:${workspaceId}`, id);
         } catch {}
         setState(restored ? "Восстановлен локальный черновик" : "Сохранено");
       } catch (e) {
@@ -99,7 +91,7 @@ export function useBoard(
         if (sequence === loadSequence.current) setLoading(false);
       }
     },
-    [assign, editable, user.id, notify],
+    [assign, workspaceId, notify],
   );
   useEffect(() => {
     mounted.current = true;
@@ -110,7 +102,9 @@ export function useBoard(
         setList(data);
         let preferred: string | null = null;
         try {
-          preferred = localStorage.getItem(`miracle:selected-board:${user.id}`);
+          preferred = localStorage.getItem(
+            `miracle:selected-board:${workspaceId}`,
+          );
         } catch {}
         const initial = data.find((item) => item.id === preferred) || data[0];
         if (initial) void select(initial.id);
@@ -130,11 +124,11 @@ export function useBoard(
       live = false;
       mounted.current = false;
     };
-  }, [user.id]);
+  }, [workspaceId]);
   const change = useCallback(
     (document: BoardDocument, record = true) => {
       const old = current.current;
-      if (!old || !editable) return;
+      if (!old) return;
       document = {
         ...document,
         nodes: document.nodes.map((node) => {
@@ -166,7 +160,7 @@ export function useBoard(
       assign(next);
       setHistoryTick((n) => n + 1);
       if (
-        !persist(draftKey(user.id, old.id), {
+        !persist(draftKey(workspaceId, old.id), {
           baseRevision: old.revision,
           document,
         })
@@ -177,13 +171,12 @@ export function useBoard(
         );
       setState("Изменения…");
     },
-    [assign, editable, user.id, notify],
+    [assign, workspaceId, notify],
   );
   const save = useCallback(async () => {
     const snapshot = current.current;
     if (
       !snapshot ||
-      !editable ||
       saving.current ||
       conflict ||
       JSON.stringify(snapshot.document) === saved.current
@@ -221,10 +214,10 @@ export function useBoard(
         ),
       );
       if (JSON.stringify(now.document) === serialized) {
-        persist(draftKey(user.id, snapshot.id), null);
+        persist(draftKey(workspaceId, snapshot.id), null);
         setState("Сохранено");
       } else {
-        persist(draftKey(user.id, snapshot.id), {
+        persist(draftKey(workspaceId, snapshot.id), {
           baseRevision: result.revision,
           document: now.document,
         });
@@ -248,9 +241,9 @@ export function useBoard(
     } finally {
       saving.current = false;
     }
-  }, [assign, conflict, editable, user.id, notify]);
+  }, [assign, conflict, workspaceId, notify]);
   useEffect(() => {
-    if (!board || !editable || conflict) return;
+    if (!board || conflict) return;
     const timer = setTimeout(() => void save(), 650);
     return () => clearTimeout(timer);
   }, [board?.document, retry, conflict, save]);
@@ -268,13 +261,12 @@ export function useBoard(
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
   const create = async (name: string, document = emptyDocument()) => {
-    if (!editable) return;
     const previous = current.current;
     const value = await api<Board>("/api/boards", {
       method: "POST",
       body: JSON.stringify({ name, document }),
     });
-    if (conflict && previous) persist(draftKey(user.id, previous.id), null);
+    if (conflict && previous) persist(draftKey(workspaceId, previous.id), null);
     ++loadSequence.current;
     setLoading(false);
     setList((items) => [value, ...items]);
@@ -288,7 +280,7 @@ export function useBoard(
   };
   const rename = async (name: string) => {
     const value = current.current;
-    if (!value || !editable) return;
+    if (!value) return;
     if (saving.current) throw new Error("Дождитесь завершения сохранения.");
     await save();
     if (conflict) throw new Error("Сначала разрешите конфликт версий.");
@@ -309,9 +301,9 @@ export function useBoard(
   };
   const remove = async () => {
     const value = current.current;
-    if (!value || !editable) return;
+    if (!value) return;
     await api(`/api/boards/${value.id}`, { method: "DELETE" });
-    persist(draftKey(user.id, value.id), null);
+    persist(draftKey(workspaceId, value.id), null);
     ++loadSequence.current;
     const remaining = list.filter((b) => b.id !== value.id);
     setList(remaining);
@@ -322,7 +314,7 @@ export function useBoard(
   };
   const reload = async () => {
     if (!current.current) return;
-    persist(draftKey(user.id, current.current.id), null);
+    persist(draftKey(workspaceId, current.current.id), null);
     setConflict(false);
     await select(current.current.id);
   };
@@ -351,7 +343,7 @@ export function useBoard(
     loading,
     state,
     conflict,
-    editable,
+    editable: true,
     change,
     select,
     create,

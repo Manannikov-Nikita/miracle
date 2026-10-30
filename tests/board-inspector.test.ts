@@ -150,6 +150,74 @@ describe("board inspector settings integration", () => {
     expect(uncaught).toEqual([]);
   });
 
+  it("switches bar orientation without changing its columns or table settings", async () => {
+    const node = fixture();
+    node.data.chart = {
+      ...node.data.chart!,
+      kind: "bar",
+      series: "month",
+      stacked: true,
+    };
+    await render(node);
+    expect(checkbox("Горизонтально").checked).toBe(false);
+    await click(checkbox("Горизонтально"));
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      orientation: "horizontal",
+    });
+    expect(current.data.table).toBe(table);
+    expect(container.querySelector('[aria-label="Ось Y"]')?.textContent).toBe(
+      "Месяц",
+    );
+    expect(container.querySelector('[aria-label="Порядок Y"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[aria-label="Тип графика: Горизонтальные столбцы"]',
+      ),
+    ).not.toBeNull();
+    expect(checkbox("Выручка").checked).toBe(true);
+    await click(button("Таблица"));
+    await click(button("График"));
+    expect(checkbox("Горизонтально").checked).toBe(true);
+    await click(checkbox("Горизонтально"));
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      orientation: "vertical",
+    });
+    expect(container.querySelector('[aria-label="Ось X"]')?.textContent).toBe(
+      "Месяц",
+    );
+    expect(uncaught).toEqual([]);
+  });
+
+  it("prevents changing bar orientation in a disabled inspector", async () => {
+    const node = fixture();
+    node.data.chart = {
+      ...node.data.chart!,
+      kind: "bar",
+      orientation: "horizontal",
+    };
+    await render(node, { editable: false });
+    expect(checkbox("Горизонтально").matches(":disabled")).toBe(true);
+    await click(checkbox("Горизонтально"));
+    expect(changes).toEqual([]);
+  });
+
+  it.each(["line", "area", "scatter"] as const)(
+    "hides the bar orientation control for %s without discarding its setting",
+    async (kind) => {
+      const node = fixture();
+      node.data.chart = {
+        ...node.data.chart!,
+        kind,
+        orientation: "horizontal",
+      };
+      await render(node);
+      expect(container.textContent).not.toContain("Горизонтально");
+      expect(current.data.chart).toBe(node.data.chart);
+    },
+  );
+
   it("preserves both configurations when switching between graph and table", async () => {
     const node = fixture();
     await render(node);

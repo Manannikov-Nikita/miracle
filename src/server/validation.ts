@@ -1,7 +1,24 @@
 import { z } from "zod";
 import { clickhouseOptionsSchema } from "./clickhouseOptions.js";
 import { tableSpecSchema } from "./tableValidation.js";
+import { dateRangeDates } from "../shared/date-batch.js";
+export const dateRangeSchema = z
+  .object({
+    startDate: z.string(),
+    endDate: z.string(),
+    granularity: z.enum(["day", "week", "month"]),
+    retries: z.number().int().min(0).max(10),
+  })
+  .strict()
+  .superRefine((range, context) => {
+    try {
+      dateRangeDates(range);
+    } catch (error) {
+      context.addIssue({ code: "custom", message: (error as Error).message });
+    }
+  });
 export const sourceSchema = z.object({
+  dateRange: dateRangeSchema.optional(),
   connectionId: z.uuid(),
   sql: z.string().min(1).max(1000000),
   database: z.string().max(200).optional(),
@@ -25,6 +42,7 @@ const identifier = z.string().min(1).max(200);
 const finite = z.number().finite().min(-1000000).max(1000000);
 const chart = z.object({
   kind: z.enum(["bar", "line", "area", "scatter"]),
+  orientation: z.enum(["vertical", "horizontal"]).optional(),
   x: z.string().max(200),
   y: z.array(z.string().max(200)).max(20),
   series: z.string().max(200).optional(),

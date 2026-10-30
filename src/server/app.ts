@@ -7,28 +7,30 @@ import {
   createHash,
   timingSafeEqual,
 } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { hash, verify } from "@node-rs/argon2";
+import { existsSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { z } from "zod";
 import {
-  Pool,
+  Database,
   migrate,
   retention,
-  validatePassword,
-  setupRequired,
-  completeSetup,
-  type Database,
+  WORKSPACE_SCHEMA_VERSION,
 } from "./db.js";
 import { loadKey, SecretBox, verifyEncryptionKey } from "./secrets.js";
-import { databaseConfig } from "./config.js";
-import { acquireApplicationLock } from "./singleton.js";
+import { resolveDataDir, resolvePort } from "./config.js";
 import {
   mergeClickHouseOptions,
   publicClickHouseOptions,
   validateClickHouseConnection,
 } from "./clickhouseOptions.js";
 import { assertReadOnly } from "./sql.js";
+import { registerMetadataRoutes } from "./metadata.js";
+import {
+  prepareDateBatch,
+  performDateBatch,
+  interruptQueryRuns,
+} from "./date-batch.js";
 import {
   executeEngine,
   engineMetadata,
@@ -43,7 +45,6 @@ import {
   boardDocumentSchema,
 } from "./validation.js";
 import type {
-  User,
   QuerySource,
   QueryRun,
   ResultSet,
@@ -54,19 +55,19 @@ export interface Limits {
   timeoutMs: number;
   maxRows: number;
   maxBytes: number;
-  maxUserRuns: number;
   maxGlobalRuns: number;
   quotaBytes: number;
 }
 export interface AppOptions {
-  databaseUrl?: string;
+  dataDir?: string;
+  controlToken?: string;
+  onShutdown?: () => void;
   encryptionKey?: Buffer;
   appOrigin?: string;
   cookieSecure?: boolean;
   limits?: Partial<Limits>;
   serveStatic?: boolean;
   logger?: boolean;
-  onLockLost?: (error: Error) => void;
 }
 declare module "fastify" {
   interface FastifyInstance {
@@ -76,7 +77,6 @@ declare module "fastify" {
     };
   }
   interface FastifyRequest {
-    account: User | null;
     sessionId: string | null;
     csrfToken: string | null;
   }
@@ -84,13 +84,6 @@ declare module "fastify" {
 const err = (status: number, message: string, code?: string) =>
   Object.assign(new Error(message), { statusCode: status, code });
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
-const publicUser = (r: any): User => ({
-  id: r.id,
-  email: r.email,
-  name: r.name,
-  role: r.role,
-  disabled: r.disabled,
-});
 const resultDto = (r: any): ResultSet => ({
   id: r.id,
   columns: r.columns,
@@ -109,6 +102,7 @@ const runDto = (r: any): QueryRun => ({
   finishedAt: r.finished_at ? new Date(r.finished_at).toISOString() : undefined,
   rowCount: r.row_count ?? undefined,
   elapsedMs: r.elapsed_ms ?? undefined,
+  batch: r.batch ?? undefined,
 });
 const boardDto = (r: any) => ({
   id: r.id,
@@ -124,97 +118,150 @@ const queryDto = (r: any) => ({
   ...r.source,
   updatedAt: new Date(r.updated_at).toISOString(),
 });
-const roleSchema = z.enum(["admin", "editor", "viewer"]);
 const nameSchema = z.string().trim().min(1).max(200);
 export async function buildApp(
   options: AppOptions = {},
 ): Promise<FastifyInstance> {
+  // Fail configuration before constructing SQLite or generating the workspace key.
+  options = z
+    .object({
+      dataDir: z.string().min(1).optional(),
+      controlToken: z
+        .string()
+        .min(1)
+        .max(512)
+        .regex(/^[\x21-\x7e]+$/)
+        .optional(),
+      onShutdown: z
+        .custom<() => void>((value) => typeof value === "function")
+        .optional(),
+      encryptionKey: z
+        .instanceof(Buffer)
+        .refine(
+          (value) => value.length === 32,
+          "Workspace encryption key must contain exactly 32 bytes",
+        )
+        .optional(),
+      appOrigin: z.string().min(1).optional(),
+      cookieSecure: z.boolean().optional(),
+      limits: z
+        .object({
+          timeoutMs: z.number().int().positive().optional(),
+          maxRows: z.number().int().positive().optional(),
+          maxBytes: z.number().int().positive().optional(),
+          maxGlobalRuns: z.number().int().positive().optional(),
+          quotaBytes: z.number().int().positive().optional(),
+        })
+        .optional(),
+      serveStatic: z.boolean().optional(),
+      logger: z.boolean().optional(),
+    })
+    .parse(options);
+  const port = resolvePort();
+  const dataDir = options.dataDir || resolveDataDir();
+  const configuredOrigin =
+    options.appOrigin || process.env.APP_ORIGIN || `http://127.0.0.1:${port}`;
+  const originUrl = new URL(configuredOrigin);
+  if (
+    !["http:", "https:"].includes(originUrl.protocol) ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(originUrl.hostname) ||
+    originUrl.username ||
+    originUrl.password ||
+    originUrl.pathname !== "/" ||
+    originUrl.search ||
+    originUrl.hash
+  )
+    throw new Error(
+      "APP_ORIGIN must be an HTTP(S) loopback origin without credentials, path, query or fragment",
+    );
+  const appOrigin = originUrl.origin;
+  const expectedHost = originUrl.host;
+  const secure = options.cookieSecure ?? originUrl.protocol === "https:";
+  const envNum = (name: string, fallback: number) => {
+    const value = Number(process.env[name] || fallback);
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new Error(`Invalid ${name}`);
+    return value;
+  };
+  const limits: Limits = {
+    timeoutMs: envNum("QUERY_TIMEOUT_MS", 120000),
+    maxRows: envNum("MAX_RESULT_ROWS", 50000),
+    maxBytes: envNum("MAX_RESULT_BYTES", 20 * 1024 * 1024),
+    maxGlobalRuns: 2,
+    quotaBytes: envNum("RESULT_QUOTA_BYTES", 2 * 1024 ** 3),
+    ...options.limits,
+  };
+  limits.maxGlobalRuns = Math.min(2, limits.maxGlobalRuns);
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: false,
   });
-  const config = options.databaseUrl
-    ? { connectionString: options.databaseUrl }
-    : databaseConfig();
-  const db = new Pool({ ...config, max: 12 });
-  let singleton: Awaited<ReturnType<typeof acquireApplicationLock>> | undefined;
-  let lockLost = false;
-  let closeActiveRuns: (() => Promise<void>) | undefined;
+  const initialFiles = existsSync(dataDir) ? readdirSync(dataDir) : [];
+  // The exclusive connection owns even interrupted initialization recovery.
+  const db = new Database(dataDir);
   try {
-    const box = new SecretBox(options.encryptionKey || loadKey());
-    const appOrigin =
-      options.appOrigin || process.env.APP_ORIGIN || "http://127.0.0.1:5178";
-    const secure =
-      options.cookieSecure ?? process.env.COOKIE_SECURE !== "false";
-    const envNum = (name: string, fallback: number) => {
-      const value = Number(process.env[name] || fallback);
-      if (!Number.isSafeInteger(value) || value <= 0)
-        throw new Error(`Invalid ${name}`);
-      return value;
-    };
-    const limits: Limits = {
-      timeoutMs: envNum("QUERY_TIMEOUT_MS", 120000),
-      maxRows: envNum("MAX_RESULT_ROWS", 50000),
-      maxBytes: envNum("MAX_RESULT_BYTES", 20 * 1024 * 1024),
-      maxUserRuns: envNum("MAX_USER_RUNS", 2),
-      maxGlobalRuns: envNum("MAX_GLOBAL_RUNS", 4),
-      quotaBytes: envNum("RESULT_QUOTA_BYTES", 2 * 1024 ** 3),
-      ...options.limits,
-    };
-    singleton = await acquireApplicationLock(config, (error) => {
-      lockLost = true;
-      app.log.error(error.message);
-      void closeActiveRuns?.();
-      options.onLockLost?.(error);
-      void app.close().catch(() => {});
-    });
-    await migrate(db);
-    await verifyEncryptionKey(db, box);
-    await singleton.interruptPreviousRuns();
-    await retention(db);
+    const schemaVersion = Number(
+      db.sqlite.prepare("PRAGMA user_version").get()!.user_version,
+    );
+    const isNew =
+      initialFiles.every((name) =>
+        [
+          "miracle.sqlite",
+          "miracle.sqlite-wal",
+          "miracle.sqlite-shm",
+          "miracle.sqlite-journal",
+          "encryption.key",
+          ".encryption.key.pending",
+        ].includes(name),
+      ) &&
+      schemaVersion === 0 &&
+      db.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+        )
+        .all().length === 0;
+    // Reject incomplete or unsupported schemas before accessing their settings.
+    if (
+      schemaVersion > WORKSPACE_SCHEMA_VERSION ||
+      (!isNew && schemaVersion === 0)
+    )
+      migrate(db);
+    const box = new SecretBox(loadKey(dataDir, isNew, options.encryptionKey));
+    // A schema is established only together with its UUID and authenticated key.
+    if (!isNew) verifyEncryptionKey(db, box);
+    migrate(db, isNew ? () => verifyEncryptionKey(db, box, true) : undefined);
+    verifyEncryptionKey(db, box);
+    const workspaceId = db.query(
+      "SELECT value FROM app_settings WHERE key='workspace_id'",
+    ).rows[0].value as string;
+    interruptQueryRuns(db);
+    retention(db);
     await app.register(cookie);
-    app.decorateRequest("account", null);
     app.decorateRequest("sessionId", null);
     app.decorateRequest("csrfToken", null);
+    // Tabs share a host-only cookie. Bootstrap must return one matching pair,
+    // even when several tabs reconnect before either Set-Cookie is applied.
+    let browserSession:
+      { token: string; id: string; csrf: string; expires: number } | undefined;
     const live = new Map<
       string,
       {
         controller: AbortController;
         cancel?: () => Promise<void>;
         promise?: Promise<void>;
-        userId: string;
       }
     >();
-    const rate = new Map<
-      string,
-      {
-        count: number;
-        until: number;
-      }
-    >();
-    function throttle(key: string, max: number) {
-      const now = Date.now();
-      if (rate.size > 10000)
-        for (const [k, v] of rate) if (v.until < now) rate.delete(k);
-      let r = rate.get(key);
-      if (!r || r.until < now) {
-        r = { count: 0, until: now + 60000 };
-        rate.set(key, r);
-      }
-      if (++r.count > max)
-        throw err(429, "Слишком много попыток. Попробуйте через минуту");
-    }
     app.setErrorHandler((e: any, _req, reply) => {
       if (e instanceof z.ZodError)
         return reply
           .code(400)
           .send({ error: e.issues[0]?.message || "Некорректные данные" });
-      if (e.code === "23505")
+      if (e.errcode === 2067 || e.errcode === 1555)
         return reply
           .code(409)
           .send({ error: "Запись уже существует", code: "CONFLICT" });
-      if (e.code === "23503")
+      if (e.errcode === 787)
         return reply
           .code(409)
           .send({ error: "Ссылка на отсутствующий или используемый объект" });
@@ -226,284 +273,115 @@ export async function buildApp(
       });
     });
     app.addHook("onRequest", async (req, reply) => {
-      if (lockLost)
-        throw err(
-          503,
-          "Сервер потерял соединение с базой данных и останавливается",
-        );
+      if (req.headers.host !== expectedHost)
+        throw err(403, "Недопустимый Host");
+      if (req.headers.origin && req.headers.origin !== appOrigin)
+        throw err(403, "Недопустимый Origin");
+      if (req.headers["sec-fetch-site"] === "cross-site")
+        throw err(403, "Недопустимый источник запроса");
       if (!req.url.startsWith("/api/")) return;
       reply.header("Cache-Control", "no-store");
       reply.header("X-Content-Type-Options", "nosniff");
+      const path = req.url.split("?")[0];
+      if (path === "/api/local/control" || path === "/api/health") return;
+      // Removed account routes remain absent, including for callers without a session.
+      if (/^\/api\/(auth|setup|users)(\/|$)/.test(path!))
+        return reply.code(404).send({ error: "Маршрут не найден" });
       const sid = req.cookies.miracle_session;
-      if (sid) {
-        const r = (
-          await db.query(
-            "SELECT s.id,s.csrf,u.id user_id,u.email,u.name,u.role,u.disabled FROM sessions s LEFT JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now()",
-            [digest(sid)],
-          )
-        ).rows[0];
-        if (r && !r.disabled) {
-          req.sessionId = r.id;
-          req.csrfToken = r.csrf;
-          if (r.user_id) req.account = publicUser({ ...r, id: r.user_id });
-        }
+      if (
+        sid &&
+        browserSession &&
+        browserSession.expires > Date.now() &&
+        digest(sid) === browserSession.id
+      ) {
+        req.sessionId = browserSession.id;
+        req.csrfToken = browserSession.csrf;
       }
+      if (path === "/api/session" && req.method === "GET") return;
+      if (!req.sessionId)
+        throw err(401, "Локальная сессия завершена", "LOCAL_SESSION_EXPIRED");
+      const requestedWorkspace = req.headers["x-miracle-workspace"];
+      if (
+        requestedWorkspace !== undefined &&
+        requestedWorkspace !== workspaceId
+      )
+        throw err(
+          409,
+          "Рабочая область изменилась. Перезагрузите страницу",
+          "WORKSPACE_CHANGED",
+        );
       if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-        if (req.headers.origin && req.headers.origin !== appOrigin)
-          throw err(403, "Недопустимый Origin");
+        const token = req.headers["x-csrf-token"];
         if (
-          ![
-            "/api/auth/login",
-            "/api/auth/activate",
-            "/api/setup/complete",
-          ].includes(req.url.split("?")[0]!)
-        ) {
-          const token = req.headers["x-csrf-token"];
-          if (
-            typeof token !== "string" ||
-            !req.csrfToken ||
-            Buffer.byteLength(token) !== Buffer.byteLength(req.csrfToken) ||
-            !timingSafeEqual(Buffer.from(token), Buffer.from(req.csrfToken))
-          )
-            throw err(403, "Недопустимый CSRF токен");
-        }
+          typeof token !== "string" ||
+          !req.csrfToken ||
+          Buffer.byteLength(token) !== Buffer.byteLength(req.csrfToken) ||
+          !timingSafeEqual(Buffer.from(token), Buffer.from(req.csrfToken))
+        )
+          throw err(
+            403,
+            "Недопустимый CSRF токен",
+            typeof token === "string" && /^[A-Za-z0-9_-]{43}$/.test(token)
+              ? "LOCAL_SESSION_STALE"
+              : undefined,
+          );
       }
     });
-    const need = (
-      req: FastifyRequest,
-      level: "viewer" | "editor" | "admin" = "viewer",
-    ) => {
-      if (!req.account) throw err(401, "Требуется вход");
-      if (
-        (level === "admin" && req.account.role !== "admin") ||
-        (level === "editor" && req.account.role === "viewer")
-      )
-        throw err(403, "Недостаточно прав");
-      return req.account;
+    const need = (req: FastifyRequest) => {
+      if (!req.sessionId)
+        throw err(401, "Локальная сессия завершена", "LOCAL_SESSION_EXPIRED");
     };
-    async function session(
-      reply: any,
-      userId: string | null,
-      old: string | null,
-    ) {
-      if (old) await db.query("DELETE FROM sessions WHERE id=$1", [old]);
-      const token = randomBytes(32).toString("base64url");
-      const csrf = randomBytes(32).toString("base64url");
-      await db.query(
-        "INSERT INTO sessions(id,user_id,csrf,expires_at) VALUES($1,$2,$3,now()+interval '7 days')",
-        [digest(token), userId, csrf],
-      );
-      reply.setCookie("miracle_session", token, {
-        httpOnly: true,
-        secure,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 604800,
-      });
-      return csrf;
-    }
     const uuid = (req: FastifyRequest, key = "id") =>
       z.uuid().parse((req.params as any)[key]);
-    app.get("/api/health", async () => {
-      await db.query("SELECT 1");
-      return { ok: true };
-    });
-    app.get("/api/setup/status", async () => ({
-      required: await setupRequired(db),
-    }));
-    app.post("/api/setup/complete", async (req, reply) => {
-      throttle("setup:" + req.ip, 20);
-      const input = z
-        .object({
-          token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-          name: nameSchema,
-          email: z.email().max(320),
-          password: z
-            .string()
-            .min(12, "Пароль должен содержать от 12 до 256 символов")
-            .max(256),
-        })
-        .parse(req.body);
-      const user = await completeSetup(db, input);
-      return {
-        user: publicUser(user),
-        csrfToken: await session(reply, user.id, req.sessionId),
-      };
-    });
-    app.get("/api/auth/me", async (req, reply) => ({
-      user: req.account,
-      csrfToken: req.csrfToken || (await session(reply, null, null)),
-    }));
-    app.post("/api/auth/login", async (req, reply) => {
-      throttle("ip:" + req.ip, 20);
-      const b = z
-        .object({ email: z.email().max(320), password: z.string().max(256) })
-        .parse(req.body);
-      throttle("email:" + b.email.toLowerCase(), 10);
-      const r = (
-        await db.query("SELECT * FROM users WHERE email=$1", [
-          b.email.trim().toLowerCase(),
-        ])
-      ).rows[0];
-      if (
-        !r?.password_hash ||
-        r.disabled ||
-        !(await verify(r.password_hash, b.password))
-      )
-        throw err(401, "Неверный email или пароль");
-      return {
-        user: publicUser(r),
-        csrfToken: await session(reply, r.id, req.sessionId),
-      };
-    });
-    app.post("/api/auth/logout", async (req, reply) => {
-      if (req.sessionId)
-        await db.query("DELETE FROM sessions WHERE id=$1", [req.sessionId]);
-      reply.clearCookie("miracle_session", {
-        path: "/",
+    app.get("/api/health", async () => ({ ok: true }));
+    app.get("/api/session", async (_req, reply) => {
+      if (!browserSession || browserSession.expires <= Date.now()) {
+        const token = randomBytes(32).toString("base64url");
+        browserSession = {
+          token,
+          id: digest(token),
+          csrf: randomBytes(32).toString("base64url"),
+          expires: Date.now() + 604800000,
+        };
+      }
+      // Read the current pair here, rather than a hook's earlier TTL snapshot.
+      reply.setCookie("miracle_session", browserSession.token, {
         httpOnly: true,
         secure,
-        sameSite: "lax",
+        sameSite: "strict",
+        path: "/",
+        maxAge: Math.max(
+          1,
+          Math.ceil((browserSession.expires - Date.now()) / 1000),
+        ),
       });
+      return { workspaceId, csrfToken: browserSession.csrf };
+    });
+    app.post("/api/local/control", async (req, reply) => {
+      const authorization = req.headers.authorization;
+      const expected = options.controlToken
+        ? `Bearer ${options.controlToken}`
+        : "";
+      if (
+        !expected ||
+        !authorization ||
+        Buffer.byteLength(expected) !== Buffer.byteLength(authorization) ||
+        !timingSafeEqual(Buffer.from(expected), Buffer.from(authorization))
+      )
+        throw err(401, "Invalid instance token");
+      const { action } = z
+        .object({ action: z.enum(["status", "stop"]) })
+        .parse(req.body);
+      if (action === "stop")
+        reply.raw.once("finish", () => {
+          setImmediate(() => {
+            void app
+              .close()
+              .then(() => options.onShutdown?.())
+              .catch((error) => app.log.error(error));
+          });
+        });
       return { ok: true };
-    });
-    app.post("/api/auth/activate", async (req, reply) => {
-      throttle("activate:" + req.ip, 20);
-      const b = z
-        .object({
-          token: z.string().min(20).max(200),
-          password: z.string(),
-          name: nameSchema.optional(),
-        })
-        .parse(req.body);
-      try {
-        validatePassword(b.password);
-      } catch (e: any) {
-        throw err(400, e.message);
-      }
-      const ph = await hash(b.password);
-      const c = await db.connect();
-      let user;
-      try {
-        await c.query("BEGIN");
-        const t = (
-          await c.query(
-            "DELETE FROM account_tokens WHERE token_hash=$1 AND expires_at>now() RETURNING user_id",
-            [digest(b.token)],
-          )
-        ).rows[0];
-        if (!t) throw err(400, "Ссылка недействительна или истекла");
-        user = (
-          await c.query(
-            "UPDATE users SET password_hash=$2,name=COALESCE($3,name) WHERE id=$1 AND disabled=false RETURNING *",
-            [t.user_id, ph, b.name],
-          )
-        ).rows[0];
-        if (!user) throw err(400, "Аккаунт отключён");
-        await c.query("DELETE FROM account_tokens WHERE user_id=$1", [user.id]);
-        await c.query("DELETE FROM sessions WHERE user_id=$1", [user.id]);
-        await c.query("COMMIT");
-      } catch (e) {
-        await c.query("ROLLBACK");
-        throw e;
-      } finally {
-        c.release();
-      }
-      return {
-        user: publicUser(user),
-        csrfToken: await session(reply, user.id, req.sessionId),
-      };
-    });
-    async function activationLink(userId: string) {
-      const token = randomBytes(32).toString("base64url");
-      await db.query("DELETE FROM account_tokens WHERE user_id=$1", [userId]);
-      await db.query(
-        "INSERT INTO account_tokens(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '24 hours')",
-        [digest(token), userId],
-      );
-      return appOrigin + "/activate?token=" + token;
-    }
-    app.get("/api/users", async (req) => {
-      need(req, "admin");
-      return (
-        await db.query("SELECT * FROM users ORDER BY created_at")
-      ).rows.map(publicUser);
-    });
-    app.post("/api/users", async (req, reply) => {
-      need(req, "admin");
-      const b = z
-        .object({
-          email: z.email().max(320),
-          name: nameSchema,
-          role: roleSchema,
-        })
-        .parse(req.body);
-      const user = (
-        await db.query(
-          "INSERT INTO users(id,email,name,role) VALUES($1,$2,$3,$4) RETURNING *",
-          [randomUUID(), b.email.trim().toLowerCase(), b.name, b.role],
-        )
-      ).rows[0];
-      reply.code(201);
-      return {
-        user: publicUser(user),
-        activationUrl: await activationLink(user.id),
-      };
-    });
-    app.patch("/api/users/:id", async (req) => {
-      need(req, "admin");
-      const id = uuid(req);
-      const b = z
-        .object({
-          role: roleSchema.optional(),
-          disabled: z.boolean().optional(),
-          name: nameSchema.optional(),
-        })
-        .parse(req.body);
-      const c = await db.connect();
-      try {
-        await c.query("BEGIN");
-        await c.query("SELECT pg_advisory_xact_lock(67432913)");
-        const old = (
-          await c.query("SELECT * FROM users WHERE id=$1 FOR UPDATE", [id])
-        ).rows[0];
-        if (!old) throw err(404, "Пользователь не найден");
-        if (
-          old.role === "admin" &&
-          !old.disabled &&
-          (b.disabled || (b.role && b.role !== "admin"))
-        ) {
-          const n = await c.query(
-            "SELECT id FROM users WHERE role='admin' AND disabled=false AND password_hash IS NOT NULL AND id<>$1",
-            [id],
-          );
-          if (!n.rowCount)
-            throw err(409, "Нельзя отключить последнего администратора");
-        }
-        const u = (
-          await c.query(
-            "UPDATE users SET name=COALESCE($2,name),role=COALESCE($3,role),disabled=COALESCE($4,disabled) WHERE id=$1 RETURNING *",
-            [id, b.name, b.role, b.disabled],
-          )
-        ).rows[0];
-        if (b.disabled || b.role)
-          await c.query("DELETE FROM sessions WHERE user_id=$1", [id]);
-        await c.query("COMMIT");
-        return publicUser(u);
-      } catch (e) {
-        await c.query("ROLLBACK");
-        throw e;
-      } finally {
-        c.release();
-      }
-    });
-    app.post("/api/users/:id/reset", async (req) => {
-      need(req, "admin");
-      const id = uuid(req);
-      if (!(await db.query("SELECT id FROM users WHERE id=$1", [id])).rowCount)
-        throw err(404, "Пользователь не найден");
-      await db.query("DELETE FROM sessions WHERE user_id=$1", [id]);
-      return { url: await activationLink(id) };
     });
     function savedClickHouseOptions(r: any) {
       return r.clickhouse_options_encrypted
@@ -526,8 +404,7 @@ export async function buildApp(
       };
     }
     async function connection(id: string): Promise<EngineConnection> {
-      const r = (await db.query("SELECT * FROM connections WHERE id=$1", [id]))
-        .rows[0];
+      const r = db.query("SELECT * FROM connections WHERE id=?1", [id]).rows[0];
       if (!r) throw err(404, "Подключение не найдено");
       return {
         ...connectionDto(r),
@@ -537,9 +414,9 @@ export async function buildApp(
     }
     app.get("/api/connections", async (req) => {
       need(req);
-      return (
-        await db.query("SELECT * FROM connections ORDER BY created_at")
-      ).rows.map(connectionDto);
+      return db
+        .query("SELECT * FROM connections ORDER BY created_at")
+        .rows.map(connectionDto);
     });
     function validateConnection(input: unknown): EngineConnection {
       const b = connectionSchema.parse(input);
@@ -575,54 +452,50 @@ export async function buildApp(
     const encryptedOptions = (c: EngineConnection) =>
       c.clickhouse ? box.encrypt(JSON.stringify(c.clickhouse)) : null;
     app.post("/api/connections", async (req, reply) => {
-      need(req, "admin");
+      need(req);
       const b = validateConnection(req.body);
-      const r = (
-        await db.query(
-          "INSERT INTO connections(id,name,engine,url,username,password_encrypted,database_name,catalog,schema_name,clickhouse_options_encrypted) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",
-          [
-            randomUUID(),
-            b.name,
-            b.engine,
-            b.url,
-            b.username,
-            b.password ? box.encrypt(b.password) : "",
-            b.database,
-            b.catalog,
-            b.schema,
-            encryptedOptions(b),
-          ],
-        )
+      const r = db.query(
+        "INSERT INTO connections(id,name,engine,url,username,password_encrypted,database_name,catalog,schema_name,clickhouse_options_encrypted) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING *",
+        [
+          randomUUID(),
+          b.name,
+          b.engine,
+          b.url,
+          b.username,
+          b.password ? box.encrypt(b.password) : "",
+          b.database,
+          b.catalog,
+          b.schema,
+          encryptedOptions(b),
+        ],
       ).rows[0];
       reply.code(201);
       return connectionDto(r);
     });
     app.patch("/api/connections/:id", async (req) => {
-      need(req, "admin");
+      need(req);
       const id = uuid(req);
       const patch = connectionSchema.partial().parse(req.body);
       const b = mergedConnection(await connection(id), patch);
-      const r = (
-        await db.query(
-          "UPDATE connections SET name=$2,engine=$3,url=$4,username=$5,password_encrypted=$6,database_name=$7,catalog=$8,schema_name=$9,clickhouse_options_encrypted=$10 WHERE id=$1 RETURNING *",
-          [
-            id,
-            b.name,
-            b.engine,
-            b.url,
-            b.username,
-            b.password ? box.encrypt(b.password) : "",
-            b.database,
-            b.catalog,
-            b.schema,
-            encryptedOptions(b),
-          ],
-        )
+      const r = db.query(
+        "UPDATE connections SET name=?2,engine=?3,url=?4,username=?5,password_encrypted=?6,database_name=?7,catalog=?8,schema_name=?9,clickhouse_options_encrypted=?10 WHERE id=?1 RETURNING *",
+        [
+          id,
+          b.name,
+          b.engine,
+          b.url,
+          b.username,
+          b.password ? box.encrypt(b.password) : "",
+          b.database,
+          b.catalog,
+          b.schema,
+          encryptedOptions(b),
+        ],
       ).rows[0];
       return connectionDto(r);
     });
     app.post("/api/connections/test", async (req) => {
-      need(req, "admin");
+      need(req);
       const body = connectionSchema
         .extend({ id: z.uuid().optional() })
         .parse(req.body);
@@ -638,16 +511,15 @@ export async function buildApp(
       }
     });
     app.delete("/api/connections/:id", async (req) => {
-      need(req, "admin");
+      need(req);
       if (
-        !(await db.query("DELETE FROM connections WHERE id=$1", [uuid(req)]))
-          .rowCount
+        !db.query("DELETE FROM connections WHERE id=?1", [uuid(req)]).rowCount
       )
         throw err(404, "Подключение не найдено");
       return { ok: true };
     });
     app.post("/api/connections/:id/test", async (req) => {
-      need(req, "admin");
+      need(req);
       const c = await connection(uuid(req));
       try {
         const r = await engineMetadata(c, "SELECT version()");
@@ -656,6 +528,7 @@ export async function buildApp(
         throw err(400, e.message);
       }
     });
+    registerMetadataRoutes(app, { need, connection });
     app.get("/api/connections/:id/schema", async (req) => {
       need(req);
       const c = await connection(uuid(req));
@@ -736,26 +609,24 @@ export async function buildApp(
     );
     app.get("/api/queries", async (req) => {
       need(req);
-      return (
-        await db.query("SELECT * FROM queries ORDER BY updated_at DESC")
-      ).rows.map(queryDto);
+      return db
+        .query("SELECT * FROM queries ORDER BY updated_at DESC")
+        .rows.map(queryDto);
     });
     app.post("/api/queries", async (req, reply) => {
-      need(req, "editor");
+      need(req);
       const b = sourceSchema.extend({ name: nameSchema }).parse(req.body);
       const { name, ...source } = b;
       await connection(source.connectionId);
-      const r = (
-        await db.query(
-          "INSERT INTO queries(id,name,source) VALUES($1,$2,$3) RETURNING *",
-          [randomUUID(), name, source],
-        )
+      const r = db.query(
+        "INSERT INTO queries(id,name,source) VALUES(?1,?2,?3) RETURNING *",
+        [randomUUID(), name, source],
       ).rows[0];
       reply.code(201);
       return queryDto(r);
     });
     app.patch("/api/queries/:id", async (req) => {
-      need(req, "editor");
+      need(req);
       const id = uuid(req);
       const b = sourceSchema
         .extend({
@@ -765,73 +636,65 @@ export async function buildApp(
         .parse(req.body);
       const { name, baseRevision, ...source } = b;
       await connection(source.connectionId);
-      const r = (
-        await db.query(
-          "UPDATE queries SET name=$2,source=$3,revision=revision+1,updated_at=now() WHERE id=$1 AND revision=$4 RETURNING *",
-          [id, name, source, baseRevision],
-        )
+      const r = db.query(
+        "UPDATE queries SET name=?2,source=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
+        [id, name, source, baseRevision],
       ).rows[0];
       if (!r)
         throw err(
           409,
-          "Запрос изменён другим пользователем. Перезагрузите или сохраните копию",
+          "Запрос изменён в другой вкладке. Перезагрузите или сохраните копию",
           "REVISION_CONFLICT",
         );
       return queryDto(r);
     });
     app.delete("/api/queries/:id", async (req) => {
-      need(req, "editor");
-      if (
-        !(await db.query("DELETE FROM queries WHERE id=$1", [uuid(req)]))
-          .rowCount
-      )
+      need(req);
+      if (!db.query("DELETE FROM queries WHERE id=?1", [uuid(req)]).rowCount)
         throw err(404, "Запрос не найден");
       return { ok: true };
     });
     async function startRun(req: FastifyRequest, source: QuerySource) {
-      const user = need(req, "editor");
+      need(req);
+      const engine = await connection(source.connectionId);
+      let batch;
       try {
-        assertReadOnly(source.sql);
+        batch = prepareDateBatch(source, engine);
       } catch (e: any) {
         throw err(400, e.message);
       }
-      const engine = await connection(source.connectionId);
       const id = randomUUID();
-      const c = await db.connect();
+      const c = db;
       let created;
       try {
-        await c.query("BEGIN");
-        await c.query("SELECT pg_advisory_xact_lock(67432915)");
-        const r = await c.query(
-          "SELECT user_id FROM query_runs WHERE status IN ('running','cancelling')",
+        c.query("BEGIN");
+        const r = c.query(
+          "SELECT id FROM query_runs WHERE status IN ('running','cancelling')",
         );
-        if (
-          r.rows.length >= limits.maxGlobalRuns ||
-          r.rows.filter((r) => r.user_id === user.id).length >=
-            limits.maxUserRuns
-        )
+        if (r.rows.length >= limits.maxGlobalRuns)
           throw err(429, "Достигнут лимит одновременных запросов");
-        created = (
-          await c.query(
-            "INSERT INTO query_runs(id,user_id,status,source) VALUES($1,$2,'running',$3) RETURNING *",
-            [id, user.id, source],
-          )
+        created = c.query(
+          "INSERT INTO query_runs(id,status,source,batch) VALUES(?1,'running',?2,?3) RETURNING *",
+          [id, source, batch],
         ).rows[0];
-        await c.query("COMMIT");
+        c.query("COMMIT");
       } catch (e) {
-        await c.query("ROLLBACK");
+        c.query("ROLLBACK");
         throw e;
-      } finally {
-        c.release();
       }
       const state: {
         controller: AbortController;
         cancel?: () => Promise<void>;
         promise?: Promise<void>;
-        userId: string;
-      } = { controller: new AbortController(), userId: user.id };
+      } = { controller: new AbortController() };
       live.set(id, state);
-      state.promise = performRun(id, engine, source, state);
+      state.promise = batch
+        ? performDateBatch({ db, id, engine, source, state, batch, limits })
+            .catch((error) => app.log.error(error))
+            .finally(() => {
+              live.delete(id);
+            })
+        : performRun(id, engine, source, state);
       return runDto(created);
     }
     async function performRun(
@@ -863,31 +726,23 @@ export async function buildApp(
         );
         if (state.controller.signal.aborted) throw new Error("Запрос отменён");
         const resultId = randomUUID();
-        const c = await db.connect();
+        const c = db;
         try {
-          await c.query("BEGIN");
-          await c.query("SELECT pg_advisory_xact_lock(67432914)");
-          const run = (
-            await c.query(
-              "SELECT status FROM query_runs WHERE id=$1 FOR UPDATE",
-              [id],
-            )
-          ).rows[0];
+          c.query("BEGIN");
+          const run = c.query("SELECT status FROM query_runs WHERE id=?1", [id])
+            .rows[0];
           if (run?.status !== "running" || state.controller.signal.aborted)
             throw new Error("Запрос отменён");
           const total = Number(
-            (
-              await c.query(
-                "SELECT COALESCE(sum(byte_count),0) size FROM result_sets",
-              )
-            ).rows[0].size,
+            c.query("SELECT COALESCE(sum(byte_count),0) size FROM result_sets")
+              .rows[0].size,
           );
           if (total + output.byteCount > limits.quotaBytes)
             throw new Error(
               "Квота хранения результатов исчерпана. Удалите ненужные доски или дождитесь очистки истории",
             );
-          await c.query(
-            "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES($1,$2,$3,$4,$5)",
+          c.query(
+            "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES(?1,?2,?3,?4,?5)",
             [
               resultId,
               JSON.stringify(output.columns),
@@ -897,24 +752,22 @@ export async function buildApp(
             ],
           );
           for (let i = 0; i < output.rows.length; i += 500)
-            await c.query(
-              "INSERT INTO result_chunks(result_set_id,chunk_index,rows) VALUES($1,$2,$3)",
+            c.query(
+              "INSERT INTO result_chunks(result_set_id,chunk_index,rows) VALUES(?1,?2,?3)",
               [
                 resultId,
                 i / 500,
                 JSON.stringify(output.rows.slice(i, i + 500)),
               ],
             );
-          await c.query(
-            "UPDATE query_runs SET status='completed',result_set_id=$2,row_count=$3,elapsed_ms=$4,finished_at=now() WHERE id=$1",
+          c.query(
+            "UPDATE query_runs SET status='completed',result_set_id=?2,row_count=?3,elapsed_ms=?4,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
             [id, resultId, output.rows.length, Date.now() - started],
           );
-          await c.query("COMMIT");
+          c.query("COMMIT");
         } catch (e) {
-          await c.query("ROLLBACK");
+          c.query("ROLLBACK");
           throw e;
-        } finally {
-          c.release();
         }
       } catch (e: any) {
         await state.cancel?.().catch(() => {});
@@ -926,8 +779,8 @@ export async function buildApp(
             : String(e.message || "Ошибка запроса").slice(0, 4000);
         if (engine.password)
           message = message.replaceAll(engine.password, "[скрыто]");
-        await db.query(
-          "UPDATE query_runs SET status=$2,error=$3,elapsed_ms=$4,finished_at=now() WHERE id=$1",
+        db.query(
+          "UPDATE query_runs SET status=?2,error=?3,elapsed_ms=?4,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
           [
             id,
             cancelled ? "cancelled" : "failed",
@@ -954,58 +807,46 @@ export async function buildApp(
         .max(500)
         .default(100)
         .parse((req.query as any).limit);
-      return (
-        await db.query(
-          "SELECT * FROM query_runs ORDER BY started_at DESC LIMIT $1",
-          [limit],
-        )
-      ).rows.map(runDto);
+      return db
+        .query("SELECT * FROM query_runs ORDER BY started_at DESC LIMIT ?1", [
+          limit,
+        ])
+        .rows.map(runDto);
     });
     app.get("/api/query-runs/:id", async (req) => {
       need(req);
-      const r = (
-        await db.query("SELECT * FROM query_runs WHERE id=$1", [uuid(req)])
-      ).rows[0];
+      const r = db.query("SELECT * FROM query_runs WHERE id=?1", [uuid(req)])
+        .rows[0];
       if (!r) throw err(404, "Выполнение не найдено");
       return runDto(r);
     });
     app.post("/api/query-runs/:id/cancel", async (req) => {
-      const user = need(req, "editor");
+      need(req);
       const id = uuid(req);
-      const r = (await db.query("SELECT * FROM query_runs WHERE id=$1", [id]))
-        .rows[0];
+      const r = db.query("SELECT * FROM query_runs WHERE id=?1", [id]).rows[0];
       if (!r) throw err(404, "Выполнение не найдено");
-      if (r.user_id !== user.id && user.role !== "admin")
-        throw err(403, "Нельзя отменить чужой запрос");
       const state = live.get(id);
       if (state) {
-        await db.query(
-          "UPDATE query_runs SET status='cancelling' WHERE id=$1 AND status='running'",
+        db.query(
+          "UPDATE query_runs SET status='cancelling' WHERE id=?1 AND status='running'",
           [id],
         );
         state.controller.abort();
         void state.cancel?.().catch(() => {});
       }
       return runDto(
-        (await db.query("SELECT * FROM query_runs WHERE id=$1", [id])).rows[0],
+        db.query("SELECT * FROM query_runs WHERE id=?1", [id]).rows[0],
       );
     });
     async function getResult(id: string) {
-      const r = (await db.query("SELECT * FROM result_sets WHERE id=$1", [id]))
-        .rows[0];
+      const r = db.query("SELECT * FROM result_sets WHERE id=?1", [id]).rows[0];
       if (!r) throw err(404, "Результат не найден или срок хранения истёк");
       return resultDto(r);
     }
     async function rows(id: string, offset: number, limit: number) {
-      const chunks = (
-        await db.query(
-          "SELECT rows FROM result_chunks WHERE result_set_id=$1 AND chunk_index >= $2 AND chunk_index <= $3 ORDER BY chunk_index",
-          [
-            id,
-            Math.floor(offset / 500),
-            Math.floor((offset + limit - 1) / 500),
-          ],
-        )
+      const chunks = db.query(
+        "SELECT rows FROM result_chunks WHERE result_set_id=?1 AND chunk_index >= ?2 AND chunk_index <= ?3 ORDER BY chunk_index",
+        [id, Math.floor(offset / 500), Math.floor((offset + limit - 1) / 500)],
       ).rows;
       return chunks
         .flatMap((c) => c.rows)
@@ -1072,7 +913,7 @@ export async function buildApp(
         );
       return { result, rows: data };
     });
-    async function saveRefs(c: any, id: string, document: BoardDocument) {
+    function saveRefs(c: any, id: string, document: BoardDocument) {
       const ids = [
         ...new Set(
           document.nodes.flatMap((n) =>
@@ -1080,15 +921,22 @@ export async function buildApp(
           ),
         ),
       ];
-      await c.query("DELETE FROM board_result_refs WHERE board_id=$1", [id]);
+      c.query("DELETE FROM board_result_refs WHERE board_id=?1", [id]);
       for (const resultId of ids) {
-        const r = (
-          await c.query(
-            "SELECT id,row_count FROM result_sets WHERE id=$1 FOR KEY SHARE",
-            [resultId],
-          )
-        ).rows[0];
+        const r = c.query("SELECT id,row_count FROM result_sets WHERE id=?1", [
+          resultId,
+        ]).rows[0];
         if (!r) throw err(400, "Результат блока не найден");
+        if (
+          c.query(
+            "SELECT id FROM query_runs WHERE result_set_id=?1 AND status IN ('running','cancelling')",
+            [resultId],
+          ).rowCount
+        )
+          throw err(
+            409,
+            "Дождитесь завершения или остановите пакет перед добавлением результата на доску",
+          );
         if (
           document.nodes.some(
             (n) => n.data.resultSetId === resultId && n.data.view === "chart",
@@ -1096,35 +944,34 @@ export async function buildApp(
           r.row_count > 5000
         )
           throw err(422, "График превышает лимит 5000 точек");
-        await c.query(
-          "INSERT INTO board_result_refs(board_id,result_set_id) VALUES($1,$2)",
+        c.query(
+          "INSERT INTO board_result_refs(board_id,result_set_id) VALUES(?1,?2)",
           [id, resultId],
         );
       }
     }
     app.get("/api/boards", async (req) => {
       need(req);
-      return (
-        await db.query(
+      return db
+        .query(
           "SELECT id,name,revision,updated_at FROM boards ORDER BY updated_at DESC",
         )
-      ).rows.map((r) => ({
-        id: r.id,
-        name: r.name,
-        revision: r.revision,
-        updatedAt: new Date(r.updated_at).toISOString(),
-      }));
+        .rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          revision: r.revision,
+          updatedAt: new Date(r.updated_at).toISOString(),
+        }));
     });
     app.get("/api/boards/:id", async (req) => {
       need(req);
-      const r = (
-        await db.query("SELECT * FROM boards WHERE id=$1", [uuid(req)])
-      ).rows[0];
+      const r = db.query("SELECT * FROM boards WHERE id=?1", [uuid(req)])
+        .rows[0];
       if (!r) throw err(404, "Доска не найдена");
       return boardDto(r);
     });
     app.post("/api/boards", async (req, reply) => {
-      need(req, "editor");
+      need(req);
       const b = z
         .object({
           name: nameSchema,
@@ -1136,29 +983,24 @@ export async function buildApp(
         })
         .parse(req.body);
       const id = randomUUID();
-      const c = await db.connect();
+      const c = db;
       try {
-        await c.query("BEGIN");
-        await c.query("SELECT pg_advisory_xact_lock(67432914)");
-        const r = (
-          await c.query(
-            "INSERT INTO boards(id,name,document) VALUES($1,$2,$3) RETURNING *",
-            [id, b.name, b.document],
-          )
+        c.query("BEGIN");
+        const r = c.query(
+          "INSERT INTO boards(id,name,document) VALUES(?1,?2,?3) RETURNING *",
+          [id, b.name, b.document],
         ).rows[0];
-        await saveRefs(c, id, b.document);
-        await c.query("COMMIT");
+        saveRefs(c, id, b.document);
+        c.query("COMMIT");
         reply.code(201);
         return boardDto(r);
       } catch (e) {
-        await c.query("ROLLBACK");
+        c.query("ROLLBACK");
         throw e;
-      } finally {
-        c.release();
       }
     });
     app.patch("/api/boards/:id", async (req) => {
-      need(req, "editor");
+      need(req);
       const id = uuid(req);
       const b = z
         .object({
@@ -1167,43 +1009,35 @@ export async function buildApp(
           document: boardDocumentSchema,
         })
         .parse(req.body);
-      const c = await db.connect();
+      const c = db;
       try {
-        await c.query("BEGIN");
-        await c.query("SELECT pg_advisory_xact_lock(67432914)");
-        const r = (
-          await c.query(
-            "UPDATE boards SET name=COALESCE($2,name),document=$3,revision=revision+1,updated_at=now() WHERE id=$1 AND revision=$4 RETURNING *",
-            [id, b.name, b.document, b.baseRevision],
-          )
+        c.query("BEGIN");
+        const r = c.query(
+          "UPDATE boards SET name=COALESCE(?2,name),document=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
+          [id, b.name, b.document, b.baseRevision],
         ).rows[0];
         if (!r)
           throw err(
             409,
-            "Доска изменена другим пользователем. Перезагрузите или сохраните копию",
+            "Доска изменена в другой вкладке. Перезагрузите или сохраните копию",
             "REVISION_CONFLICT",
           );
-        await saveRefs(c, id, b.document);
-        await c.query("COMMIT");
+        saveRefs(c, id, b.document);
+        c.query("COMMIT");
         return boardDto(r);
       } catch (e) {
-        await c.query("ROLLBACK");
+        c.query("ROLLBACK");
         throw e;
-      } finally {
-        c.release();
       }
     });
     app.delete("/api/boards/:id", async (req) => {
-      need(req, "editor");
-      if (
-        !(await db.query("DELETE FROM boards WHERE id=$1", [uuid(req)]))
-          .rowCount
-      )
+      need(req);
+      if (!db.query("DELETE FROM boards WHERE id=?1", [uuid(req)]).rowCount)
         throw err(404, "Доска не найдена");
       return { ok: true };
     });
     app.post("/api/boards/:id/nodes/:nodeId/refresh", async (req, reply) => {
-      need(req, "editor");
+      need(req);
       const id = uuid(req);
       const nodeId = z
         .string()
@@ -1212,9 +1046,8 @@ export async function buildApp(
       const b = z
         .object({ sourceRevision: z.number().int().nonnegative() })
         .parse(req.body);
-      const board = (
-        await db.query("SELECT document FROM boards WHERE id=$1", [id])
-      ).rows[0];
+      const board = db.query("SELECT document FROM boards WHERE id=?1", [id])
+        .rows[0];
       if (!board) throw err(404, "Доска не найдена");
       const node = (board.document as BoardDocument).nodes.find(
         (n) => n.id === nodeId,
@@ -1237,20 +1070,22 @@ export async function buildApp(
       }
       await Promise.allSettled([...live.values()].map((s) => s.promise));
     };
-    closeActiveRuns = closeRuns;
     app.decorate("miracle", { db, closeRuns });
     const cleaner = setInterval(() => {
-      void retention(db).catch((e) => app.log.error(e));
+      try {
+        retention(db);
+      } catch (e) {
+        app.log.error(e);
+      }
     }, 3600000);
     cleaner.unref();
     app.addHook("onClose", async () => {
       clearInterval(cleaner);
       await closeRuns();
-      await db.end();
-      await singleton?.close();
+      db.close();
     });
     if (options.serveStatic !== false) {
-      const root = resolve("dist/client");
+      const root = fileURLToPath(new URL("../../client/", import.meta.url));
       if (existsSync(root)) {
         await app.register(fastifyStatic, { root });
         app.setNotFoundHandler((req, reply) => {
@@ -1260,12 +1095,9 @@ export async function buildApp(
         });
       }
     }
-    if (lockLost)
-      throw new Error("Application database lock lost during startup");
     return app;
   } catch (error) {
-    await singleton?.close();
-    await db.end();
+    db.close();
     throw error;
   }
 }

@@ -9,9 +9,8 @@ import {
   PlugsConnected,
   ShieldCheck,
 } from "@phosphor-icons/react";
-import type { Connection, ConnectionInput, User } from "../../shared/types";
+import type { Connection, ConnectionInput } from "../../shared/types";
 import { api, json } from "../api";
-import { isLocalInstallation } from "../local-installation";
 import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
 import ClickHouseConnectionOptions, {
   clickhouseFormError,
@@ -27,16 +26,14 @@ const blank: ConnectionInput = {
 export default function Connections({
   open,
   onClose,
-  user,
   connections,
   onChanged,
   onNotify,
 }: {
   open: boolean;
   onClose: () => void;
-  user: User;
   connections: Connection[];
-  onChanged: () => void;
+  onChanged: (id?: string) => void;
   onNotify: (m: string, t?: "error" | "success" | "info") => void;
 }) {
   const [editing, setEditing] = useState<Connection | null | undefined>();
@@ -142,7 +139,7 @@ export default function Connections({
         body: json(body),
       });
       setEditing(undefined);
-      onChanged();
+      onChanged(editing?.id);
       onNotify("Подключение сохранено", "success");
     } catch (e) {
       setError((e as Error).message);
@@ -172,7 +169,7 @@ export default function Connections({
     try {
       await api(`/api/connections/${deleteId}`, { method: "DELETE" });
       setDeleteId("");
-      onChanged();
+      onChanged(deleteId);
       onNotify(
         "Подключение удалено. Сохранённые снимки остаются на досках.",
         "success",
@@ -197,7 +194,7 @@ export default function Connections({
               : "Новое подключение"
             : "Подключения"
         }
-        description="Общие источники данных вашей команды"
+        description="Источники данных вашей рабочей области"
         wide
       >
         {editing !== undefined ? (
@@ -262,18 +259,15 @@ export default function Connections({
                 Адрес должен быть доступен серверу Miracle. Для внешних
                 подключений используйте HTTPS.
               </small>
-              {isLocalInstallation() && (
-                <small className="muted">
-                  Если {form.engine === "clickhouse" ? "ClickHouse" : "Trino"}{" "}
-                  работает на этом компьютере, из Docker используйте{" "}
-                  <code>
-                    http://host.docker.internal:
-                    {form.engine === "clickhouse" ? "8123" : "8080"}
-                  </code>
-                  . Адрес localhost внутри контейнера указывает на сам контейнер
-                  Miracle.
-                </small>
-              )}
+              <small className="muted">
+                Если {form.engine === "clickhouse" ? "ClickHouse" : "Trino"}{" "}
+                работает на этом компьютере, используйте{" "}
+                <code>
+                  http://127.0.0.1:
+                  {form.engine === "clickhouse" ? "8123" : "8080"}
+                </code>
+                .
+              </small>
             </label>
             <div className="form-row">
               <label>
@@ -447,22 +441,20 @@ export default function Connections({
                     )}
                     Проверить
                   </button>
-                  {user.role === "admin" && (
-                    <>
-                      <IconButton
-                        label={`Настроить ${c.name}`}
-                        onClick={() => edit(c)}
-                      >
-                        <PencilSimple size={16} />
-                      </IconButton>
-                      <IconButton
-                        label={`Удалить ${c.name}`}
-                        onClick={() => setDeleteId(c.id)}
-                      >
-                        <Trash size={16} />
-                      </IconButton>
-                    </>
-                  )}
+                  <>
+                    <IconButton
+                      label={`Настроить ${c.name}`}
+                      onClick={() => edit(c)}
+                    >
+                      <PencilSimple size={16} />
+                    </IconButton>
+                    <IconButton
+                      label={`Удалить ${c.name}`}
+                      onClick={() => setDeleteId(c.id)}
+                    >
+                      <Trash size={16} />
+                    </IconButton>
+                  </>
                 </div>
               ))}
               {!connections.length && (
@@ -471,19 +463,17 @@ export default function Connections({
                   title="Подключите первый источник"
                   description="Добавьте ClickHouse или Trino, чтобы исследовать данные в SQL-редакторе."
                   action={
-                    user.role === "admin" ? (
-                      <button className="button primary" onClick={() => edit()}>
-                        <Plus size={16} />
-                        Добавить подключение
-                      </button>
-                    ) : undefined
+                    <button className="button primary" onClick={() => edit()}>
+                      <Plus size={16} />
+                      Добавить подключение
+                    </button>
                   }
                 />
               )}
             </div>
             <div className="modal-actions">
               <span className="muted">{connections.length} подключений</span>
-              {user.role === "admin" && connections.length > 0 && (
+              {connections.length > 0 && (
                 <button className="button primary" onClick={() => edit()}>
                   <Plus size={16} />
                   Новое подключение

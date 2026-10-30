@@ -108,9 +108,51 @@ it.each(["initial", "continuation", "cancel"] as const)(
     }
   },
 );
-it('executes a formatted Trino aggregate with trailing semicolon and comment',async()=>{
-  const sql=`SELECT\n  orderstatus,\n  count(*) AS orders\nFROM tpch.tiny.orders\nGROUP BY orderstatus\nORDER BY orderstatus; -- editor delimiter;\n`;
-  const result=await executeEngine({engine:'trino',name:'real Trino',url:process.env.TRINO_URL||'http://127.0.0.1:18080',username:'miracle_reader',password:'',catalog:'tpch',schema:'tiny'},{connectionId:'fixture',sql},'fixture',{timeoutMs:15000,maxRows:20,maxBytes:100000},AbortSignal.timeout(15000),()=>{});
-  expect(result.rows.map(row=>row[0])).toEqual(['F','O','P']);
-  expect(result.rows.every(row=>Number(row[1])>0)).toBe(true);
+it("sends a formatted Trino aggregate without the terminal editor delimiter and preserves its trailing comment", async () => {
+  const sql = `SELECT\n  orderstatus,\n  count(*) AS orders\nFROM tpch.tiny.orders\nGROUP BY orderstatus\nORDER BY orderstatus; -- editor delimiter;\n`;
+  let received = "";
+  const server = createServer(async (req, res) => {
+    for await (const part of req) received += part;
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        columns: [
+          { name: "orderstatus", type: "varchar" },
+          { name: "orders", type: "bigint" },
+        ],
+        data: [
+          ["F", 1],
+          ["O", 2],
+          ["P", 3],
+        ],
+      }),
+    );
+  });
+  const origin = await serve(server);
+  try {
+    const result = await executeEngine(
+      {
+        engine: "trino",
+        name: "Trino fixture",
+        url: origin,
+        username: "miracle_reader",
+        password: "",
+        catalog: "tpch",
+        schema: "tiny",
+      },
+      { connectionId: "fixture", sql },
+      "fixture",
+      { timeoutMs: 2000, maxRows: 20, maxBytes: 100000 },
+      AbortSignal.timeout(2000),
+      () => {},
+    );
+    expect(received).toBe(sql.replace("orderstatus; --", "orderstatus --"));
+    expect(result.rows).toEqual([
+      ["F", 1],
+      ["O", 2],
+      ["P", 3],
+    ]);
+  } finally {
+    await stop(server);
+  }
 });

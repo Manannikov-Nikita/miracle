@@ -12,11 +12,57 @@ export class ApiRequestError extends Error {
     this.code = code;
   }
 }
-export async function api<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+export interface LocalSession {
+  workspaceId: string;
+  csrfToken: string;
+}
+let sessionRefresh: Promise<LocalSession> | undefined;
+let workspaceId: string | undefined;
+let workspaceChanged: ApiRequestError | undefined;
+function changedWorkspace(): ApiRequestError {
+  if (!workspaceChanged) {
+    csrf = "";
+    workspaceChanged = new ApiRequestError(
+      "Сервер открыл другую рабочую область. Перезагрузите страницу, чтобы продолжить. Ваши черновики остаются в этой вкладке.",
+      409,
+      "WORKSPACE_CHANGED",
+    );
+    window.dispatchEvent(
+      new CustomEvent("miracle:workspace-changed", {
+        detail: workspaceChanged.message,
+      }),
+    );
+  }
+  return workspaceChanged;
+}
+export function openLocalSession(): Promise<LocalSession> {
+  if (workspaceChanged) return Promise.reject(workspaceChanged);
+  if (!sessionRefresh) {
+    sessionRefresh = request<LocalSession>("/api/session", {})
+      .then((session) => {
+        if (workspaceId && session.workspaceId !== workspaceId)
+          throw changedWorkspace();
+        workspaceId = session.workspaceId;
+        setCsrfToken(session.csrfToken);
+        return session;
+      })
+      .finally(() => {
+        sessionRefresh = undefined;
+      });
+  }
+  return sessionRefresh;
+}
+async function request<T>(path: string, options: RequestInit): Promise<T> {
+  // A different data directory may reuse the same origin. Keep this tab bound
+  // to its original workspace until reload, including after a failed refresh.
+  if (workspaceChanged) throw workspaceChanged;
   const headers = new Headers(options.headers);
+  const endpoint = path.split("?")[0];
+  if (
+    workspaceId &&
+    !["/api/session", "/api/health", "/api/local/control"].includes(endpoint)
+  )
+    headers.set("X-Miracle-Workspace", workspaceId);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   if (options.method && !["GET", "HEAD"].includes(options.method.toUpperCase()))
@@ -32,20 +78,38 @@ export async function api<T>(
       : await response
           .json()
           .catch(() => ({ error: "Сервер вернул некорректный ответ" }));
-  if (!response.ok) {
-    if (
-      response.status === 401 &&
-      !path.startsWith("/api/auth/") &&
-      !path.startsWith("/api/setup/")
-    )
-      window.dispatchEvent(new Event("miracle:unauthorized"));
+  if (response.status === 409 && data?.code === "WORKSPACE_CHANGED")
+    throw changedWorkspace();
+  if (!response.ok)
     throw new ApiRequestError(
       data?.error || `Ошибка ${response.status}`,
       response.status,
       data?.code,
     );
-  }
   return data as T;
+}
+export async function api<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  try {
+    return await request<T>(path, options);
+  } catch (error) {
+    // Only these explicit pre-execution session rejections permit a replay.
+    // Generic 403s and network failures may not safely be retried.
+    if (
+      !(error instanceof ApiRequestError) ||
+      !(
+        error.status === 401 ||
+        (error.status === 403 && error.code === "LOCAL_SESSION_STALE")
+      ) ||
+      path === "/api/session"
+    )
+      throw error;
+    await openLocalSession();
+    options.signal?.throwIfAborted();
+    return request<T>(path, options);
+  }
 }
 export function getResultRows(id: string, offset = 0, limit = 500) {
   return api<ResultPage>(

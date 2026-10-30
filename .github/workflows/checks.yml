@@ -4,61 +4,70 @@ on:
     branches: [main, master]
   pull_request:
   workflow_call:
+  workflow_dispatch:
+    inputs:
+      connectors:
+        description: Run optional real ClickHouse and Trino integrations
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
-  verify:
-    name: Test and run / ${{ matrix.arch }}
+  native:
+    name: Native test and archive / ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
-            arch: amd64
+            target: linux-x64
           - runner: ubuntu-24.04-arm
-            arch: arm64
+            target: linux-arm64
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
-          cache: npm
+          node-version: 24.22.2
+          package-manager-cache: false
       - run: npm ci
-      - name: Dependency notices
-        run: npm run notices && git diff --exit-code -- THIRD_PARTY_NOTICES.md
-      - name: Disposable database engines
-        run: docker compose --profile test up -d --wait postgres clickhouse trino
+      - run: npm run notices
+      - run: git diff --exit-code -- THIRD_PARTY_NOTICES.md
       - run: npm test
       - run: npm run build
-      - run: npm run test:integration
-      - run: npx tsx tests/clickhouse-tls-integration.ts
-      - name: Build native release image
-        run: docker build -t miracle-local-smoke:0.1.0 .
-      - name: Clean install, restart, backup and restore
-        env:
-          MIRACLE_SMOKE_ARCH: ${{ matrix.arch }}
-        run: node tests/local-install-smoke.mjs
-      - name: Build release kit from allowlist
-        run: node scripts/build-release.mjs "$GITHUB_REPOSITORY" 0.1.0
-      - name: Service diagnostics
-        if: failure()
-        run: docker compose --profile test logs --tail 100
-      - name: Remove disposable CI services
-        if: always()
-        run: docker compose --profile test down --volumes
-  windows-launchers:
-    runs-on: windows-latest
+      - name: Build native archive with verified upstream runtime
+        shell: bash
+        run: node scripts/build-release.mjs "$GITHUB_REPOSITORY" "$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')" .local/releases "${{ matrix.target }}"
+      - name: Installed bundled-runtime lifecycle, backup and restore
+        shell: bash
+        run: node tests/local-install-smoke.mjs ".local/releases/miracle-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')-${{ matrix.target }}.tar.gz"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            .local/releases/*.tar.gz
+            .local/releases/*.sha256
+            .local/releases/install.sh
+  connectors:
+    if: github.event_name == 'workflow_dispatch' && inputs.connectors
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: Parse Windows PowerShell launcher
-        shell: powershell
-        run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'release/local.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count) { $errors | Write-Error; exit 1 }
-      - name: Launcher errors and stop from a path with spaces and Cyrillic
-        shell: powershell
-        run: ./tests/windows-launcher-smoke.ps1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.22.2
+          cache: npm
+      - run: npm ci
+      - run: docker compose --profile test up -d --wait clickhouse trino
+      - run: npm run test:integration
+      - run: npx tsx tests/clickhouse-tls-integration.ts
+      - if: failure()
+        run: docker compose --profile test logs --tail 100
+      - if: always()
+        run: docker compose --profile test down --volumes

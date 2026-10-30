@@ -1,13 +1,12 @@
+import type { DateRangeOptions, DateBatchProgress } from "./date-batch.js";
+export type {
+  DateRangeOptions,
+  DateGranularity,
+  DateBatchItem,
+  DateBatchProgress,
+} from "./date-batch.js";
 import type { TableSpec } from "./tableTypes.js";
 export type { TableSpec, TableColumnOptions } from "./tableTypes.js";
-export type Role = "admin" | "editor" | "viewer";
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: Role;
-  disabled?: boolean;
-}
 export type Engine = "clickhouse" | "trino";
 export interface ClickHouseOptions {
   requestTimeoutMs?: number;
@@ -72,6 +71,7 @@ export interface SqlFunctionCatalog {
   aggregateCombinators: string[];
 }
 export interface QuerySource {
+  dateRange?: DateRangeOptions;
   connectionId: string;
   sql: string;
   database?: string;
@@ -113,6 +113,7 @@ export type RunStatus =
   | "cancelled"
   | "interrupted";
 export interface QueryRun {
+  batch?: DateBatchProgress;
   id: string;
   status: RunStatus;
   source: QuerySource;
@@ -127,6 +128,7 @@ export interface QueryRun {
 export type ChartKind = "bar" | "line" | "area" | "scatter";
 export interface ChartSpec {
   kind: ChartKind;
+  orientation?: "vertical" | "horizontal";
   x: string;
   y: string[];
   series?: string;

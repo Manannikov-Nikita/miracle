@@ -8,14 +8,14 @@ body:
     id: version
     attributes:
       label: Версия Miracle
-      placeholder: '0.1.0 или commit SHA'
+      placeholder: '0.2.0 или commit SHA'
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
       label: Окружение
-      description: ОС и архитектура, версия Docker, браузер, установка из ZIP или исходников, ClickHouse или Trino.
+      description: ОС и архитектура, браузер, установка через скрипт/архив или из исходников, ClickHouse или Trino.
     validations:
       required: true
   - type: textarea

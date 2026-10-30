@@ -6,6 +6,7 @@ import SqlWorkspace, {
   type SqlSourceRequest,
 } from "../src/client/components/SqlWorkspace";
 import type { Connection, QuerySource } from "../src/shared/types";
+import { createMetadataStore } from "../src/client/metadata-store";
 
 // Monaco requires a browser worker/layout engine. Keep the actual workspace and
 // its tab/context controls, replacing only the editor with an editable textarea.
@@ -112,15 +113,10 @@ describe("chart source SQL tabs", () => {
     document.body.append(container);
     root = createRoot(container);
     props = {
-      user: {
-        id: "source-tab-test",
-        name: "Reader",
-        email: "reader@example.test",
-        role: "editor",
-      },
+      workspaceId: "source-tab-test",
       connections,
       activeConnectionId: "trino",
-      schema: [],
+      metadata: createMetadataStore(async <T>() => ({ items: [] }) as T),
       onConnectionChange: vi.fn(),
       onSourceConsumed: vi.fn(),
       onSavedConsumed: vi.fn(),
@@ -134,6 +130,7 @@ describe("chart source SQL tabs", () => {
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    props.metadata.dispose();
     container.remove();
     localStorage.clear();
     Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
@@ -198,7 +195,6 @@ describe("chart source SQL tabs", () => {
   it("starts with an empty editable SQL file and a source action when no connections exist", async () => {
     props.connections = [];
     props.activeConnectionId = "";
-    props.user.role = "admin";
     await render();
     expect(editor().value).toBe("");
     expect(tabs()).toHaveLength(1);
@@ -217,6 +213,27 @@ describe("chart source SQL tabs", () => {
     await act(async () => add!.click());
     expect(editor().value).toBe("");
     expect(tabs()).toHaveLength(2);
+  });
+
+  it("recovers SQL edits after reopening and does not import another workspace's drafts", async () => {
+    seed("draft.sql");
+    await render();
+    await clickTab("draft.sql");
+    await editSql("select preserved_local_edit");
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(editor().value).toBe("select preserved_local_edit");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    props.workspaceId = "different-workspace";
+    await render();
+    expect(editor().value).toBe("");
+    expect(tabs()).toHaveLength(1);
+    expect(localStorage.getItem(storage)).toContain(
+      "select preserved_local_edit",
+    );
   });
 
   it("opens the literal chart title and its pinned SQL and query context", async () => {

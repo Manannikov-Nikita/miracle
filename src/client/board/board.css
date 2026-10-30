@@ -462,6 +462,80 @@
   flex-direction: column;
   gap: 12px;
 }
+.board-chart-types {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--board-muted);
+}
+.board-workspace .board-chart-type-trigger {
+  min-width: 80px;
+  padding: 4px 8px;
+  color: var(--board-accent);
+}
+.board-chart-type-menu {
+  width: 248px;
+  max-width: calc(100vw - 16px);
+  max-height: min(280px, var(--radix-dropdown-menu-content-available-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.board-chart-type-heading {
+  padding: 4px 4px 8px;
+  color: var(--menu-text);
+  font-size: 11px;
+}
+.board-chart-type-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+.board-chart-type-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 52px;
+  padding: 5px;
+  border: 1px solid var(--menu-border);
+  border-radius: 4px;
+  color: var(--menu-text);
+  background: var(--surface);
+  cursor: pointer;
+  outline: none;
+}
+.board-chart-type-preview {
+  display: flex;
+  width: 40px;
+  max-width: 100%;
+  height: 30px;
+}
+.board-chart-type-preview svg {
+  width: 100%;
+  height: 100%;
+}
+.board-chart-type-option[data-state="checked"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.board-chart-type-option[data-highlighted] {
+  background: var(--menu-highlight);
+  outline: 2px solid var(--menu-highlight-text);
+  outline-offset: -3px;
+}
+.board-chart-type-check {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+}
+.board-chart-type-option[data-disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
 .board-y-fields {
   display: flex;
   flex-direction: column;
