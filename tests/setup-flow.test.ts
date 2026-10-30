@@ -19,16 +19,20 @@ const response = (body: unknown, status = 200) =>
 
 describe("personal local workspace", () => {
   let container: HTMLDivElement;
-  let root: Root;
+  let root: Root | undefined;
   let fetcher: ReturnType<typeof vi.fn>;
   let calls: string[];
   let expired: boolean;
   let writes: number;
   let handshakeCount: number;
-  beforeEach(async () => {
+  // Cold CI transforms can exceed the normal hook budget. Keep this allowance
+  // limited to module loading; fixture setup and test assertions retain theirs.
+  beforeEach(async function loadWorkspaceModules() {
     vi.resetModules();
     ({ default: App } = await import("../src/client/App"));
     ({ api } = await import("../src/client/api"));
+  }, 60_000);
+  beforeEach(() => {
     const stored = new Map<string, string>();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => stored.get(key) ?? null,
@@ -91,12 +95,17 @@ describe("personal local workspace", () => {
     root = createRoot(container);
   });
   afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.unstubAllGlobals();
+    const mountedRoot = root;
+    root = undefined;
+    try {
+      if (mountedRoot) await act(async () => mountedRoot.unmount());
+    } finally {
+      container?.remove();
+      vi.unstubAllGlobals();
+    }
   });
   async function open() {
-    await act(async () => root.render(createElement(App)));
+    await act(async () => root!.render(createElement(App)));
   }
   async function click(selector: string) {
     await act(async () =>

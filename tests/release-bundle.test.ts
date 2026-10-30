@@ -7,115 +7,189 @@ import {
   mkdirSync,
   existsSync,
   copyFileSync,
+  statSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-it("publishes executable LF bootstrap scripts even from a CRLF checkout", () => {
-  const fixture = mkdtempSync(join(tmpdir(), "miracle CRLF release "));
-  const tar =
-    process.platform === "win32"
-      ? join(process.env.SystemRoot!, "System32", "tar.exe")
-      : "tar";
-  try {
-    for (const path of [
-      "scripts",
-      "release",
-      "docs",
-      "dist/client",
-      "dist/server",
-      "upstream/node-v24.22.2-linux-x64/bin",
-    ])
-      mkdirSync(join(fixture, path), { recursive: true });
-    copyFileSync(
-      resolve(import.meta.dirname, "../scripts/build-release.mjs"),
-      join(fixture, "scripts/build-release.mjs"),
-    );
-    writeFileSync(
-      join(fixture, "package.json"),
-      JSON.stringify({ name: "release-fixture", version: "0.2.0" }),
-    );
-    writeFileSync(
-      join(fixture, "package-lock.json"),
-      JSON.stringify({
-        name: "release-fixture",
-        version: "0.2.0",
-        lockfileVersion: 3,
-        packages: { "": { name: "release-fixture", version: "0.2.0" } },
-      }),
-    );
-    for (const path of [
-      "LICENSE",
-      "THIRD_PARTY_NOTICES.md",
-      "docs/local-installation.md",
-      "dist/client/index.html",
-      "dist/server/index.js",
-      "release/install.mjs",
-      "upstream/node-v24.22.2-linux-x64/LICENSE",
-      "upstream/node-v24.22.2-linux-x64/bin/node",
-    ])
-      writeFileSync(join(fixture, path), "fixture\n");
-    const bootstrap =
-      "#!/bin/sh\r\nprintf '%s\\n' '__REPOSITORY__ __VERSION__'\r\n";
-    writeFileSync(join(fixture, "release/install.sh"), bootstrap);
-    writeFileSync(
-      join(fixture, "release/install.ps1"),
-      "$Version = '__VERSION__'\r\n$Repository = '__REPOSITORY__'\r\n",
-    );
-    const runtime = join(fixture, "runtime.tar.gz");
-    const packed = spawnSync(
-      tar,
-      [
-        "-czf",
-        runtime,
-        "-C",
-        join(fixture, "upstream"),
-        "node-v24.22.2-linux-x64",
-      ],
-      { encoding: "utf8" },
-    );
-    expect(packed.status, packed.stderr).toBe(0);
-    writeFileSync(
-      join(fixture, "release/node-checksums.json"),
-      JSON.stringify({
-        version: "24.22.2",
-        "linux-x64": createHash("sha256")
-          .update(readFileSync(runtime))
-          .digest("hex"),
-      }),
-    );
-    const output = join(fixture, "output");
-    const built = spawnSync(
-      process.execPath,
-      [
-        "scripts/build-release.mjs",
-        "Example/Miracle",
-        "0.2.0",
-        output,
-        "linux-x64",
-        runtime,
-      ],
-      { cwd: fixture, encoding: "utf8" },
-    );
-    expect(built.status, built.stderr).toBe(0);
-    expect(readFileSync(join(output, "install.sh"), "utf8")).toBe(
-      "#!/bin/sh\nprintf '%s\\n' 'Example/Miracle 0.2.0'\n",
-    );
-    expect(readFileSync(join(output, "install.ps1"), "utf8")).toBe(
-      "$Version = '0.2.0'\n$Repository = 'Example/Miracle'\n",
-    );
-    if (process.platform !== "win32") {
-      const installed = spawnSync("sh", [join(output, "install.sh")], {
-        encoding: "utf8",
-      });
-      expect(installed.status, installed.stderr).toBe(0);
-      expect(installed.stdout).toBe("Example/Miracle 0.2.0\n");
-    }
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
+import { pathToFileURL } from "node:url";
+it.each([
+  [
+    "publishes executable LF bootstrap scripts even from a CRLF checkout",
+    false,
+  ],
+  [
+    "preserves Unicode payload and executables when native tar creation fails",
+    true,
+  ],
+])(
+  "%s",
+  (_name, nativeCreationFails) => {
+    // Keep the copied builder beneath the checkout so it resolves build-only dependencies.
+    const local = resolve(import.meta.dirname, "../.local");
+    mkdirSync(local, { recursive: true });
+    const fixture = mkdtempSync(join(local, "miracle release fixture "));
+    const tar =
+      process.platform === "win32"
+        ? join(process.env.SystemRoot!, "System32", "tar.exe")
+        : "tar";
+    try {
+      for (const path of [
+        "scripts",
+        "release",
+        "docs",
+        "dist/client",
+        "dist/server",
+        "dist/client/snow ☃",
+        "upstream/node-v24.22.2-linux-x64/bin",
+      ])
+        mkdirSync(join(fixture, path), { recursive: true });
+      copyFileSync(
+        resolve(import.meta.dirname, "../scripts/build-release.mjs"),
+        join(fixture, "scripts/build-release.mjs"),
+      );
+      writeFileSync(
+        join(fixture, "package.json"),
+        JSON.stringify({ name: "release-fixture", version: "0.2.0" }),
+      );
+      writeFileSync(
+        join(fixture, "package-lock.json"),
+        JSON.stringify({
+          name: "release-fixture",
+          version: "0.2.0",
+          lockfileVersion: 3,
+          packages: { "": { name: "release-fixture", version: "0.2.0" } },
+        }),
+      );
+      for (const path of [
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "docs/local-installation.md",
+        "dist/client/index.html",
+        "dist/server/index.js",
+        "release/install.mjs",
+        "upstream/node-v24.22.2-linux-x64/LICENSE",
+        "upstream/node-v24.22.2-linux-x64/bin/node",
+      ])
+        writeFileSync(join(fixture, path), "fixture\n");
+      writeFileSync(
+        join(fixture, "dist/client/snow ☃/данные.txt"),
+        "Unicode payload\n",
+      );
+      writeFileSync(
+        join(fixture, "dist/server/executable.sh"),
+        "#!/bin/sh\nexit 0\n",
+        { mode: 0o755 },
+      );
+      const bootstrap =
+        "#!/bin/sh\r\nprintf '%s\\n' '__REPOSITORY__ __VERSION__'\r\n";
+      writeFileSync(join(fixture, "release/install.sh"), bootstrap);
+      writeFileSync(
+        join(fixture, "release/install.ps1"),
+        "$Version = '__VERSION__'\r\n$Repository = '__REPOSITORY__'\r\n",
+      );
+      const runtime = join(fixture, "runtime.tar.gz");
+      const packed = spawnSync(
+        tar,
+        [
+          "-czf",
+          runtime,
+          "-C",
+          join(fixture, "upstream"),
+          "node-v24.22.2-linux-x64",
+        ],
+        { encoding: "utf8" },
+      );
+      expect(packed.status, packed.stderr).toBe(0);
+      writeFileSync(
+        join(fixture, "release/node-checksums.json"),
+        JSON.stringify({
+          version: "24.22.2",
+          "linux-x64": createHash("sha256")
+            .update(readFileSync(runtime))
+            .digest("hex"),
+        }),
+      );
+      const output = join(fixture, "output");
+      const fault = join(fixture, "native-tar-fault.mjs");
+      writeFileSync(
+        fault,
+        `
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { basename } from 'node:path';
+const cp = createRequire(import.meta.url)('node:child_process');
+const original = cp.execFileSync;
+cp.execFileSync = function (file, args, options) {
+  if (/^tar(?:\\.exe)?$/i.test(basename(file)) && args[0].includes('c')) {
+    const error = new Error('Native tar creation failed: 0xC0000005');
+    error.status = 3221225477;
+    throw error;
   }
-}, 20_000);
+  return original(file, args, options);
+};
+syncBuiltinESMExports();
+`,
+      );
+      const built = spawnSync(
+        process.execPath,
+        [
+          ...(nativeCreationFails
+            ? ["--import", pathToFileURL(fault).href]
+            : []),
+          "scripts/build-release.mjs",
+          "Example/Miracle",
+          "0.2.0",
+          output,
+          "linux-x64",
+          runtime,
+        ],
+        { cwd: fixture, encoding: "utf8" },
+      );
+      expect(built.status, built.stderr).toBe(0);
+      const extracted = join(fixture, "extracted");
+      mkdirSync(extracted);
+      const unpacked = spawnSync(
+        tar,
+        [
+          "-xzf",
+          join(output, "miracle-0.2.0-linux-x64.tar.gz"),
+          "-C",
+          extracted,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(unpacked.status, unpacked.stderr).toBe(0);
+      const payload = join(extracted, "miracle-0.2.0-linux-x64");
+      expect(
+        readFileSync(join(payload, "dist/client/snow ☃/данные.txt"), "utf8"),
+      ).toBe("Unicode payload\n");
+      expect(
+        readFileSync(join(payload, "dist/server/executable.sh"), "utf8"),
+      ).toBe("#!/bin/sh\nexit 0\n");
+      if (process.platform !== "win32")
+        expect(
+          statSync(join(payload, "dist/server/executable.sh")).mode & 0o777,
+        ).toBe(0o755);
+      expect(readFileSync(join(output, "install.sh"), "utf8")).toBe(
+        "#!/bin/sh\nprintf '%s\\n' 'Example/Miracle 0.2.0'\n",
+      );
+      expect(readFileSync(join(output, "install.ps1"), "utf8")).toBe(
+        "$Version = '0.2.0'\n$Repository = 'Example/Miracle'\n",
+      );
+      if (process.platform !== "win32") {
+        const installed = spawnSync("sh", [join(output, "install.sh")], {
+          encoding: "utf8",
+        });
+        expect(installed.status, installed.stderr).toBe(0);
+        expect(installed.stdout).toBe("Example/Miracle 0.2.0\n");
+      }
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);
 it("refuses an unverified runtime before producing or replacing a release archive", () => {
   const output = mkdtempSync(join(tmpdir(), "miracle runtime integrity "));
   try {

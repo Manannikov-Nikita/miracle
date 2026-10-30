@@ -61,6 +61,7 @@
     "react-resizable-panels": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "sql-formatter": "^15.9.0",
+    "tar": "7.5.22",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^7.1.7",

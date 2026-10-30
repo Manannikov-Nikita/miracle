@@ -11,6 +11,7 @@ import { resolve, join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { create as createTar } from "tar";
 
 const root = resolve(import.meta.dirname, "..");
 // Git Bash puts GNU tar on PATH; Windows releases need the system bsdtar
@@ -123,9 +124,12 @@ try {
   );
   const archive = join(output, `${name}.tar.gz`);
   await rm(archive, { force: true });
-  execFileSync(tar, ["-czf", archive, "-C", work, name], {
-    stdio: "inherit",
-  });
+  // Some Windows bsdtar builds crash while traversing non-ANSI filenames
+  // shipped by dependencies. Keep archive creation portable across all hosts.
+  await createTar(
+    { file: archive, cwd: work, gzip: true, portable: true, strict: true },
+    [name],
+  );
   const digest = createHash("sha256")
     .update(await readFile(archive))
     .digest("hex");
