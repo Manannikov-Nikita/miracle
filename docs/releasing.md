@@ -12,7 +12,7 @@ npm run notices
 node scripts/build-release.mjs Manannikov-Nikita/miracle 0.2.0 .local/releases darwin-arm64
 ```
 
-Параметры сборщика: repository, version, output, target и необязательный путь к заранее скачанному архиву Node. Target: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win-x64. Используется фиксированный Node 24.22.2, архив runtime проверяется по SHA-256.
+Параметры сборщика: repository, version, output, target и необязательный путь к заранее скачанному архиву Node. Target: darwin-arm64, darwin-x64, linux-arm64, linux-x64, win-x64. Используется фиксированный Node 24.22.2, архив runtime проверяется по SHA-256. macOS/Linux поставляются в `.tar.gz`, Windows — в `.zip`; рядом с каждым архивом публикуется файл `.sha256`.
 
 Сборщик включает только compiled client/server, production-зависимости, runtime, launcher и лицензии. Рабочая директория целиком не архивируется. .local, базы, ключи, env и личные данные не должны попадать в payload.
 

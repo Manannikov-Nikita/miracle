@@ -8,32 +8,38 @@ import {
   existsSync,
   copyFileSync,
   statSync,
+  createWriteStream,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { pipeline } from "node:stream/promises";
+import { create as createTar, extract as extractTar } from "tar";
+import yazl from "yazl";
 it.each([
   [
     "publishes executable LF bootstrap scripts even from a CRLF checkout",
     false,
+    "linux-x64",
   ],
   [
     "preserves Unicode payload and executables when native tar creation fails",
     true,
+    "linux-x64",
   ],
+  ["publishes a Windows ZIP with Unicode filenames", false, "win-x64"],
 ])(
   "%s",
-  (_name, nativeCreationFails) => {
+  async (_name, nativeCreationFails, target) => {
     // Keep the copied builder beneath the checkout so it resolves build-only dependencies.
     const local = resolve(import.meta.dirname, "../.local");
     mkdirSync(local, { recursive: true });
     const fixture = mkdtempSync(join(local, "miracle release fixture "));
-    const tar =
-      process.platform === "win32"
-        ? join(process.env.SystemRoot!, "System32", "tar.exe")
-        : "tar";
+    const windows = target === "win-x64";
+    const extension = windows ? "zip" : "tar.gz";
+    const runtimeTop = `node-v24.22.2-${target}`;
     try {
       for (const path of [
         "scripts",
@@ -42,7 +48,7 @@ it.each([
         "dist/client",
         "dist/server",
         "dist/client/snow ☃",
-        "upstream/node-v24.22.2-linux-x64/bin",
+        `upstream/${runtimeTop}/bin`,
       ])
         mkdirSync(join(fixture, path), { recursive: true });
       copyFileSync(
@@ -69,8 +75,8 @@ it.each([
         "dist/client/index.html",
         "dist/server/index.js",
         "release/install.mjs",
-        "upstream/node-v24.22.2-linux-x64/LICENSE",
-        "upstream/node-v24.22.2-linux-x64/bin/node",
+        `upstream/${runtimeTop}/LICENSE`,
+        `upstream/${runtimeTop}/${windows ? "node.exe" : "bin/node"}`,
       ])
         writeFileSync(join(fixture, path), "fixture\n");
       writeFileSync(
@@ -89,24 +95,30 @@ it.each([
         join(fixture, "release/install.ps1"),
         "$Version = '__VERSION__'\r\n$Repository = '__REPOSITORY__'\r\n",
       );
-      const runtime = join(fixture, "runtime.tar.gz");
-      const packed = spawnSync(
-        tar,
-        [
-          "-czf",
-          runtime,
-          "-C",
-          join(fixture, "upstream"),
-          "node-v24.22.2-linux-x64",
-        ],
-        { encoding: "utf8" },
-      );
-      expect(packed.status, packed.stderr).toBe(0);
+      const runtime = join(fixture, `runtime.${extension}`);
+      if (windows) {
+        const zip = new yazl.ZipFile();
+        zip.addFile(
+          join(fixture, "upstream", runtimeTop, "node.exe"),
+          `${runtimeTop}/node.exe`,
+        );
+        zip.addFile(
+          join(fixture, "upstream", runtimeTop, "LICENSE"),
+          `${runtimeTop}/LICENSE`,
+        );
+        zip.end();
+        await pipeline(zip.outputStream, createWriteStream(runtime));
+      } else {
+        await createTar(
+          { file: runtime, cwd: join(fixture, "upstream"), gzip: true },
+          [runtimeTop],
+        );
+      }
       writeFileSync(
         join(fixture, "release/node-checksums.json"),
         JSON.stringify({
           version: "24.22.2",
-          "linux-x64": createHash("sha256")
+          [String(target)]: createHash("sha256")
             .update(readFileSync(runtime))
             .digest("hex"),
         }),
@@ -141,7 +153,7 @@ syncBuiltinESMExports();
           "Example/Miracle",
           "0.2.0",
           output,
-          "linux-x64",
+          String(target),
           runtime,
         ],
         { cwd: fixture, encoding: "utf8" },
@@ -149,18 +161,39 @@ syncBuiltinESMExports();
       expect(built.status, built.stderr).toBe(0);
       const extracted = join(fixture, "extracted");
       mkdirSync(extracted);
-      const unpacked = spawnSync(
-        tar,
-        [
-          "-xzf",
-          join(output, "miracle-0.2.0-linux-x64.tar.gz"),
-          "-C",
-          extracted,
-        ],
-        { encoding: "utf8" },
+      const archive = join(output, `miracle-0.2.0-${target}.${extension}`);
+      expect(existsSync(archive), "platform-specific release archive").toBe(
+        true,
       );
-      expect(unpacked.status, unpacked.stderr).toBe(0);
-      const payload = join(extracted, "miracle-0.2.0-linux-x64");
+      if (windows) {
+        // Use the Windows consumer's .NET reader on Windows and an independent
+        // native ZIP reader elsewhere; do not round-trip through the writer.
+        const unpacked =
+          process.platform === "win32"
+            ? spawnSync(
+                "powershell.exe",
+                [
+                  "-NoProfile",
+                  "-Command",
+                  "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory($env:MIRACLE_TEST_ZIP, $env:MIRACLE_TEST_DEST)",
+                ],
+                {
+                  encoding: "utf8",
+                  env: {
+                    ...process.env,
+                    MIRACLE_TEST_ZIP: archive,
+                    MIRACLE_TEST_DEST: extracted,
+                  },
+                },
+              )
+            : spawnSync("unzip", ["-q", archive, "-d", extracted], {
+                encoding: "utf8",
+              });
+        expect(unpacked.status, unpacked.stderr).toBe(0);
+      } else {
+        await extractTar({ file: archive, cwd: extracted, chmod: true });
+      }
+      const payload = join(extracted, `miracle-0.2.0-${target}`);
       expect(
         readFileSync(join(payload, "dist/client/snow ☃/данные.txt"), "utf8"),
       ).toBe("Unicode payload\n");

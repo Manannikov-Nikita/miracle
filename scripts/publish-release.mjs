@@ -22,7 +22,7 @@ const files = [
   "linux-x64",
   "win-x64",
 ].flatMap((target) => {
-  const name = `miracle-${version}-${target}.tar.gz`;
+  const name = `miracle-${version}-${target}.${target === "win-x64" ? "zip" : "tar.gz"}`;
   return [join(output, name), join(output, name + ".sha256")];
 });
 files.push(join(output, "install.sh"), join(output, "install.ps1"));

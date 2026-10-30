@@ -7,11 +7,14 @@ import {
   writeFileSync,
   cpSync,
   symlinkSync,
+  createWriteStream,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { pipeline } from "node:stream/promises";
+import yazl from "yazl";
 const folders: string[] = [];
 afterEach(() =>
   folders
@@ -203,5 +206,77 @@ it.each(["timeout", "unauthorized", "malformed"] as const)(
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
     }
+  },
+);
+
+it.skipIf(process.platform !== "win32").each(["paths", "links", "checksum"])(
+  "Windows ZIP %s rejection preserves the old installation and data",
+  async (failure) => {
+    const f = fixture();
+    mkdirSync(join(f.install, "data"), { recursive: true });
+    writeFileSync(join(f.install, "current-version"), "0.1.0\n");
+    writeFileSync(join(f.install, "data/encryption.key"), "retained key");
+    const archive = join(f.root, "payload.zip");
+    const zip = new yazl.ZipFile();
+    zip.addBuffer(
+      Buffer.from("test entry"),
+      "miracle-0.2.0-win-x64/safe/entry",
+      {
+        mode: failure === "links" ? 0o120777 : 0o100644,
+      },
+    );
+    zip.end();
+    await pipeline(zip.outputStream, createWriteStream(archive));
+    if (failure === "paths") {
+      // Equal-length mutation of both ZIP headers; file data/CRC are unchanged.
+      writeFileSync(
+        archive,
+        Buffer.from(
+          readFileSync(archive)
+            .toString("latin1")
+            .replaceAll("safe/entry", "../x/entry"),
+          "latin1",
+        ),
+      );
+    }
+    const hash =
+      failure === "checksum"
+        ? "0".repeat(64)
+        : createHash("sha256").update(readFileSync(archive)).digest("hex");
+    writeFileSync(archive + ".sha256", hash + "  payload.zip\n");
+    const script = join(f.root, "install.ps1");
+    writeFileSync(
+      script,
+      readFileSync(resolve("release/install.ps1"), "utf8")
+        .replaceAll("__VERSION__", "0.2.0")
+        .replaceAll("__REPOSITORY__", "Example/Miracle"),
+    );
+    const result = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MIRACLE_INSTALL_ROOT: f.install,
+          MIRACLE_BIN_DIR: f.bin,
+          MIRACLE_ARCHIVE: archive,
+        },
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(
+      failure === "paths"
+        ? /Unsafe release archive paths/
+        : failure === "links"
+          ? /unsupported links/
+          : /checksum mismatch/,
+    );
+    expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
+      "0.1.0\n",
+    );
+    expect(readFileSync(join(f.install, "data/encryption.key"), "utf8")).toBe(
+      "retained key",
+    );
   },
 );

@@ -21,14 +21,19 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: linux-x64
+            extension: tar.gz
           - runner: ubuntu-24.04-arm
             target: linux-arm64
+            extension: tar.gz
           - runner: macos-15
             target: darwin-arm64
+            extension: tar.gz
           - runner: macos-15-intel
             target: darwin-x64
+            extension: tar.gz
           - runner: windows-latest
             target: win-x64
+            extension: zip
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -47,12 +52,13 @@ jobs:
         run: node scripts/build-release.mjs "$GITHUB_REPOSITORY" "$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')" .local/releases "${{ matrix.target }}"
       - name: Installed bundled-runtime lifecycle, backup and restore
         shell: bash
-        run: node tests/local-install-smoke.mjs ".local/releases/miracle-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')-${{ matrix.target }}.tar.gz"
+        run: node tests/local-install-smoke.mjs ".local/releases/miracle-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')-${{ matrix.target }}.${{ matrix.extension }}"
       - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
           path: |
             .local/releases/*.tar.gz
+            .local/releases/*.zip
             .local/releases/*.sha256
             .local/releases/install.sh
             .local/releases/install.ps1

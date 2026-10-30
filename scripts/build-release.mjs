@@ -6,24 +6,69 @@ import {
   writeFile,
   mkdtemp,
   chmod,
+  readdir,
+  lstat,
 } from "node:fs/promises";
-import { resolve, join, basename } from "node:path";
+import { createWriteStream } from "node:fs";
+import { resolve, join, basename, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { create as createTar } from "tar";
+import { create as createTar, extract as extractTar } from "tar";
+import { pipeline } from "node:stream/promises";
+import yazl from "yazl";
+import yauzl from "yauzl";
 
 const root = resolve(import.meta.dirname, "..");
-// Git Bash puts GNU tar on PATH; Windows releases need the system bsdtar
-// for ZIP extraction and native drive-letter paths.
-const tar =
-  process.platform === "win32"
-    ? join(
-        process.env.SystemRoot || process.env.WINDIR || "C:\\Windows",
-        "System32",
-        "tar.exe",
-      )
-    : "tar";
+async function extractRuntimeZip(archive, destination, top) {
+  const zip = await yauzl.openPromise(archive, { strictFileNames: true });
+  for await (const entry of zip.eachEntry()) {
+    const type = (entry.externalFileAttributes >>> 16) & 0xf000;
+    if (
+      !entry.fileName.startsWith(`${top}/`) ||
+      ![0, 0x4000, 0x8000].includes(type)
+    )
+      throw Error("Unsupported runtime ZIP entry.");
+    const output = join(destination, entry.fileName);
+    if (entry.fileName.endsWith("/")) await mkdir(output, { recursive: true });
+    else {
+      await mkdir(dirname(output), { recursive: true });
+      await pipeline(
+        await zip.openReadStreamPromise(entry),
+        createWriteStream(output, { flags: "wx" }),
+      );
+    }
+  }
+}
+
+async function createReleaseZip(archive, directory, top) {
+  const entries = [];
+  async function collect(relative) {
+    const path = join(directory, relative);
+    const stat = await lstat(path);
+    if (!stat.isFile() && !stat.isDirectory())
+      throw Error(`Unsupported release entry: ${relative}`);
+    entries.push({ relative, path, stat });
+    if (stat.isDirectory())
+      for (const child of (await readdir(path)).sort())
+        await collect(`${relative}/${child}`);
+  }
+  await collect(top);
+  const zip = new yazl.ZipFile();
+  zip.on("error", (error) => zip.outputStream.destroy(error));
+  const written = pipeline(zip.outputStream, createWriteStream(archive));
+  for (const { relative, path, stat } of entries) {
+    if (stat.isDirectory())
+      zip.addEmptyDirectory(relative, { mode: 0o40755, mtime: stat.mtime });
+    else
+      zip.addFile(path, relative, {
+        mode: 0o100000 | (stat.mode & 0o777),
+        mtime: stat.mtime,
+      });
+  }
+  zip.end();
+  await written;
+}
 const [repository, version, outputArgument, targetArgument, runtimeArgument] =
   process.argv.slice(2);
 if (
@@ -77,9 +122,13 @@ try {
     throw new Error("Pinned upstream Node checksum mismatch.");
   const unpacked = join(work, "upstream");
   await mkdir(unpacked);
-  execFileSync(tar, ["-xf", runtimeArchive, "-C", unpacked], {
-    stdio: "inherit",
-  });
+  if (target.startsWith("win-"))
+    await extractRuntimeZip(
+      runtimeArchive,
+      unpacked,
+      `node-v${checksums.version}-${target}`,
+    );
+  else await extractTar({ file: runtimeArchive, cwd: unpacked, strict: true });
   const runtime = join(unpacked, `node-v${checksums.version}-${target}`);
   await mkdir(
     join(stage, "runtime", ...(target.startsWith("win-") ? [] : ["bin"])),
@@ -122,14 +171,17 @@ try {
     ],
     { cwd: stage, stdio: "inherit", shell: process.platform === "win32" },
   );
-  const archive = join(output, `${name}.tar.gz`);
-  await rm(archive, { force: true });
-  // Some Windows bsdtar builds crash while traversing non-ANSI filenames
-  // shipped by dependencies. Keep archive creation portable across all hosts.
-  await createTar(
-    { file: archive, cwd: work, gzip: true, portable: true, strict: true },
-    [name],
+  const archive = join(
+    output,
+    `${name}.${target.startsWith("win-") ? "zip" : "tar.gz"}`,
   );
+  await rm(archive, { force: true });
+  if (target.startsWith("win-")) await createReleaseZip(archive, work, name);
+  else
+    await createTar(
+      { file: archive, cwd: work, gzip: true, portable: true, strict: true },
+      [name],
+    );
   const digest = createHash("sha256")
     .update(await readFile(archive))
     .digest("hex");

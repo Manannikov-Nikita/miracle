@@ -26,7 +26,7 @@ sh install.sh
 
 ## Windows
 
-В PowerShell на Windows 10 (1809+) или Windows 11 x64; установщик использует штатный tar.exe:
+В PowerShell на Windows 10 (1809+) или Windows 11 x64; установщик распаковывает ZIP штатными средствами PowerShell:
 
 ```powershell
 Invoke-WebRequest 'https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.ps1' -OutFile "$env:TEMP\miracle-install.ps1"

@@ -7,7 +7,9 @@ import { resolve, join, dirname } from "node:path";
 import { createServer } from "node:net";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
-  throw Error("Usage: node tests/local-install-smoke.mjs archive.tar.gz");
+  throw Error(
+    "Usage: node tests/local-install-smoke.mjs archive.tar.gz|archive.zip",
+  );
 const root = await mkdtemp(join(tmpdir(), "miracle native Проверка "));
 const install = join(root, "installed code"),
   bin = join(root, "bin"),
@@ -90,6 +92,10 @@ try {
     await readFile(join(install, "current-version"), "utf8")
   ).trim();
   const code = join(install, "versions", version);
+  // This upstream fixture is empty; reading it still proves the Unicode path survived.
+  await readFile(
+    join(code, "node_modules/@fastify/send/test/fixtures/snow ☃/index.html"),
+  );
   node = join(
     code,
     process.platform === "win32" ? "runtime/node.exe" : "runtime/bin/node",

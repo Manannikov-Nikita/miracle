@@ -8,7 +8,7 @@ Preserve SQL editing, real ClickHouse/Trino connections, TLS options, saved quer
 
 ## Delivery approach
 
-Use platform-specific GitHub release archives containing compiled web/server code, a pinned Node 24 runtime, production dependencies, launchers and license notices. This keeps the existing Fastify/React/ESM stack. A shell installer downloads and verifies a fixed-version release for macOS/Linux; a PowerShell equivalent does so on Windows. Homebrew/WinGet can later distribute these same artifacts; adding those registries is out of this change. A single executable bundler is unnecessary and introduces additional module/asset compatibility work.
+Use platform-specific GitHub release archives containing compiled web/server code, a pinned Node 24 runtime, production dependencies, launchers and license notices. This keeps the existing Fastify/React/ESM stack. A shell installer downloads and verifies a fixed-version `.tar.gz` release for macOS/Linux; a PowerShell equivalent downloads a `.zip` on Windows and uses its native ZIP support. Windows tar was rejected after native CI demonstrated failures creating and extracting Unicode entries. Homebrew/WinGet can later distribute these same artifacts; adding those registries is out of this change. A single executable bundler is unnecessary and introduces additional module/asset compatibility work.
 
 Targets: darwin arm64/x64, GNU/Linux arm64/x64, Windows x64. Reject unsupported OS/architecture/libc with an actionable error. Windows ARM native support and automatic login startup are not promised. Pin Node 24.22.2 and verify upstream SHA-256 before packaging; include its license. Test artifacts on native runners for supported targets.
 

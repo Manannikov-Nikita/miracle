@@ -2,11 +2,10 @@ $ErrorActionPreference = 'Stop'
 $Version = '__VERSION__'
 $Repository = '__REPOSITORY__'
 if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { throw 'Miracle requires Windows x64. Windows ARM is unsupported.' }
-$Tar = Join-Path $env:SystemRoot 'System32\tar.exe'
-if (-not (Test-Path -LiteralPath $Tar -PathType Leaf)) { throw 'Miracle requires the Windows system tar.exe (Windows 10 1809 or later).' }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $Root = if ($env:MIRACLE_INSTALL_ROOT) { $env:MIRACLE_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA 'Miracle' }
 $Bin = if ($env:MIRACLE_BIN_DIR) { $env:MIRACLE_BIN_DIR } else { Join-Path $Root 'bin' }
-$Asset = "miracle-$Version-win-x64.tar.gz"
+$Asset = "miracle-$Version-win-x64.zip"
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) ('miracle-install-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Temporary | Out-Null
 try {
@@ -24,13 +23,16 @@ try {
  $Expected = ((Get-Content -LiteralPath $Checksum -Raw).Trim() -split '\s+')[0]
  if ($Expected -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash -ne $Expected) { throw 'Release checksum mismatch; existing installation is unchanged.' }
  $Top = "miracle-$Version-win-x64"
- $Entries = & $Tar -tzf $Archive
- if ($LASTEXITCODE -ne 0) { throw 'Release archive is invalid.' }
- foreach ($Entry in $Entries) { if ($Entry -match '(^[/\\]|(^|[/\\])\.\.($|[/\\]))' -or ($Entry -ne $Top -and -not $Entry.StartsWith("$Top/"))) { throw 'Unsafe release archive paths.' } }
- $Details = & $Tar -tvzf $Archive
- if ($LASTEXITCODE -ne 0 -or ($Details | Where-Object { $_ -notmatch '^[-d]' })) { throw 'Release archive contains unsupported links.' }
- & $Tar -xzf $Archive -C $Temporary
- if ($LASTEXITCODE -ne 0) { throw 'Release extraction failed; existing installation is unchanged.' }
+ $Zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+ try {
+  foreach ($Entry in $Zip.Entries) {
+   $Name = $Entry.FullName
+   if ($Name -match '[:\\]|(^|/)\.\.(/|$)' -or -not $Name.StartsWith("$Top/", [StringComparison]::Ordinal)) { throw 'Unsafe release archive paths.' }
+   $Kind = ($Entry.ExternalAttributes -shr 16) -band 0xf000
+   if ($Kind -notin @(0, 0x4000, 0x8000)) { throw 'Release archive contains unsupported links.' }
+  }
+ } finally { $Zip.Dispose() }
+ [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Temporary)
  $Payload = Join-Path $Temporary $Top
  & (Join-Path $Payload 'runtime/node.exe') (Join-Path $Payload 'install.mjs') $Payload $Root $Bin
  if ($LASTEXITCODE -ne 0) { throw 'Miracle installation failed; existing data is preserved.' }

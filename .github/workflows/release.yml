@@ -30,8 +30,10 @@ jobs:
         run: |
           version="${VERSION#v}"
           for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win-x64; do
-            test -s ".local/releases/miracle-$version-$target.tar.gz"
-            (cd .local/releases && sha256sum -c "miracle-$version-$target.tar.gz.sha256")
+            extension=tar.gz
+            if [ "$target" = win-x64 ]; then extension=zip; fi
+            test -s ".local/releases/miracle-$version-$target.$extension"
+            (cd .local/releases && sha256sum -c "miracle-$version-$target.$extension.sha256")
           done
           test -s .local/releases/install.sh
           test -s .local/releases/install.ps1
