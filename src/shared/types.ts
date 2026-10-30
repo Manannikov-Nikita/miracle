@@ -30,6 +30,12 @@ export interface ClickHousePublicOptions {
     hasClientKey: boolean;
   };
 }
+export interface TrinoOptions {
+  tls?: { caCert?: string | null } | null;
+}
+export interface TrinoPublicOptions {
+  tls?: { hasCaCert: boolean };
+}
 export interface Connection {
   id: string;
   name: string;
@@ -41,6 +47,7 @@ export interface Connection {
   schema?: string;
   hasPassword: boolean;
   clickhouse?: ClickHousePublicOptions;
+  trino?: TrinoPublicOptions;
   createdAt?: string;
 }
 export interface ConnectionInput {
@@ -53,6 +60,7 @@ export interface ConnectionInput {
   catalog?: string;
   schema?: string;
   clickhouse?: ClickHouseOptions | null;
+  trino?: TrinoOptions | null;
 }
 export interface SchemaTable {
   catalog?: string;

@@ -1,4 +1,5 @@
 import { clickhouseRequest } from "./clickhouseTransport.js";
+import { createTrinoTransport, type TrinoResponse } from "./trinoTransport.js";
 import { CLICKHOUSE_REQUEST_TIMEOUT_DEFAULT } from "../shared/clickhouse-options.js";
 import { normalizeTrinoSql } from "./sql.js";
 import { parse, isLosslessNumber } from "lossless-json";
@@ -65,7 +66,7 @@ export function validateConnectionUrl(value: string) {
     throw new Error("URL должен быть http(s), без пароля и параметров");
   return u.href.replace(/\/$/, "");
 }
-async function checked(res: Response) {
+async function checked(res: TrinoResponse) {
   if (!res.ok) {
     const text = (await res.text()).slice(0, 2000);
     throw new Error(`Engine HTTP ${res.status}: ${text}`);
@@ -227,7 +228,7 @@ async function clickhouse(
   }
   return { columns, rows: result.rows, byteCount: result.byteCount };
 }
-async function readLimited(res: Response, max: number) {
+async function readLimited(res: TrinoResponse, max: number) {
   if (!res.body) throw new Error("Engine returned empty response");
   const reader = res.body.getReader();
   let total = 0;
@@ -264,47 +265,57 @@ async function trino(
   if (s.schema || c.schema) headers["X-Trino-Schema"] = s.schema || c.schema!;
   let uri: string | undefined;
   onCancel(async () => {
-    if (uri)
-      await checked(
-        await fetch(uri, {
+    if (!uri) return;
+    // Cancellation can run after the query has failed and its pool was closed.
+    const cancellation = createTrinoTransport(c);
+    try {
+      const response = await checked(
+        await cancellation.request(uri, {
           method: "DELETE",
-          redirect: "error",
           headers,
           signal: AbortSignal.timeout(5000),
         }),
       );
+      await response.body?.cancel();
+    } finally {
+      await cancellation.close();
+    }
   });
-  let response = await checked(
-    await fetch(c.url.replace(/\/$/, "") + "/v1/statement", {
-      method: "POST",
-      redirect: "error",
-      headers,
-      body: normalizeTrinoSql(s.sql),
-      signal,
-    }),
-  );
-  let columns: Column[] = [];
-  const result = collector(l);
-  while (true) {
-    const page = parseEngineJson(
-      await readLimited(response, l.maxBytes + 1024 * 1024),
+  const transport = createTrinoTransport(c);
+  try {
+    let response = await checked(
+      await transport.request(c.url.replace(/\/$/, "") + "/v1/statement", {
+        method: "POST",
+        headers,
+        body: normalizeTrinoSql(s.sql),
+        signal,
+      }),
     );
-    if (page.nextUri) uri = validateNextUri(page.nextUri, c.url);
-    if (page.error)
-      throw new Error(String(page.error.message || "Trino query failed"));
-    if (page.columns)
-      columns = page.columns.map((x: any, i: number) => ({
-        id: String(i),
-        name: x.name,
-        type: x.type,
-      }));
-    if (page.data) for (const row of page.data) result.add(row);
-    if (!page.nextUri) break;
-    response = await checked(
-      await fetch(uri!, { headers, signal, redirect: "error" }),
-    );
+    let columns: Column[] = [];
+    const result = collector(l);
+    while (true) {
+      const page = parseEngineJson(
+        await readLimited(response, l.maxBytes + 1024 * 1024),
+      );
+      if (page.nextUri) uri = validateNextUri(page.nextUri, c.url);
+      if (page.error)
+        throw new Error(String(page.error.message || "Trino query failed"));
+      if (page.columns)
+        columns = page.columns.map((x: any, i: number) => ({
+          id: String(i),
+          name: x.name,
+          type: x.type,
+        }));
+      if (page.data) for (const row of page.data) result.add(row);
+      if (!page.nextUri) break;
+      response = await checked(
+        await transport.request(uri!, { headers, signal }),
+      );
+    }
+    return { columns, rows: result.rows, byteCount: result.byteCount };
+  } finally {
+    await transport.close();
   }
-  return { columns, rows: result.rows, byteCount: result.byteCount };
 }
 export async function engineMetadata(
   c: EngineConnection,

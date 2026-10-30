@@ -15,6 +15,9 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { create as createTar, extract as extractTar } from "tar";
+const releaseVersion = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"),
+).version;
 it("rejects a native Windows release target before producing artifacts", () => {
   const root = mkdtempSync(join(tmpdir(), "miracle unsupported release "));
   const output = join(root, "output");
@@ -24,7 +27,7 @@ it("rejects a native Windows release target before producing artifacts", () => {
       [
         "scripts/build-release.mjs",
         "Example/Miracle",
-        "0.2.0",
+        releaseVersion,
         output,
         "win-x64",
       ],
@@ -190,14 +193,14 @@ it("refuses an unverified runtime before producing or replacing a release archiv
   try {
     const runtime = join(output, "node.tar.gz");
     writeFileSync(runtime, "not the pinned Node runtime");
-    const archive = join(output, "miracle-0.2.0-darwin-arm64.tar.gz");
+    const archive = join(output, `miracle-${releaseVersion}-darwin-arm64.tar.gz`);
     writeFileSync(archive, "prior verified artifact");
     const result = spawnSync(
       process.execPath,
       [
         "scripts/build-release.mjs",
         "Example/Miracle",
-        "0.2.0",
+        releaseVersion,
         output,
         "darwin-arm64",
         runtime,

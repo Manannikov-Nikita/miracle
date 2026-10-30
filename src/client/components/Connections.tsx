@@ -15,6 +15,9 @@ import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
 import ClickHouseConnectionOptions, {
   clickhouseFormError,
 } from "./ClickHouseConnectionOptions";
+import TrinoConnectionOptions, {
+  trinoFormError,
+} from "./TrinoConnectionOptions";
 const blank: ConnectionInput = {
   name: "",
   engine: "clickhouse",
@@ -80,6 +83,7 @@ export default function Connections({
                     : undefined,
                 }
               : undefined,
+            trino: c.trino ? {} : undefined,
           }
         : { ...blank },
     );
@@ -90,7 +94,7 @@ export default function Connections({
   function validate() {
     return form.engine === "clickhouse"
       ? clickhouseFormError(form.url, form.clickhouse, editing?.clickhouse)
-      : "";
+      : trinoFormError(form.url, form.trino, editing?.trino);
   }
   async function testDraft() {
     const validation = validate();
@@ -211,6 +215,7 @@ export default function Connections({
                         ...f,
                         engine,
                         clickhouse: undefined,
+                        trino: undefined,
                         url:
                           engine === "clickhouse"
                             ? "http://localhost:8123"
@@ -253,7 +258,11 @@ export default function Connections({
                 onChange={(e) =>
                   setForm((f) => ({ ...f, url: e.target.value }))
                 }
-                placeholder="https://clickhouse.company.ru:8443"
+                placeholder={
+                  form.engine === "clickhouse"
+                    ? "https://clickhouse.company.ru:8443"
+                    : "https://trino.company.ru"
+                }
               />
               <small className="muted">
                 Адрес должен быть доступен серверу Miracle. Для внешних
@@ -338,7 +347,7 @@ export default function Connections({
                 </label>
               </div>
             )}
-            {form.engine === "clickhouse" && (
+            {form.engine === "clickhouse" ? (
               <ClickHouseConnectionOptions
                 key={editing?.id ?? "new"}
                 url={form.url}
@@ -351,6 +360,21 @@ export default function Connections({
                 }
                 onChange={(clickhouse) =>
                   setForm((current) => ({ ...current, clickhouse }))
+                }
+              />
+            ) : (
+              <TrinoConnectionOptions
+                key={editing?.id ?? "new"}
+                url={form.url}
+                options={form.trino}
+                saved={editing?.trino}
+                disabled={busy || draftTesting}
+                onPendingChange={setReadingCertificate}
+                onUrlChange={(url) =>
+                  setForm((current) => ({ ...current, url }))
+                }
+                onChange={(trino) =>
+                  setForm((current) => ({ ...current, trino }))
                 }
               />
             )}
