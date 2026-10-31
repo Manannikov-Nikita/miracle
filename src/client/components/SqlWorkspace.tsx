@@ -890,7 +890,14 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     setSaving(true);
     setSaveError("");
     try {
-      const t = activeRef.current;
+      const targetId = activeRef.current.id;
+      // Publish the local draft first: a saved-query update must not echo an
+      // older server editor over keystrokes made during this explicit save.
+      await documentSync.flush();
+      // Acknowledgements or agent edits may arrive while flushing. Keep the
+      // original target even if focus changed, but save its latest revision.
+      const t = documentSync.sync.tabs.find((tab) => tab.id === targetId);
+      if (!t) throw new Error("SQL-файл был закрыт до сохранения");
       const c = p.connections.find(
         (c) => c.id === (t.connectionId || p.activeConnectionId),
       );

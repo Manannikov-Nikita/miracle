@@ -1,169 +1,119 @@
-import { useEffect, useRef } from "react";
-import { Plus, Stop, ArrowUp } from "@phosphor-icons/react";
-import type { AgentChatState } from "./useAgentChat";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUpRight, ChatCircle } from "@phosphor-icons/react";
 import AgentMessages from "./AgentMessages";
-interface Props {
-  state: AgentChatState;
-  selectedProfile: string;
-  onProfileChange: (id: string) => void;
-  draft: string;
-  onDraftChange: (value: string) => void;
-  onSend: () => Promise<void>;
-  onSettings: () => void;
-}
-export default function AgentChatView({
-  state,
-  selectedProfile,
-  onProfileChange,
-  draft,
-  onDraftChange,
-  onSend,
-  onSettings,
-}: Props) {
-  const active = state.active,
-    log = useRef<HTMLDivElement>(null);
+import AgentComposer, { type ComposerProps } from "./AgentComposer";
+
+export default function AgentChatView(props: ComposerProps) {
+  const { state, onDraftChange, onSettings } = props;
+  const log = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const previousChat = useRef(state.selected);
+  const previousText = useRef("");
+  const [below, setBelow] = useState(false);
+  // Tool traffic changes the activity summary, never the reader's position.
+  const text = (state.conversation?.messages || [])
+    .filter((m) => m.role !== "action")
+    .map((m) => `${m.id}:${m.content}`)
+    .join("\n");
+  useLayoutEffect(() => {
+    const element = log.current;
+    if (!element) return;
+    const changedChat = previousChat.current !== state.selected;
+    if (changedChat) {
+      previousChat.current = state.selected;
+      pinned.current = true;
+    }
+    if (text !== previousText.current || changedChat) {
+      if (pinned.current) {
+        element.scrollTop = element.scrollHeight;
+        setBelow(false);
+      } else setBelow(true);
+      previousText.current = text;
+    }
+  }, [text, state.selected]);
   useEffect(() => {
     const element = log.current;
-    if (
-      element &&
-      element.scrollHeight - element.scrollTop - element.clientHeight < 180
-    )
-      element.scrollTop = element.scrollHeight;
-  }, [state.conversation]);
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) element.scrollTop = element.scrollHeight;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const empty = !state.conversation?.messages.length;
   return (
     <>
-      <div className="agent-history">
-        <label className="sr-only" htmlFor="agent-conversation">
-          Разговор
-        </label>
-        <select
-          id="agent-conversation"
-          disabled={state.busy}
-          value={state.selected}
-          onChange={(e) => state.setSelected(e.target.value)}
-        >
-          <option value="">Новый разговор</option>
-          {state.chats.map((chat) => (
-            <option key={chat.id} value={chat.id}>
-              {chat.title} · {chat.provider}
-            </option>
-          ))}
-        </select>
-        <button
-          className="icon-button"
-          aria-label="Новый разговор"
-          title="Новый разговор"
-          disabled={state.busy}
-          onClick={() => state.setSelected("")}
-        >
-          <Plus size={17} />
-        </button>
-      </div>
-      {!state.selected && (
-        <div className="agent-new-profile">
-          <label htmlFor="agent-profile">Профиль нового разговора</label>
-          <select
-            id="agent-profile"
-            value={selectedProfile}
-            onChange={(e) => onProfileChange(e.target.value)}
-          >
-            <option value="" disabled>
-              Выберите профиль
-            </option>
-            {state.profiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} · {p.provider}
-                {p.trusted ? "" : " · требуется доверие"}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      <div
-        ref={log}
-        className="agent-log"
-        role="log"
-        aria-label="Сообщения агента"
-        aria-live="polite"
-        aria-relevant="additions text"
-      >
-        {!state.conversation?.messages.length && (
-          <div className="agent-empty">
-            {state.profiles.length ? (
-              "Попросите агента исследовать данные, подготовить SQL или изменить доску."
-            ) : (
-              <>
-                <p>Добавьте команду установленного Codex CLI или Claude CLI.</p>
-                <button className="button" onClick={() => onSettings()}>
-                  Настроить профиль
-                </button>
-              </>
-            )}
-          </div>
-        )}
-        <AgentMessages state={state} />
-      </div>
-      {active && (
-        <div className="agent-running" role="status">
-          <span>
-            {active.status === "waiting"
-              ? "Агент ждёт вашего решения"
-              : active.chatId === state.selected
-                ? "Агент работает…"
-                : "Агент работает в другом разговоре"}
-          </span>
-          <button
-            className="text-button"
-            disabled={state.busy}
-            onClick={() => void state.stop().catch(() => {})}
-          >
-            <Stop size={13} /> Остановить
-          </button>
-        </div>
-      )}
-      <form
-        className="agent-composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void onSend();
-        }}
-      >
-        <label className="sr-only" htmlFor="agent-message">
-          Сообщение агенту
-        </label>
-        <textarea
-          id="agent-message"
-          rows={3}
-          value={draft}
-          placeholder="Сообщение агенту…"
-          onChange={(e) => onDraftChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void onSend();
-            }
+      <div className="agent-transcript">
+        <div
+          ref={log}
+          className="agent-log"
+          role="log"
+          aria-label="Сообщения агента"
+          aria-live="polite"
+          aria-relevant="additions text"
+          onScroll={() => {
+            if (!log.current) return;
+            pinned.current =
+              log.current.scrollHeight -
+                log.current.scrollTop -
+                log.current.clientHeight <
+              48;
+            if (pinned.current) setBelow(false);
           }}
-        />
-        <div>
-          <small>
-            SQL и доска сохраняются перед отправкой · ⌘ / Ctrl + Enter
-          </small>
-          <button
-            className="button primary"
-            type="submit"
-            aria-label="Отправить сообщение"
-            disabled={
-              state.busy ||
-              Boolean(active) ||
-              !draft.trim() ||
-              (!state.selected &&
-                !state.profiles.find((p) => p.id === selectedProfile)?.trusted)
-            }
-          >
-            <ArrowUp size={18} />
-          </button>
+        >
+          {empty && (
+            <div className="agent-empty">
+              <ChatCircle size={32} weight="light" />
+              <h2>С чего начнём?</h2>
+              <p>
+                {state.profiles.length
+                  ? "Исследуйте данные и воплощайте идеи вместе с агентом."
+                  : "Подключите локальный Codex или Claude и работайте с проектом в одном чате."}
+              </p>
+              {state.profiles.length ? (
+                <div className="agent-suggestions">
+                  {[
+                    "Исследуй мои данные",
+                    "Помоги написать SQL",
+                    "Собери доску с выводами",
+                  ].map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={() => {
+                        onDraftChange(suggestion);
+                        document.getElementById("agent-message")?.focus();
+                      }}
+                    >
+                      {suggestion}
+                      <ArrowUpRight size={14} />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <button className="agent-setup-button" onClick={onSettings}>
+                  Подключить агента
+                  <ArrowUpRight size={16} />
+                </button>
+              )}
+            </div>
+          )}
+          <AgentMessages state={state} />
         </div>
-      </form>
+        {below && (
+          <button
+            className="agent-jump"
+            aria-label="К последнему сообщению"
+            onClick={() => {
+              if (log.current) log.current.scrollTop = log.current.scrollHeight;
+              pinned.current = true;
+              setBelow(false);
+            }}
+          >
+            <ArrowDown size={17} />
+          </button>
+        )}
+      </div>
+      <AgentComposer {...props} />
     </>
   );
 }

@@ -5,6 +5,7 @@ import type {
   AgentMessage,
   AgentProfile,
   AgentTurn,
+  AgentTargetContext,
   ProjectContext,
 } from "../../shared/agents";
 import { api, json } from "../api";
@@ -194,11 +195,15 @@ export function useAgentChat() {
     profileId: string,
     clientRequestId: string,
     onCreated?: (id: string) => void,
+    references: Partial<AgentTargetContext> = {},
   ) =>
     action(async () => {
       const selectedChat = selectedRef.current;
       const retry = sendRequests.current.get(clientRequestId);
-      const context = retry?.context || (await project?.prepare()) || {};
+      const context =
+        retry?.context ||
+        (await project?.prepare(references)) ||
+        structuredClone(references);
       let chatId = retry?.chatId || selectedChat;
       if (!chatId) {
         const chat = await create(profileId);

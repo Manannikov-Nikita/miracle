@@ -11,6 +11,37 @@ import { EditorSync, type EditorTab } from "./editor-sync";
 import { useProjectSync } from "./ProjectSync";
 export const recoveryKey = (workspaceId: string) =>
   `miracle:sql-recovery:${workspaceId}`;
+
+// Leave room for the migration id and JSON envelope. Large individual drafts
+// use the migration route's dedicated 8 MiB limit (1M SQL chars can be 6M
+// escaped JSON bytes); ordinary batches stay below 1 MiB and 200 documents.
+const importBatchBytes = 1024 * 1024 - 256;
+const importDocumentBytes = 8 * 1024 * 1024 - 256;
+function importBatches(legacy: EditorTab[]): EditorTab[][] {
+  const batches: EditorTab[][] = [];
+  let batch: EditorTab[] = [],
+    bytes = 0;
+  const encoder = new TextEncoder();
+  for (const document of legacy) {
+    const size = encoder.encode(json(document)).byteLength + 1;
+    if (size > importDocumentBytes)
+      throw new Error(
+        `Черновик «${document.name || "SQL"}» слишком велик для переноса. Исходный текст сохранён в браузере.`,
+      );
+    if (
+      batch.length &&
+      (bytes + size > importBatchBytes || batch.length === 200)
+    ) {
+      batches.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(document);
+    bytes += size;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
 export async function loadEditorDocuments(
   workspaceId: string,
 ): Promise<EditorDocument[]> {
@@ -28,13 +59,27 @@ export async function loadEditorDocuments(
         migrationId = crypto.randomUUID();
         localStorage.setItem(`${key}:migration-id`, migrationId);
       }
-      documents = await api<EditorDocument[]>("/api/editor-documents/import", {
-        method: "POST",
-        body: json({
-          migrationId,
-          documents: legacy,
-        }),
-      });
+      for (const batch of importBatches(legacy)) {
+        // A lost reply can follow a successful commit. Content-based batch ids
+        // replay that commit safely, even if old tabs were added before retry.
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(json(batch)),
+        );
+        const batchId = [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+        documents = await api<EditorDocument[]>(
+          "/api/editor-documents/import",
+          {
+            method: "POST",
+            body: json({
+              migrationId: `${migrationId}:${batchId}`,
+              documents: batch,
+            }),
+          },
+        );
+      }
     }
     // The old drafts remain until the authoritative import has acknowledged them.
     localStorage.setItem(`${key}:imported`, "1");

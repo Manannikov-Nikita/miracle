@@ -8,6 +8,7 @@ import {
 } from "../src/client/agents/ProjectSync";
 import { useBoard } from "../src/client/board/useBoard";
 import type { Board, BoardDocument } from "../src/shared/types";
+import { boardDocumentSchema } from "../src/server/validation";
 
 const documentWith = (text: string): BoardDocument => ({
   schemaVersion: 1,
@@ -35,6 +36,9 @@ describe("personal board drafts and revisions", () => {
   let boards: Board[];
   let changes: unknown[];
   let rejectRevision: boolean;
+  let emitSavedBoard: boolean;
+  let afterSaveEcho: (() => void) | undefined;
+  let beforeSave: (() => void) | undefined;
   const notify = vi.fn();
   function Workspace({ id }: { id: string }) {
     store = useBoard(id, notify);
@@ -71,6 +75,9 @@ describe("personal board drafts and revisions", () => {
     ];
     changes = [];
     rejectRevision = false;
+    emitSavedBoard = false;
+    afterSaveEcho = undefined;
+    beforeSave = undefined;
     vi.stubGlobal("fetch", async (path: string, options: RequestInit = {}) => {
       if (path === "/api/boards")
         return response(boards.map(({ document, ...summary }) => summary));
@@ -90,13 +97,22 @@ describe("personal board drafts and revisions", () => {
       if (options.method === "PATCH") {
         const patch = JSON.parse(options.body as string);
         changes.push(patch);
+        beforeSave?.();
         if (rejectRevision || patch.baseRevision !== board.revision)
           return response(
             { error: "Revision conflict", code: "REVISION_CONFLICT" },
             409,
           );
-        board.document = patch.document;
+        board.document = boardDocumentSchema.parse(patch.document);
         board.revision++;
+        if (emitSavedBoard) {
+          project.emit({
+            id: board.revision,
+            type: "board.updated",
+            data: structuredClone(board),
+          });
+          afterSaveEcho?.();
+        }
       }
       return response(board);
     });
@@ -209,6 +225,150 @@ describe("personal board drafts and revisions", () => {
     expect(store.board?.document.nodes[0].data.text).toBe("server first");
     expect(store.canUndo).toBe(false);
     expect(store.board?.revision).toBe(4);
+  });
+  it("accepts its normalized save echo before the HTTP response and then applies agent changes", async () => {
+    await open();
+    emitSavedBoard = true;
+    const local = documentWith("my note");
+    // UI-created node data uses a different insertion order than the validated server DTO.
+    local.nodes[0].data = { kind: "note", title: "Note", text: "my note" };
+    await act(async () => store.change(local));
+    await act(async () => store.save());
+    expect(store.conflict).toBe(false);
+    boards[0] = {
+      ...boards[0],
+      revision: 5,
+      document: documentWith("agent note"),
+    };
+    await act(async () =>
+      project.emit({ id: 5, type: "board.updated", data: boards[0] }),
+    );
+    expect(store.board?.document.nodes[0].data.text).toBe("agent note");
+    expect(store.conflict).toBe(false);
+    await expect(project.prepare()).resolves.toEqual({ boardId: "first" });
+  });
+  it("does not resurrect a stale draft after an agent update overtakes a successful save response", async () => {
+    await open();
+    emitSavedBoard = true;
+    afterSaveEcho = () => {
+      boards[0] = {
+        ...boards[0],
+        revision: 5,
+        document: documentWith("agent follows save"),
+      };
+      project.emit({ id: 5, type: "board.updated", data: boards[0] });
+    };
+    await act(async () => store.change(documentWith("submitted local note")));
+    await act(async () => store.save());
+    expect(store.board?.document.nodes[0].data.text).toBe("agent follows save");
+    expect(
+      localStorage.getItem("miracle:board-draft:workspace-a:first"),
+    ).toBeNull();
+    await act(async () => store.select("first"));
+    expect(store.conflict).toBe(false);
+    expect(store.board?.document.nodes[0].data.text).toBe("agent follows save");
+  });
+  it.each(["before", "after"])(
+    "accepts an agent revert matching an earlier save %s its overtaken HTTP response",
+    async (timing) => {
+      await open();
+      emitSavedBoard = true;
+      const revert = () => {
+        boards[0] = {
+          ...boards[0],
+          revision: 6,
+          document: documentWith("submitted local note"),
+        };
+        project.emit({ id: 6, type: "board.updated", data: boards[0] });
+      };
+      afterSaveEcho = () => {
+        boards[0] = {
+          ...boards[0],
+          revision: 5,
+          document: documentWith("agent follows save"),
+        };
+        project.emit({ id: 5, type: "board.updated", data: boards[0] });
+        if (timing === "before") revert();
+      };
+      await act(async () => store.change(documentWith("submitted local note")));
+      await act(async () => store.save());
+      if (timing === "after") await act(async () => revert());
+      expect(store.board?.document.nodes[0].data.text).toBe(
+        "submitted local note",
+      );
+      expect(store.conflict).toBe(false);
+      expect(
+        localStorage.getItem("miracle:board-draft:workspace-a:first"),
+      ).toBeNull();
+      await act(async () => store.save());
+      expect(changes).toHaveLength(1);
+    },
+  );
+  it("shows agent blocks immediately while retaining a local viewport change and rebasing its save", async () => {
+    await open();
+    await act(async () =>
+      store.change(
+        { ...store.board!.document, viewport: { x: 120, y: 80, zoom: 0.7 } },
+        false,
+      ),
+    );
+    boards[0] = {
+      ...boards[0],
+      revision: 4,
+      document: {
+        ...documentWith("agent block"),
+        viewport: { x: 20, y: 30, zoom: 1 },
+      },
+    };
+    await act(async () =>
+      project.emit({ id: 4, type: "board.updated", data: boards[0] }),
+    );
+    expect(store.board?.document.nodes[0].data.text).toBe("agent block");
+    expect(store.board?.document.viewport).toEqual({
+      x: 120,
+      y: 80,
+      zoom: 0.7,
+    });
+    expect(store.conflict).toBe(false);
+    await act(async () => store.save());
+    expect(boards[0].document.nodes[0].data.text).toBe("agent block");
+    expect(boards[0].document.viewport).toEqual({ x: 120, y: 80, zoom: 0.7 });
+    expect(store.board?.revision).toBe(5);
+    expect(changes).toMatchObject([{ baseRevision: 4 }]);
+    await act(async () => store.undo());
+    expect(store.board?.document.nodes[0].data.text).toBe("server first");
+    expect(store.board?.document.viewport).toEqual({
+      x: 120,
+      y: 80,
+      zoom: 0.7,
+    });
+  });
+  it("does not turn a safely rebased viewport into a conflict when its old request is rejected", async () => {
+    await open();
+    await act(async () =>
+      store.change(
+        { ...store.board!.document, viewport: { x: 120, y: 80, zoom: 0.7 } },
+        false,
+      ),
+    );
+    beforeSave = () => {
+      beforeSave = undefined;
+      boards[0].revision = 4;
+      boards[0].document = documentWith("agent block");
+      project.emit({
+        id: 4,
+        type: "board.updated",
+        data: structuredClone(boards[0]),
+      });
+    };
+    await act(async () => store.save());
+    expect(store.conflict).toBe(false);
+    expect(store.board?.document.nodes[0].data.text).toBe("agent block");
+    expect(store.board?.revision).toBe(4);
+    await act(async () => store.save());
+    expect(boards[0].document.nodes[0].data.text).toBe("agent block");
+    expect(boards[0].document.viewport).toEqual({ x: 120, y: 80, zoom: 0.7 });
+    expect(changes).toMatchObject([{ baseRevision: 3 }, { baseRevision: 4 }]);
   });
   it("retains a dirty local board on agent events and blocks sending until the conflict is resolved", async () => {
     await open();

@@ -3,6 +3,21 @@ import type { Board, BoardDocument, BoardSummary } from "../../shared/types";
 import { api } from "../api";
 import { useProjectSync } from "../agents/ProjectSync";
 import { emptyDocument } from "./model";
+// Validation rebuilds objects in schema order. Key insertion order is not a document edit.
+function contentKey(value: unknown) {
+  return JSON.stringify(value, (_key, part) =>
+    part && typeof part === "object" && !Array.isArray(part)
+      ? Object.fromEntries(
+          Object.keys(part)
+            .sort()
+            .map((key) => [key, part[key]]),
+        )
+      : part,
+  );
+}
+function canvasKey({ viewport: _, ...content }: BoardDocument) {
+  return contentKey(content);
+}
 function persist(key: string, value: unknown) {
   try {
     if (value === null) localStorage.removeItem(key);
@@ -58,7 +73,7 @@ export function useBoard(
       try {
         const loaded = await api<Board>(`/api/boards/${id}`);
         if (!mounted.current || sequence !== loadSequence.current) return;
-        saved.current = JSON.stringify(loaded.document);
+        saved.current = contentKey(loaded.document);
         history.current = [];
         future.current = [];
         let local: Board = loaded;
@@ -81,7 +96,7 @@ export function useBoard(
                 revision: draft.baseRevision,
                 document: draft.document,
               };
-              restored = JSON.stringify(draft.document) !== saved.current;
+              restored = contentKey(draft.document) !== saved.current;
               if (!restored) local = loaded;
               setConflict(restored && draft.baseRevision !== loaded.revision);
             }
@@ -146,8 +161,7 @@ export function useBoard(
         nodes: document.nodes.map((node) => {
           const previous = old.document.nodes.find((n) => n.id === node.id);
           return previous &&
-            JSON.stringify(previous.data.source) !==
-              JSON.stringify(node.data.source)
+            contentKey(previous.data.source) !== contentKey(node.data.source)
             ? {
                 ...node,
                 data: {
@@ -162,7 +176,7 @@ export function useBoard(
         }),
       };
       // React Flow can emit the existing viewport again after fitting the canvas.
-      if (JSON.stringify(document) === JSON.stringify(old.document)) return;
+      if (contentKey(document) === contentKey(old.document)) return;
       if (record) {
         history.current.push(old.document);
         if (history.current.length > 60) history.current.shift();
@@ -191,7 +205,7 @@ export function useBoard(
       !snapshot ||
       saving.current ||
       conflict ||
-      JSON.stringify(snapshot.document) === saved.current
+      contentKey(snapshot.document) === saved.current
     )
       return;
     saving.current = true;
@@ -199,9 +213,9 @@ export function useBoard(
     savingDone.current = new Promise<void>((resolve) => {
       finishSave = resolve;
     });
-    inFlightDocument.current = JSON.stringify(snapshot.document);
+    inFlightDocument.current = contentKey(snapshot.document);
     setState("Сохранение…");
-    const serialized = JSON.stringify(snapshot.document);
+    const serialized = contentKey(snapshot.document);
     if (
       pendingMutation.current?.boardId !== snapshot.id ||
       pendingMutation.current.revision !== snapshot.revision ||
@@ -213,19 +227,21 @@ export function useBoard(
         revision: snapshot.revision,
         document: serialized,
       };
+    const mutation = pendingMutation.current;
     try {
       const result = await api<Board>(`/api/boards/${snapshot.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           baseRevision: snapshot.revision,
-          mutationId: pendingMutation.current.id,
+          mutationId: mutation.id,
           document: snapshot.document,
         }),
       });
+      if (pendingMutation.current?.id === mutation.id)
+        pendingMutation.current = null;
       if (current.current?.id !== snapshot.id) return;
       const now = current.current;
       if (now.revision > result.revision) return;
-      pendingMutation.current = null;
       saved.current = serialized;
       assign({
         ...now,
@@ -244,7 +260,7 @@ export function useBoard(
             : item,
         ),
       );
-      if (JSON.stringify(now.document) === serialized) {
+      if (contentKey(now.document) === serialized) {
         persist(draftKey(workspaceId, snapshot.id), null);
         setState("Сохранено");
       } else {
@@ -263,6 +279,14 @@ export function useBoard(
         /revision|conflict|конфликт/i.test(error.message) ||
         error.code === "REVISION_CONFLICT"
       ) {
+        if (
+          current.current.revision > snapshot.revision &&
+          !conflictRef.current
+        ) {
+          // A newer event already rebased the local viewport safely.
+          setRetry((n) => n + 1);
+          return;
+        }
         conflictRef.current = true;
         setConflict(true);
         setState("Конфликт версий");
@@ -289,38 +313,64 @@ export function useBoard(
       );
       const old = current.current;
       if (!old || old.id !== value.id || value.revision <= old.revision) return;
-      const serialized = JSON.stringify(value.document);
-      const dirty = JSON.stringify(old.document) !== saved.current;
-      if (
-        dirty &&
-        serialized !== inFlightDocument.current &&
-        serialized !== pendingMutation.current?.document
-      ) {
+      const serialized = contentKey(value.document);
+      const local = contentKey(old.document);
+      const dirty = local !== saved.current;
+      const ownSave = Boolean(
+        pendingMutation.current &&
+        value.revision === pendingMutation.current.revision + 1 &&
+        (serialized === inFlightDocument.current ||
+          serialized === pendingMutation.current.document),
+      );
+      const base =
+        dirty && saved.current
+          ? (JSON.parse(saved.current) as BoardDocument)
+          : null;
+      // Panning/zooming (including fitView) is independent of the agent's blocks.
+      // Merge only that view change; competing content edits still require resolution.
+      const viewportOnly = Boolean(
+        base && canvasKey(old.document) === canvasKey(base),
+      );
+      if (dirty && serialized !== local && !ownSave && !viewportOnly) {
         conflictRef.current = true;
         setConflict(true);
         setState("Конфликт версий — локальный черновик сохранён");
         return;
       }
-      if (!dirty && JSON.stringify(old.document) !== serialized) {
+      if (!ownSave && (!dirty || viewportOnly) && local !== serialized) {
         history.current.push(old.document);
         if (history.current.length > 60) history.current.shift();
         future.current = [];
         setHistoryTick((n) => n + 1);
       }
       saved.current = serialized;
-      assign(
-        serialized === inFlightDocument.current ||
-          serialized === pendingMutation.current?.document
-          ? { ...old, revision: value.revision, updatedAt: value.updatedAt }
-          : value,
+      const next = ownSave
+        ? { ...old, revision: value.revision, updatedAt: value.updatedAt }
+        : viewportOnly
+          ? {
+              ...value,
+              document: { ...value.document, viewport: old.document.viewport },
+            }
+          : value;
+      assign(next);
+      const stillDirty = contentKey(next.document) !== serialized;
+      // Events may overtake the HTTP reply. Reconcile the backup here too,
+      // retaining edits made after the acknowledged save on its new revision.
+      persist(
+        draftKey(workspaceId, value.id),
+        stillDirty
+          ? { baseRevision: value.revision, document: next.document }
+          : null,
       );
-      setState("Сохранено");
+      conflictRef.current = false;
+      setConflict(false);
+      setState(stillDirty ? "Изменения…" : "Сохранено");
     };
     const removeRemote = (id: string) => {
       setList((items) => items.filter((b) => b.id !== id));
       const old = current.current;
       if (old?.id !== id) return;
-      if (JSON.stringify(old.document) !== saved.current) {
+      if (contentKey(old.document) !== saved.current) {
         conflictRef.current = true;
         setConflict(true);
         setState("Доска удалена. Локальный черновик сохранён");
@@ -358,7 +408,7 @@ export function useBoard(
       unsubscribe();
       reconnect();
     };
-  }, [projectSync, assign, notify]);
+  }, [projectSync, assign, notify, workspaceId]);
   const flush = useCallback(async () => {
     if (savingDone.current) await savingDone.current;
     if (conflictRef.current)
@@ -366,7 +416,7 @@ export function useBoard(
     for (let attempt = 0; attempt < 5; attempt++) {
       if (
         !current.current ||
-        JSON.stringify(current.current.document) === saved.current
+        contentKey(current.current.document) === saved.current
       )
         return;
       await save();
@@ -393,7 +443,7 @@ export function useBoard(
     const warn = (e: BeforeUnloadEvent) => {
       if (
         current.current &&
-        JSON.stringify(current.current.document) !== saved.current
+        contentKey(current.current.document) !== saved.current
       ) {
         e.preventDefault();
         e.returnValue = "";
@@ -411,7 +461,7 @@ export function useBoard(
     ++loadSequence.current;
     setLoading(false);
     setList((items) => [value, ...items]);
-    saved.current = JSON.stringify(value.document);
+    saved.current = contentKey(value.document);
     setConflict(false);
     history.current = [];
     future.current = [];
@@ -436,7 +486,7 @@ export function useBoard(
       }),
     });
     assign(renamed);
-    saved.current = JSON.stringify(renamed.document);
+    saved.current = contentKey(renamed.document);
     setList((items) =>
       items.map((item) => (item.id === renamed.id ? renamed : item)),
     );

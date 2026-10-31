@@ -12,10 +12,9 @@ import {
 import type { ExplorerKind } from "./Explorer";
 import { Brand, IconButton } from "./UI";
 
-export type PaneMode = "split" | "sql" | "board";
+export type PaneMode = "split" | "sql" | "board" | "none";
 
 export default function WorkspaceRail({
-  narrow,
   mode,
   explorer,
   connectionCount,
@@ -26,7 +25,6 @@ export default function WorkspaceRail({
   onConnections,
   onHelp,
 }: {
-  narrow: boolean;
   mode: PaneMode;
   explorer: ExplorerKind | null;
   connectionCount: number;
@@ -69,20 +67,18 @@ export default function WorkspaceRail({
                   ["sql", "Только редактор"],
                   ["board", "Только доска"],
                 ] as const
-              )
-                .filter(([value]) => !narrow || value !== "split")
-                .map(([value, label]) => (
-                  <DropdownMenu.RadioItem
-                    key={value}
-                    value={value}
-                    className="workspace-menu-radio"
-                  >
-                    {label}
-                    <DropdownMenu.ItemIndicator className="workspace-menu-item-indicator">
-                      <Check size={14} />
-                    </DropdownMenu.ItemIndicator>
-                  </DropdownMenu.RadioItem>
-                ))}
+              ).map(([value, label]) => (
+                <DropdownMenu.RadioItem
+                  key={value}
+                  value={value}
+                  className="workspace-menu-radio"
+                >
+                  {label}
+                  <DropdownMenu.ItemIndicator className="workspace-menu-item-indicator">
+                    <Check size={14} />
+                  </DropdownMenu.ItemIndicator>
+                </DropdownMenu.RadioItem>
+              ))}
             </DropdownMenu.RadioGroup>
             <DropdownMenu.Separator />
             <DropdownMenu.Item
@@ -104,16 +100,16 @@ export default function WorkspaceRail({
       >
         <IconButton
           label="Редактор SQL"
-          className={mode !== "board" ? "active" : ""}
-          aria-pressed={mode !== "board"}
+          className={mode === "split" || mode === "sql" ? "active" : ""}
+          aria-pressed={mode === "split" || mode === "sql"}
           onClick={() => onTogglePane("sql")}
         >
           <Code size={21} />
         </IconButton>
         <IconButton
           label="Доска"
-          className={mode !== "sql" ? "active" : ""}
-          aria-pressed={mode !== "sql"}
+          className={mode === "split" || mode === "board" ? "active" : ""}
+          aria-pressed={mode === "split" || mode === "board"}
           onClick={() => onTogglePane("board")}
         >
           <SquaresFour size={21} />

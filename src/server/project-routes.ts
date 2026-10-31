@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { ProjectStore, problem } from "./project-store.js";
-import type { ProjectEvent } from "../shared/agents.js";
+import { searchProjectFiles } from "./project-files.js";
 
 export function registerProjectRoutes(
   app: FastifyInstance,
@@ -14,6 +14,13 @@ export function registerProjectRoutes(
     need(req);
     return store.context;
   });
+  app.get("/api/project/files", async (req) => {
+    need(req);
+    const { q } = z
+      .object({ q: z.string().max(200).default("") })
+      .parse(req.query);
+    return searchProjectFiles(store.context, q);
+  });
   app.get("/api/editor-documents", async (req) => {
     need(req);
     return store.editors();
@@ -24,10 +31,16 @@ export function registerProjectRoutes(
     reply.code(201);
     return value;
   });
-  app.post("/api/editor-documents/import", async (req) => {
-    need(req);
-    return store.importEditors(req.body);
-  });
+  // One valid legacy SQL draft can contain 1M characters, or up to 6M bytes
+  // after JSON escaping. Keep this exception confined to the migration route.
+  app.post(
+    "/api/editor-documents/import",
+    { bodyLimit: 8 * 1024 * 1024 },
+    async (req) => {
+      need(req);
+      return store.importEditors(req.body);
+    },
+  );
   app.get("/api/editor-documents/:id", async (req) => {
     need(req);
     return store.editor(id(req));
@@ -112,38 +125,69 @@ export function registerProjectRoutes(
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
-    let closed = false;
-    const send = (event: ProjectEvent) => {
-      if (closed || event.id <= cursor) return;
-      cursor = event.id;
-      if (
-        !reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`)
-      )
-        cleanup();
+    let closed = false,
+      blocked = false,
+      flushing = false;
+    let drainTimeout: ReturnType<typeof setTimeout> | undefined;
+    const write = (frame: string) => {
+      // false means the frame was accepted, but subsequent writes must wait.
+      if (!reply.raw.write(frame)) {
+        blocked = true;
+        drainTimeout = setTimeout(cleanup, 60000);
+        drainTimeout.unref();
+      }
     };
-    const timer = setInterval(() => {
-      if (!closed) reply.raw.write(": heartbeat\n\n");
-    }, 15000);
-    timer.unref();
+    const flush = () => {
+      if (closed || blocked || flushing) return;
+      flushing = true;
+      try {
+        while (!closed && !blocked) {
+          // The durable log is the queue: retain no live payloads while blocked.
+          const batch = store.since(cursor, 64);
+          if (!batch.length) break;
+          for (const event of batch) {
+            if (closed || blocked) break;
+            cursor = event.id;
+            write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`);
+          }
+        }
+      } catch (error) {
+        req.log.error({ err: error }, "Unable to stream project events");
+        cleanup();
+      } finally {
+        flushing = false;
+      }
+    };
+    const drained = () => {
+      clearTimeout(drainTimeout);
+      drainTimeout = undefined;
+      blocked = false;
+      flush();
+    };
     const cleanup = () => {
       if (closed) return;
       closed = true;
       clearInterval(timer);
-      store.events.off("event", send);
+      clearTimeout(drainTimeout);
+      store.events.off("event", flush);
+      reply.raw.off("drain", drained);
+      reply.raw.off("close", cleanup);
       streams.delete(cleanup);
-      reply.raw.end();
+      // Ending a blocked response can wait forever for its non-reading peer.
+      reply.raw.destroy();
     };
+    const timer = setInterval(() => {
+      if (!closed && !blocked) write(": heartbeat\n\n");
+    }, 15000);
+    timer.unref();
     streams.add(cleanup);
+    reply.raw.on("drain", drained);
     reply.raw.on("close", cleanup);
-    store.events.on("event", send);
-    // Subscribe before replay. Ordered IDs deduplicate live/replayed delivery.
-    for (
-      let batch = store.since(cursor);
-      batch.length && !closed;
-      batch = store.since(cursor)
-    )
-      for (const event of batch) send(event);
-    if (!closed) reply.raw.write(": connected\n\n");
+    reply.raw.once("error", cleanup);
+    // Subscribe before replay; both live and historical delivery use the same cursor.
+    store.events.on("event", flush);
+    write(": connected\n\n");
+    flush();
   });
   app.addHook("preClose", async () => {
     for (const close of [...streams]) close();

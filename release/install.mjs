@@ -30,8 +30,20 @@ const bin = resolve(binArgument || join(homedir(), ".local", "bin"));
 const version = JSON.parse(
   await readFile(join(source, "package.json"), "utf8"),
 ).version;
-if (!/^\d+\.\d+\.\d+$/.test(version))
-  throw new Error("Invalid package version");
+function versionParts(value) {
+  if (
+    typeof value !== "string" ||
+    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)
+  )
+    throw new Error(
+      "Invalid installation version; inspect the version pointer before retrying.",
+    );
+  const parts = value.split(".").map(Number);
+  if (!parts.every(Number.isSafeInteger))
+    throw new Error("Invalid installation version.");
+  return parts;
+}
+const targetVersion = versionParts(version);
 const nodeAt = (dir) => join(dir, "runtime/bin/node");
 const cliAt = (dir) => join(dir, "dist/server/server/cli.js");
 function validate(dir) {
@@ -70,7 +82,27 @@ async function assertStoppedStorage(dataDir) {
 }
 let staging;
 try {
+  // Re-read under the same lock that protects activation. An update may have
+  // spent minutes downloading while a newer release became active.
+  const activeVersion = await readFile(
+    join(root, "current-version"),
+    "utf8",
+  ).then(
+    (value) => value.trim(),
+    (error) => (error.code === "ENOENT" ? undefined : Promise.reject(error)),
+  );
+  if (activeVersion !== undefined) {
+    const active = versionParts(activeVersion);
+    for (let index = 0; index < 3; index++) {
+      if (targetVersion[index] < active[index])
+        throw new Error(
+          `Refusing to downgrade Miracle ${activeVersion} to ${version}; running projects and the active installation are unchanged.`,
+        );
+      if (targetVersion[index] > active[index]) break;
+    }
+  }
   const dataDirectories = new Set([join(root, "data")]);
+  const legacyWorkspaces = new Map();
   // Authenticate every saved instance, including custom data directories. A PID is never a signal target.
   for (const name of await readdir(join(root, "run")).catch((error) =>
     error.code === "ENOENT" ? [] : Promise.reject(error),
@@ -86,6 +118,9 @@ try {
     )
       throw new Error("Invalid runtime state; inspect it before installation.");
     dataDirectories.add(state.dataDir);
+    // Old releases used one global workspace and browser drafts tied to its port.
+    // Keep the reopen address before removing stopped runtime registrations.
+    if (!state.projectRoot) legacyWorkspaces.set(state.dataDir, state.port);
     const control = async (action, allowShutdownDisconnect = false) => {
       try {
         const response = await fetch(
@@ -150,6 +185,14 @@ try {
     await rm(join(root, "run", name), { force: true });
   }
   for (const dataDir of dataDirectories) await assertStoppedStorage(dataDir);
+  if (
+    !legacyWorkspaces.has(join(root, "data")) &&
+    (await stat(join(root, "data", "miracle.sqlite")).then(
+      () => true,
+      (error) => (error.code === "ENOENT" ? false : Promise.reject(error)),
+    ))
+  )
+    legacyWorkspaces.set(join(root, "data"), 3001);
   const destination = join(root, "versions", version);
   if (
     await stat(destination).then(
@@ -171,17 +214,30 @@ try {
   }
   await mkdir(bin, { recursive: true, mode: 0o700 });
   const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
-  const launcher = `#!/bin/sh\nset -eu\nMIRACLE_INSTALL_ROOT=${quote(root)}\nexport MIRACLE_INSTALL_ROOT\nIFS= read -r miracle_version < "$MIRACLE_INSTALL_ROOT/current-version"\ncase "$miracle_version" in *[!0-9.]*|'') echo 'Invalid Miracle version pointer' >&2; exit 1;; esac\nexec "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/runtime/bin/node" "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/dist/server/server/cli.js" "$@"\n`;
+  const launcher = `#!/bin/sh\nset -eu\nMIRACLE_INSTALL_ROOT=${quote(root)}\nMIRACLE_BIN_DIR=${quote(bin)}\nexport MIRACLE_INSTALL_ROOT MIRACLE_BIN_DIR\nIFS= read -r miracle_version < "$MIRACLE_INSTALL_ROOT/current-version"\ncase "$miracle_version" in *[!0-9.]*|'') echo 'Invalid Miracle version pointer' >&2; exit 1;; esac\nexec "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/runtime/bin/node" "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/dist/server/server/cli.js" "$@"\n`;
   await writeFile(join(bin, ".miracle.tmp"), launcher, { mode: 0o755 });
   await chmod(join(bin, ".miracle.tmp"), 0o755);
   await rename(join(bin, ".miracle.tmp"), join(bin, "miracle"));
+
+  const installation = join(root, `.installation-${process.pid}.json`);
+  await writeFile(
+    installation,
+    JSON.stringify({ version: 1, binDir: bin }) + "\n",
+    { mode: 0o600 },
+  );
+  await rename(installation, join(root, "installation.json"));
 
   const pointer = join(root, `.current-version-${process.pid}`);
   await writeFile(pointer, version + "\n", { mode: 0o600 });
   await rename(pointer, join(root, "current-version"));
   console.log(
-    `Miracle ${version} installed.\nRun: ${join(bin, "miracle")}\nAdd ${bin} to PATH if it is not already present.\nProject data: .miracle in the current project directory`,
+    `Miracle ${version} installed.\nCommand: ${join(bin, "miracle")}\nAdd ${bin} to PATH if it is not already present.\nNew project data: .miracle in the current project directory`,
   );
+  for (const [dataDir, port] of legacyWorkspaces) {
+    console.log(
+      `\nExisting workspace preserved: ${dataDir}\nOpen it at its previous browser address to import SQL drafts:\n  ${quote(join(bin, "miracle"))} open --data-dir ${quote(dataDir)} --port ${port}\nIf you used a different port, use that original port instead. Keep the old directory until you verify the migration.`,
+    );
+  }
 } finally {
   if (staging) await rm(staging, { recursive: true, force: true });
   await rm(lock, { recursive: true, force: true });

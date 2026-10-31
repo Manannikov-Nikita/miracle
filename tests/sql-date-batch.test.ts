@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setImmediate as yieldIO } from "node:timers/promises";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { editorApi } from "./helpers/editor-api";
@@ -248,6 +249,17 @@ async function render(sql = source.sql) {
       }),
     ),
   );
+  // Native WebCrypto used by migration is independent of Vitest's fake clock.
+  // Yield real I/O and wait for the editor instead of assuming render() loaded it.
+  await vi.waitFor(async () => {
+    await act(async () => {
+      await yieldIO();
+    });
+    expect(
+      container.querySelector('[aria-label="Test SQL"]'),
+      container.textContent || "SQL editor not ready",
+    ).not.toBeNull();
+  });
 }
 function button(label: string) {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>

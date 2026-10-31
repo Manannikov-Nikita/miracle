@@ -38,7 +38,6 @@ export default function App() {
   const [savedToOpen, setSavedToOpen] = useState<QueryDocument | null>(null);
   const [incomingResult, setIncomingResult] = useState<ResultSet | null>(null);
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
-  const [mobileTab, setMobileTab] = useState<"sql" | "board">("sql");
   const [paneMode, setPaneMode] = useState<PaneMode>("split");
   const [toasts, setToasts] = useState<
     { id: number; message: string; tone: string }[]
@@ -67,9 +66,10 @@ export default function App() {
           localStorage.getItem(`miracle:view:${next}`) || "{}",
         );
         setPaneMode(
-          ["sql", "board"].includes(saved.paneMode) ? saved.paneMode : "split",
+          ["sql", "board", "none"].includes(saved.paneMode)
+            ? saved.paneMode
+            : "split",
         );
-        setMobileTab(saved.mobileTab === "board" ? "board" : "sql");
         setExplorer(
           saved.explorer === null ||
             ["sources", "queries", "history"].includes(saved.explorer)
@@ -78,7 +78,6 @@ export default function App() {
         );
       } catch {
         setPaneMode("split");
-        setMobileTab("sql");
         setExplorer("sources");
       }
     }
@@ -88,9 +87,9 @@ export default function App() {
     if (workspaceId)
       localStorage.setItem(
         `miracle:view:${workspaceId}`,
-        JSON.stringify({ paneMode, mobileTab, explorer }),
+        JSON.stringify({ paneMode, explorer }),
       );
-  }, [workspaceId, paneMode, mobileTab, explorer]);
+  }, [workspaceId, paneMode, explorer]);
   function savedLayout() {
     try {
       const saved = JSON.parse(
@@ -163,15 +162,10 @@ export default function App() {
   useEffect(() => {
     if (!workspaceId) return;
     const handle = requestAnimationFrame(() => {
-      if (narrow) {
-        group.current?.setLayout(
-          mobileTab === "sql" ? { sql: 100, board: 0 } : { sql: 0, board: 100 },
-        );
-      } else if (paneMode === "sql")
-        group.current?.setLayout({ sql: 100, board: 0 });
+      if (paneMode === "sql") group.current?.setLayout({ sql: 100, board: 0 });
       else if (paneMode === "board")
         group.current?.setLayout({ sql: 0, board: 100 });
-      else {
+      else if (paneMode === "split") {
         try {
           const stored = JSON.parse(
             localStorage.getItem(`miracle:workspace-layout:${workspaceId}`) ||
@@ -188,26 +182,28 @@ export default function App() {
       }
     });
     return () => cancelAnimationFrame(handle);
-  }, [narrow, mobileTab, paneMode, workspaceId]);
-  const showSql = () => {
-    if (narrow) setMobileTab("sql");
-    else if (paneMode === "board") setPaneMode("split");
-  };
-  const showBoard = () => {
-    if (narrow) setMobileTab("board");
-    else if (paneMode === "sql") setPaneMode("split");
-  };
+  }, [paneMode, workspaceId]);
+  function setPaneVisibility(pane: "sql" | "board", visible?: boolean) {
+    setPaneMode((mode) => {
+      const other = pane === "sql" ? "board" : "sql";
+      const show = visible ?? !(mode === "split" || mode === pane);
+      const otherVisible = mode === "split" || mode === other;
+      return show
+        ? otherVisible
+          ? "split"
+          : pane
+        : otherVisible
+          ? other
+          : "none";
+    });
+  }
+  const showSql = () => setPaneVisibility("sql", true);
+  const showBoard = () => setPaneVisibility("board", true);
   function resetLayout() {
     if (workspaceId)
       localStorage.removeItem(`miracle:workspace-layout:${workspaceId}`);
     setPaneMode("split");
-    group.current?.setLayout(
-      narrow
-        ? mobileTab === "sql"
-          ? { sql: 100, board: 0 }
-          : { sql: 0, board: 100 }
-        : { sql: 45, board: 55 },
-    );
+    group.current?.setLayout({ sql: 45, board: 55 });
     window.dispatchEvent(new Event("miracle:reset-layout"));
   }
   if (loading)
@@ -237,20 +233,14 @@ export default function App() {
         {workspaceError && <ErrorBox>{workspaceError}</ErrorBox>}
         <div className="workspace-body">
           <WorkspaceRail
-            narrow={narrow}
-            mode={narrow ? mobileTab : paneMode}
+            mode={paneMode}
             explorer={narrow && !explorerDrawer ? null : explorer}
             connectionCount={connections.length}
             onSelectMode={(mode) => {
               setPaneMode(mode);
-              if (mode !== "split") setMobileTab(mode);
               setExplorerDrawer(false);
             }}
-            onTogglePane={(pane) => {
-              if (narrow) setMobileTab(pane);
-              else setPaneMode((mode) => (mode === pane ? "split" : pane));
-              setExplorerDrawer(false);
-            }}
+            onTogglePane={setPaneVisibility}
             onToggleExplorer={(kind) => {
               if (narrow) {
                 setExplorerDrawer(explorer !== kind || !explorerDrawer);
@@ -290,86 +280,109 @@ export default function App() {
             />
           )}
           <main className="workbench">
-            <Group
-              orientation="horizontal"
-              groupRef={group}
-              className="main-split"
-              defaultLayout={savedLayout()}
-              disabled={narrow}
-              onLayoutChanged={(l) => {
-                if (workspaceId && !narrow && l.sql > 5 && l.board > 5)
-                  localStorage.setItem(
-                    `miracle:workspace-layout:${workspaceId}`,
-                    JSON.stringify(l),
-                  );
-              }}
+            {paneMode === "none" && (
+              <div className="workbench-empty" role="status">
+                <p>Области скрыты</p>
+                <span>Включите редактор SQL или доску кнопками слева.</span>
+              </div>
+            )}
+            <div
+              className="workbench-panes"
+              hidden={paneMode === "none"}
+              inert={paneMode === "none"}
             >
-              <Panel
-                id="sql"
-                defaultSize="45%"
-                minSize={narrow ? "0px" : "340px"}
-                collapsible
+              <Group
+                orientation="horizontal"
+                groupRef={group}
+                className="main-split"
+                defaultLayout={savedLayout()}
+                disabled={paneMode !== "split"}
+                onLayoutChanged={(
+                  layout,
+                  { isUserInteraction, requestedLayout },
+                ) => {
+                  if (!isUserInteraction) return;
+                  const l = requestedLayout ?? layout;
+                  if (workspaceId && l.sql > 5 && l.board > 5)
+                    localStorage.setItem(
+                      `miracle:workspace-layout:${workspaceId}`,
+                      JSON.stringify(l),
+                    );
+                  setPaneMode(
+                    layout.sql === 0
+                      ? "board"
+                      : layout.board === 0
+                        ? "sql"
+                        : "split",
+                  );
+                }}
               >
-                <div
-                  className="pane-host"
-                  inert={narrow ? mobileTab !== "sql" : paneMode === "board"}
+                <Panel
+                  id="sql"
+                  defaultSize="45%"
+                  minSize="340px"
+                  collapsible={paneMode !== "split"}
                 >
-                  <SqlWorkspace
-                    workspaceId={workspaceId}
-                    key={workspaceId}
-                    connections={connections}
-                    activeConnectionId={connectionId}
-                    onConnectionChange={setConnectionId}
-                    metadata={metadata}
-                    sourceToOpen={sourceToOpen}
-                    savedToOpen={savedToOpen}
-                    onSourceConsumed={() => setSourceToOpen(null)}
-                    onSavedConsumed={() => setSavedToOpen(null)}
-                    onQueriesChanged={() => setQueryRevision((r) => r + 1)}
-                    onResult={(r) => {
-                      setIncomingResult(r);
-                      showBoard();
-                    }}
-                    onNotify={notify}
-                    onOpenConnections={() => setConnectionsOpen(true)}
-                    onMaximize={() =>
-                      setPaneMode(paneMode === "sql" ? "split" : "sql")
-                    }
-                    onCollapse={() =>
-                      narrow ? setMobileTab("board") : setPaneMode("board")
-                    }
-                  />
-                </div>
-              </Panel>
-              <Separator
-                className="resize-separator vertical"
-                aria-label="Размер SQL и доски"
-                onDoubleClick={resetLayout}
-              />
-              <Panel
-                id="board"
-                defaultSize="55%"
-                minSize={narrow ? "0px" : "400px"}
-                collapsible
-              >
-                <div
-                  className="pane-host"
-                  inert={narrow ? mobileTab !== "board" : paneMode === "sql"}
+                  <div
+                    className="pane-host"
+                    inert={paneMode !== "split" && paneMode !== "sql"}
+                  >
+                    <SqlWorkspace
+                      workspaceId={workspaceId}
+                      key={workspaceId}
+                      connections={connections}
+                      activeConnectionId={connectionId}
+                      onConnectionChange={setConnectionId}
+                      metadata={metadata}
+                      sourceToOpen={sourceToOpen}
+                      savedToOpen={savedToOpen}
+                      onSourceConsumed={() => setSourceToOpen(null)}
+                      onSavedConsumed={() => setSavedToOpen(null)}
+                      onQueriesChanged={() => setQueryRevision((r) => r + 1)}
+                      onResult={(r) => {
+                        setIncomingResult(r);
+                        showBoard();
+                      }}
+                      onNotify={notify}
+                      onOpenConnections={() => setConnectionsOpen(true)}
+                      onMaximize={() =>
+                        setPaneMode(paneMode === "sql" ? "split" : "sql")
+                      }
+                      onCollapse={() => setPaneVisibility("sql", false)}
+                    />
+                  </div>
+                </Panel>
+                <Separator
+                  className="resize-separator vertical"
+                  aria-label="Размер SQL и доски"
+                  onDoubleClick={resetLayout}
+                  style={paneMode !== "split" ? { display: "none" } : undefined}
+                />
+                <Panel
+                  id="board"
+                  defaultSize="55%"
+                  minSize="400px"
+                  collapsible={paneMode !== "split"}
                 >
-                  <BoardWorkspace
-                    workspaceId={workspaceId}
-                    key={workspaceId}
-                    incomingResult={incomingResult}
-                    onIncomingConsumed={() => setIncomingResult(null)}
-                    onOpenSource={(source, name) => {
-                      setSourceToOpen({ source, name });
-                      showSql();
-                    }}
-                    onNotify={notify}
-                  />
-                </div>
-              </Panel>
-            </Group>
+                  <div
+                    className="pane-host"
+                    inert={paneMode !== "split" && paneMode !== "board"}
+                  >
+                    <BoardWorkspace
+                      workspaceId={workspaceId}
+                      key={workspaceId}
+                      incomingResult={incomingResult}
+                      onIncomingConsumed={() => setIncomingResult(null)}
+                      onOpenSource={(source, name) => {
+                        setSourceToOpen({ source, name });
+                        showSql();
+                      }}
+                      onNotify={notify}
+                    />
+                  </div>
+                </Panel>
+              </Group>
+            </div>
           </main>
         </div>
         <Connections

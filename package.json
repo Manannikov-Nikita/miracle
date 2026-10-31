@@ -1,6 +1,6 @@
 {
   "name": "miracle",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -69,7 +69,10 @@
     "vitest": "^4.1.12"
   },
   "overrides": {
-    "dompurify": "3.4.17"
+    "dompurify": "3.4.17",
+    "@fastify/static": {
+      "glob": "14.0.3"
+    }
   },
   "license": "Apache-2.0"
 }

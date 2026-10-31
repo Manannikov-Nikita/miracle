@@ -39,10 +39,65 @@ export function tabFields(tab: EditorTab) {
     queryRevision: tab.revision,
     resultSetId: tab.resultSetId,
     runId: tab.runId,
-    dateRange: tab.dateRange,
+    dateRange: tab.dateRange
+      ? {
+          startDate: tab.dateRange.startDate,
+          endDate: tab.dateRange.endDate,
+          granularity: tab.dateRange.granularity,
+          retries: tab.dateRange.retries,
+        }
+      : undefined,
   };
 }
 const fingerprint = (tab: EditorTab) => JSON.stringify(tabFields(tab));
+/** Rebase independent fields; two different edits of the same field require a choice. */
+function mergeRemote(
+  base: EditorDocument,
+  local: EditorTab,
+  remote: EditorDocument,
+): EditorTab | null {
+  const before = tabFields(documentToTab(base));
+  const mine = tabFields(local);
+  const theirs = tabFields(documentToTab(remote));
+  // SQL and its execution context are one edit: never retarget an agent's SQL
+  // to a connection/database that the user changed concurrently.
+  const source = ({
+    sql,
+    connectionId,
+    database,
+    catalog,
+    schema,
+    dateRange,
+  }: typeof mine) =>
+    JSON.stringify({ sql, connectionId, database, catalog, schema, dateRange });
+  if (
+    source(mine) !== source(before) &&
+    source(theirs) !== source(before) &&
+    source(mine) !== source(theirs)
+  )
+    return null;
+  const merged = { ...theirs };
+  for (const key of Object.keys(mine) as (keyof typeof mine)[]) {
+    const value = JSON.stringify(mine[key]);
+    if (value === JSON.stringify(before[key])) continue;
+    if (
+      JSON.stringify(theirs[key]) !== JSON.stringify(before[key]) &&
+      JSON.stringify(theirs[key]) !== value
+    )
+      return null;
+    Object.assign(merged, { [key]: mine[key] });
+  }
+  const { queryRevision, ...fields } = merged;
+  return {
+    ...documentToTab(remote),
+    ...fields,
+    revision: queryRevision,
+    cursor: local.cursor,
+    scrollTop: local.scrollTop,
+    externalSqlRevision:
+      merged.sql === local.sql ? local.externalSqlRevision : remote.revision,
+  };
+}
 type Request = <T>(path: string, options?: RequestInit) => Promise<T>;
 /** Owns server revisions independently from saved-query revisions and Monaco view state. */
 export class EditorSync {
@@ -96,29 +151,34 @@ export class EditorSync {
     )
       return;
     const local = this.tabs.find((t) => t.id === doc.id);
-    if (
-      local &&
-      this.dirty(local) &&
-      this.inFlight.get(doc.id) !== fingerprint(documentToTab(doc)) &&
-      this.retries.get(doc.id)?.fingerprint !== fingerprint(documentToTab(doc))
-    ) {
+    const replacement = documentToTab(doc);
+    const mark = fingerprint(replacement);
+    const acknowledged =
+      this.inFlight.get(doc.id) === mark ||
+      this.retries.get(doc.id)?.fingerprint === mark;
+    const next = !local
+      ? replacement
+      : acknowledged
+        ? { ...local, documentRevision: doc.revision }
+        : base
+          ? mergeRemote(base, local, doc)
+          : fingerprint(local) === mark
+            ? {
+                ...replacement,
+                cursor: local.cursor,
+                scrollTop: local.scrollTop,
+              }
+            : null;
+    if (!next) {
       this.conflicts.set(doc.id, doc);
       this.publish();
       return;
     }
     this.base.set(doc.id, doc);
-    const replacement = documentToTab(doc);
+    this.conflicts.delete(doc.id);
     this.tabs = local
-      ? this.tabs.map((t) =>
-          t.id === doc.id
-            ? (this.inFlight.get(doc.id) ||
-                this.retries.get(doc.id)?.fingerprint) ===
-              fingerprint(replacement)
-              ? { ...t, documentRevision: doc.revision }
-              : { ...replacement, cursor: t.cursor, scrollTop: t.scrollTop }
-            : t,
-        )
-      : [...this.tabs, replacement];
+      ? this.tabs.map((t) => (t.id === doc.id ? next : t))
+      : [...this.tabs, next];
     this.publish();
   }
   deleted(id: string) {
@@ -228,14 +288,23 @@ export class EditorSync {
         this.retries.delete(saved.id);
         this.publish();
       } catch (error) {
-        if ((error as { status?: number }).status === 409) {
+        const failure = error as { status?: number; code?: string };
+        if (
+          failure.status === 409 &&
+          (!failure.code || failure.code === "REVISION_CONFLICT")
+        ) {
           const docs = await this.request<EditorDocument[]>(
             "/api/editor-documents",
           );
-          this.conflicts.set(
-            snapshot.id,
-            docs.find((d) => d.id === snapshot.id) ?? null,
-          );
+          const remote = docs.find((d) => d.id === snapshot.id);
+          if (base && remote && remote.revision > base.revision) {
+            this.receive(remote);
+            if (!this.conflicts.has(snapshot.id)) {
+              this.retries.delete(snapshot.id);
+              continue;
+            }
+          }
+          this.conflicts.set(snapshot.id, remote ?? null);
           this.publish();
         }
         throw error;

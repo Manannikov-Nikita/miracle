@@ -29,6 +29,8 @@ export interface AgentTargetContext {
   editorDocumentId?: string;
   boardId?: string;
   selection?: string;
+  filePaths?: string[];
+  boardNodes?: { id: string; title: string }[];
 }
 export interface AgentTurn {
   id: string;

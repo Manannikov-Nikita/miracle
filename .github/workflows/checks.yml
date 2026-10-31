@@ -46,6 +46,24 @@ jobs:
       - name: Installed bundled-runtime lifecycle, backup and restore
         shell: bash
         run: node tests/local-install-smoke.mjs ".local/releases/miracle-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')-${{ matrix.target }}.tar.gz"
+      - name: Upgrade published 0.2.0 and 0.2.1 installations
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          for version in 0.2.0 0.2.1; do
+            directory=".local/legacy-upgrades/$version"
+            mkdir -p "$directory"
+            base="https://github.com/Manannikov-Nikita/miracle/releases/download/v$version"
+            asset="miracle-$version-$TARGET.tar.gz"
+            curl -fL --retry 3 "$base/$asset" -o "$directory/$asset"
+            curl -fL --retry 3 "$base/$asset.sha256" -o "$directory/$asset.sha256"
+            curl -fL --retry 3 "$base/install.sh" -o "$directory/install.sh"
+          done
+          version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')"
+          node tests/upgrade-smoke.mjs ".local/releases/miracle-$version-$TARGET.tar.gz" \
+            ".local/legacy-upgrades/0.2.0/miracle-0.2.0-$TARGET.tar.gz" \
+            ".local/legacy-upgrades/0.2.1/miracle-0.2.1-$TARGET.tar.gz"
       - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}

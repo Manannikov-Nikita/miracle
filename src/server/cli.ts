@@ -176,10 +176,19 @@ async function main() {
     return console.log(version);
   if (["--help", "help", "-h"].includes(command))
     return console.log(
-      `Miracle ${version}\nUsage: miracle [open|start|serve|stop|status|backup DIRECTORY|restore DIRECTORY]\n  --port N          Local port (default: choose a free port)\n  --project-dir PATH Project directory (default: current directory)\n  --data-dir PATH   Storage override (default: PROJECT/.miracle)\n  status --json     Machine-readable state\n  --version         Installed version\n`,
+      `Miracle ${version}\nUsage: miracle [open|start|serve|stop|status|backup DIRECTORY|restore DIRECTORY|update]\n  --port N          Local port (default: choose a free port)\n  --project-dir PATH Project directory (default: current directory)\n  --data-dir PATH   Storage override (default: PROJECT/.miracle)\n  status --json     Machine-readable state\n  update --check    Check for a newer stable release without changing data\n  update --to X.Y.Z Install a specific stable release (no downgrades)\n  --version         Installed version\n`,
     );
   if (process.platform === "win32")
     throw new Error("On Windows, run Miracle inside a WSL2 Linux terminal.");
+  if (command === "update") {
+    const { updateInstallation } = await import("./update.js");
+    return updateInstallation({
+      installRoot: installRoot(),
+      packageRoot: import.meta.url.endsWith(".ts") ? sourceRoot : packageRoot,
+      currentVersion: version,
+      args,
+    });
+  }
   if (
     !["open", "start", "serve", "stop", "status", "backup", "restore"].includes(
       command,

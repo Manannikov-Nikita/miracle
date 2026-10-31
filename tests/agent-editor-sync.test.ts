@@ -148,3 +148,102 @@ it("marks remote replacements separately from local keystrokes and save acknowle
   sync.receive(doc(3, "agent SQL"));
   expect(sync.tabs[0].externalSqlRevision).not.toBe(initialStamp);
 });
+
+describe("agent edits alongside independent local changes", () => {
+  it("applies agent SQL immediately while retaining a local document rename", async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValue({ ...doc(3, "select 42"), name: "My analysis.sql" });
+    const sync = new EditorSync([doc()], request, vi.fn());
+    sync.local([
+      {
+        ...sync.tabs[0],
+        name: "My analysis.sql",
+        cursor: { lineNumber: 1, column: 3 },
+      },
+    ]);
+    sync.receive(doc(2, "select 42"));
+    expect(sync.conflicts.size).toBe(0);
+    expect(sync.tabs[0]).toMatchObject({
+      sql: "select 42",
+      name: "My analysis.sql",
+      documentRevision: 2,
+      cursor: { lineNumber: 1, column: 3 },
+    });
+    await sync.flush();
+    expect(JSON.parse(request.mock.calls[0][1].body)).toMatchObject({
+      baseRevision: 2,
+      sql: "select 42",
+      name: "My analysis.sql",
+    });
+  });
+
+  it("does not treat reordered date-range fields as unsaved edits", () => {
+    const range = {
+      startDate: "2026-10-01",
+      endDate: "2026-10-02",
+      granularity: "day" as const,
+      retries: 0,
+    };
+    const sync = new EditorSync(
+      [{ ...doc(), dateRange: range }],
+      vi.fn(),
+      vi.fn(),
+    );
+    sync.local([
+      {
+        ...sync.tabs[0],
+        dateRange: {
+          retries: 0,
+          granularity: "day",
+          endDate: range.endDate,
+          startDate: range.startDate,
+        },
+      },
+    ]);
+    expect(sync.dirty(sync.tabs[0])).toBe(false);
+    sync.receive({ ...doc(2, "agent SQL"), dateRange: range });
+    expect(sync.conflicts.size).toBe(0);
+    expect(sync.tabs[0].sql).toBe("agent SQL");
+  });
+
+  it("rebases an independent local change when HTTP sees the agent revision before SSE", async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("revision conflict"), {
+          status: 409,
+          code: "REVISION_CONFLICT",
+        }),
+      )
+      .mockResolvedValueOnce([doc(2, "agent SQL")])
+      .mockResolvedValueOnce({
+        ...doc(3, "agent SQL"),
+        name: "Local name.sql",
+      });
+    const sync = new EditorSync([doc()], request, vi.fn());
+    sync.local([{ ...sync.tabs[0], name: "Local name.sql" }]);
+    await sync.flush();
+    expect(sync.conflicts.size).toBe(0);
+    expect(sync.tabs[0]).toMatchObject({
+      sql: "agent SQL",
+      name: "Local name.sql",
+      documentRevision: 3,
+    });
+    expect(JSON.parse(request.mock.calls[2][1].body)).toMatchObject({
+      baseRevision: 2,
+      sql: "agent SQL",
+    });
+  });
+});
+
+it("never silently combines agent SQL with a local change of its source context", () => {
+  const sync = new EditorSync([doc()], vi.fn(), vi.fn());
+  sync.local([{ ...sync.tabs[0], connectionId: "other-connection" }]);
+  sync.receive(doc(2, "SQL for original connection"));
+  expect(sync.conflicts.has("doc")).toBe(true);
+  expect(sync.tabs[0]).toMatchObject({
+    sql: "select 1",
+    connectionId: "other-connection",
+  });
+});

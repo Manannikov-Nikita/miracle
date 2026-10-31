@@ -17,11 +17,34 @@ export class ProjectSync {
   private surfaces = new Map<string, Surface>();
   private listeners = new Set<(event: ProjectEvent) => void>();
   private rehydrators = new Set<() => void>();
+  private contextListeners = new Set<(context: AgentTargetContext) => void>();
   register(name: string, surface: Surface) {
     this.surfaces.set(name, surface);
+    this.contextChanged();
     return () => {
-      if (this.surfaces.get(name) === surface) this.surfaces.delete(name);
+      if (this.surfaces.get(name) === surface) {
+        this.surfaces.delete(name);
+        this.contextChanged();
+      }
     };
+  }
+  context(): AgentTargetContext {
+    return structuredClone(
+      Object.assign(
+        {},
+        ...[...this.surfaces.values()].map((surface) => surface.context()),
+      ),
+    );
+  }
+  subscribeContext(fn: (context: AgentTargetContext) => void) {
+    this.contextListeners.add(fn);
+    return () => {
+      this.contextListeners.delete(fn);
+    };
+  }
+  contextChanged() {
+    const context = this.context();
+    for (const fn of this.contextListeners) fn(context);
   }
   subscribe(fn: (event: ProjectEvent) => void) {
     this.listeners.add(fn);
@@ -41,15 +64,16 @@ export class ProjectSync {
   rehydrate() {
     for (const fn of this.rehydrators) fn();
   }
-  async prepare(): Promise<AgentTargetContext> {
+  async prepare(
+    references: Partial<AgentTargetContext> = {},
+  ): Promise<AgentTargetContext> {
     // Capture focus before the first asynchronous save. A later focus change never retargets this message.
     const targets = [...this.surfaces.values()].map((surface) => ({
       surface,
       context: surface.context(),
     }));
-    const context = Object.assign(
-      {},
-      ...targets.map((t) => t.context),
+    const context = structuredClone(
+      Object.assign({}, ...targets.map((t) => t.context), references),
     ) as AgentTargetContext;
     await Promise.all(targets.map((t) => t.surface.flush()));
     return context;
@@ -58,6 +82,21 @@ export class ProjectSync {
 export const ProjectSyncContext = createContext<ProjectSync | null>(null);
 const Context = ProjectSyncContext;
 export const useProjectSync = () => useContext(Context);
+export function useProjectTargetContext() {
+  const project = useProjectSync();
+  const [context, setContext] = useState<AgentTargetContext>(
+    () => project?.context() || {},
+  );
+  useEffect(() => {
+    const update = (next: AgentTargetContext) =>
+      setContext((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    update(project?.context() || {});
+    return project?.subscribeContext(update);
+  }, [project]);
+  return context;
+}
 export function ProjectSyncProvider({
   workspaceId,
   children,

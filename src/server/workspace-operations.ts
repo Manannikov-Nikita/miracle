@@ -61,6 +61,9 @@ export class WorkspaceOperations {
         const key = id || randomUUID();
         if (id && baseRevision === undefined)
           throw problem(400, "Нужна версия запроса");
+        const previous = id
+          ? this.db.query("SELECT * FROM queries WHERE id=?1", [id]).rows[0]
+          : undefined;
         const row = id
           ? this.db.query(
               "UPDATE queries SET name=?2,source=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
@@ -78,9 +81,55 @@ export class WorkspaceOperations {
           );
         const value = queryDto(row);
         this.store.publish("queries.changed", key, value);
+        if (previous) this.syncQueryEditors(queryDto(previous), value);
         return value;
       },
     );
+  }
+  private syncQueryEditors(previous: QueryDocument, next: QueryDocument) {
+    const connection = this.db.query(
+      "SELECT database_name,catalog,schema_name FROM connections WHERE id=?1",
+      [previous.connectionId],
+    ).rows[0];
+    // Saving a query materializes inherited connection defaults. Compare the
+    // effective context so an otherwise clean editor still follows that query.
+    const sourceKey = (source: QuerySource) =>
+      JSON.stringify(
+        sourceSchema.parse({
+          ...source,
+          database: source.database ?? (connection?.database_name || undefined),
+          catalog: source.catalog ?? (connection?.catalog || undefined),
+          schema: source.schema ?? (connection?.schema_name || undefined),
+        }),
+      );
+    const before = sourceKey(previous);
+    const source = sourceSchema.parse(next);
+    for (const editor of this.store.editors()) {
+      if (
+        editor.queryId !== previous.id ||
+        editor.queryRevision !== previous.revision
+      )
+        continue;
+      const currentSource = sourceSchema.safeParse(editor);
+      if (
+        !currentSource.success ||
+        sourceKey(currentSource.data) !== before
+      )
+        continue;
+      // Linked clean documents follow their saved query atomically. Divergent
+      // drafts keep both their contents and the query revision they were based on.
+      this.store.updateEditor(editor.id, {
+        ...source,
+        database: source.database ?? null,
+        catalog: source.catalog ?? null,
+        schema: source.schema ?? null,
+        dateRange: source.dateRange ?? null,
+        name: editor.name === previous.name ? next.name : editor.name,
+        queryRevision: next.revision,
+        baseRevision: editor.revision,
+        mutationId: randomUUID(),
+      });
+    }
   }
   deleteQuery(id: string, input: unknown) {
     const b = z
