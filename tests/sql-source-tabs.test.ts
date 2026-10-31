@@ -1,21 +1,31 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setImmediate as yieldIO } from "node:timers/promises";
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import SqlWorkspace, {
   type SqlSourceRequest,
 } from "../src/client/components/SqlWorkspace";
+import { editorApi } from "./helpers/editor-api";
 import type { Connection, QuerySource } from "../src/shared/types";
 import { createMetadataStore } from "../src/client/metadata-store";
+import {
+  ProjectSync,
+  ProjectSyncContext,
+} from "../src/client/agents/ProjectSync";
 
 // Monaco requires a browser worker/layout engine. Keep the actual workspace and
 // its tab/context controls, replacing only the editor with an editable textarea.
 vi.mock("@monaco-editor/react", () => ({
   loader: { config() {} },
-  default: (p: { value: string; onChange: (value: string) => void }) =>
+  default: (p: {
+    value?: string;
+    defaultValue?: string;
+    onChange: (value: string) => void;
+  }) =>
     createElement("textarea", {
       "aria-label": "Test SQL editor",
-      value: p.value,
+      value: p.value ?? p.defaultValue ?? "",
       onChange: (event: { target: { value: string } }) =>
         p.onChange(event.target.value),
     }),
@@ -98,11 +108,10 @@ describe("chart source SQL tabs", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
-        async () =>
-          new Response("[]", {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
+        editorApi(
+          async () => new Response("[]", { status: 200 }),
+          () => props.workspaceId,
+        ),
       ),
     );
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -139,6 +148,20 @@ describe("chart source SQL tabs", () => {
   async function render(request?: SqlSourceRequest) {
     props = { ...props, sourceToOpen: request ?? null };
     await act(async () => root.render(createElement(SqlWorkspace, props)));
+    await readyEditor();
+  }
+  async function readyEditor() {
+    // Legacy migration hashes batches with native WebCrypto before loading the
+    // editor. Wait for the real rendered state, including in fake-timer tests.
+    await vi.waitFor(async () => {
+      await act(async () => {
+        await yieldIO();
+      });
+      expect(
+        editor(),
+        container.textContent || "SQL editor not ready",
+      ).not.toBeNull();
+    });
   }
   function tabs() {
     return [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
@@ -152,11 +175,145 @@ describe("chart source SQL tabs", () => {
       '[aria-label="Test SQL editor"]',
     )!;
   }
+  it("persists the editor draft before publishing its saved query", async () => {
+    let editorSqlAtQuerySave: string | undefined;
+    const backend = editorApi(
+      async (path, options) => {
+        if (path === "/api/queries" && options.method === "POST") {
+          const docs = await (await backend("/api/editor-documents")).json();
+          editorSqlAtQuerySave = docs.find(
+            (d: { id: string }) => d.id === "existing",
+          )?.sql;
+          return new Response(
+            JSON.stringify({
+              ...JSON.parse(options.body as string),
+              id: "saved",
+              revision: 1,
+            }),
+          );
+        }
+        return new Response("[]");
+      },
+      () => props.workspaceId,
+    );
+    vi.stubGlobal("fetch", vi.fn(backend));
+    seed("draft.sql");
+    await render();
+    await clickTab("draft.sql");
+    await editSql("select freshly_typed_sql");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    await act(async () =>
+      document
+        .querySelector('[role="dialog"] form')!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        ),
+    );
+    expect(editorSqlAtQuerySave).toBe("select freshly_typed_sql");
+    expect(props.onQueriesChanged).toHaveBeenCalledOnce();
+  });
+  it("saves the latest synchronized revision of the original tab after a pending flush", async () => {
+    const sync = new ProjectSync();
+    let releaseFlush!: () => void;
+    const pendingFlush = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    let savedQuery: { path: string; body: Record<string, unknown> } | undefined;
+    const backend = editorApi(
+      async (path, options) => {
+        if (path.startsWith("/api/queries/") && options.method === "PATCH") {
+          const body = JSON.parse(options.body as string);
+          savedQuery = { path, body };
+          return new Response(
+            JSON.stringify({ ...body, id: "saved-query", revision: 3 }),
+          );
+        }
+        return new Response("[]");
+      },
+      () => props.workspaceId,
+    );
+    let holdFlush = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        const response = await backend(path, options);
+        if (
+          holdFlush &&
+          path === "/api/editor-documents/existing" &&
+          options.method === "PATCH"
+        ) {
+          holdFlush = false;
+          const saved = await response.clone().json();
+          sync.emit({ id: 1, type: "editor.updated", data: saved });
+          const changed = await backend(path, {
+            method: "PATCH",
+            body: JSON.stringify({
+              baseRevision: saved.revision,
+              sql: "select agent_update",
+              queryRevision: 2,
+            }),
+          });
+          sync.emit({
+            id: 2,
+            type: "editor.updated",
+            data: await changed.json(),
+          });
+          await pendingFlush;
+        }
+        return response;
+      }),
+    );
+    seed("draft.sql", { queryId: "saved-query", revision: 1 });
+    await act(async () =>
+      root.render(
+        createElement(
+          ProjectSyncContext.Provider,
+          { value: sync },
+          createElement(SqlWorkspace, props),
+        ),
+      ),
+    );
+    await clickTab("draft.sql");
+    await editSql("select local_edit");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    holdFlush = true;
+    await act(async () =>
+      document
+        .querySelector('[role="dialog"] form')!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        ),
+    );
+    expect(editor().value).toBe("select agent_update");
+    expect(savedQuery).toBeUndefined();
+    await clickTab("other.sql");
+    await act(async () => releaseFlush());
+    expect(savedQuery).toMatchObject({
+      path: "/api/queries/saved-query",
+      body: { sql: "select agent_update", baseRevision: 2 },
+    });
+    expect(activeTab()).toBe("other.sql");
+    expect(editor().value).toBe("select 2");
+    expect(props.onQueriesChanged).toHaveBeenCalledOnce();
+  });
   function context(label: string) {
     return container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)
       ?.value;
   }
   async function clickTab(name: string) {
+    await readyEditor();
     const tab = tabs().find((tab) => tab.textContent === name);
     expect(tab, `tab ${name}`).toBeDefined();
     await act(async () => tab!.click());
@@ -170,7 +327,7 @@ describe("chart source SQL tabs", () => {
       editor().dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
-  function seed(name: string) {
+  function seed(name: string, saved?: { queryId: string; revision: number }) {
     localStorage.setItem(
       storage,
       JSON.stringify([
@@ -180,6 +337,7 @@ describe("chart source SQL tabs", () => {
           sql: "select unsaved_draft",
           connectionId: "clickhouse",
           database: "private_draft",
+          ...saved,
         },
         {
           id: "other",
@@ -205,7 +363,13 @@ describe("chart source SQL tabs", () => {
     expect(connect).toBeDefined();
     await act(async () => connect!.click());
     expect(props.onOpenConnections).toHaveBeenCalledOnce();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.every(([path]) =>
+          String(path).startsWith("/api/editor-documents"),
+        ),
+    ).toBe(true);
     const add = container.querySelector<HTMLButtonElement>(
       '[aria-label="Новый SQL-файл"]',
     );
@@ -231,9 +395,9 @@ describe("chart source SQL tabs", () => {
     await render();
     expect(editor().value).toBe("");
     expect(tabs()).toHaveLength(1);
-    expect(localStorage.getItem(storage)).toContain(
-      "select preserved_local_edit",
-    );
+    expect(
+      localStorage.getItem("miracle:sql-recovery:source-tab-test"),
+    ).toContain("select preserved_local_edit");
   });
 
   it("opens the literal chart title and its pinned SQL and query context", async () => {
@@ -316,5 +480,38 @@ describe("chart source SQL tabs", () => {
     expect(tabs()).toHaveLength(2);
     expect(editor().value).toBe("select unsaved_draft");
     expect(props.onSavedConsumed).toHaveBeenCalledOnce();
+  });
+  it("preserves recovered connection and context edits when a newer server document has identical SQL", async () => {
+    const document = {
+      id: "context-recovery",
+      name: "server.sql",
+      sql: "select 1",
+      connectionId: "trino",
+      catalog: "server",
+      schema: "public",
+      revision: 7,
+      updatedAt: "now",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify([document])),
+    );
+    localStorage.setItem(`${storage}:imported`, "1");
+    localStorage.setItem(
+      "miracle:sql-recovery:source-tab-test",
+      JSON.stringify([
+        {
+          id: document.id,
+          name: "my-name.sql",
+          sql: "select 1",
+          connectionId: "clickhouse",
+          database: "my-draft-database",
+          documentRevision: 5,
+        },
+      ]),
+    );
+    await render();
+    expect(activeTab()).toBe("my-name.sql");
+    expect(context("База запроса")).toBe("my-draft-database");
+    expect(container.textContent).toContain("Ваш черновик сохранён");
   });
 });

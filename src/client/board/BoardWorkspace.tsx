@@ -26,6 +26,7 @@ import type {
   ResultSet,
 } from "../../shared/types";
 import { api, waitForRun } from "../api";
+import { useProjectSync } from "../agents/ProjectSync";
 import { Select } from "../components/Select";
 import ArtifactNode, {
   BoardActions,
@@ -86,6 +87,28 @@ function Workspace({
     new Set(),
   );
   const selectionRef = useRef<ReadonlySet<string>>(selectedIds);
+  const projectSync = useProjectSync();
+  useEffect(
+    () =>
+      projectSync?.register("board-selection", {
+        context: () => {
+          const current = store.current.current;
+          return {
+            boardId: current?.id,
+            boardNodes:
+              current?.document.nodes
+                .filter((node) => selectionRef.current.has(node.id))
+                .map((node) => ({ id: node.id, title: node.data.title })) || [],
+          };
+        },
+        // useBoard registers the board's pending writes separately.
+        flush: async () => {},
+      }),
+    [projectSync, store.current],
+  );
+  useEffect(() => {
+    projectSync?.contextChanged();
+  }, [projectSync, selectedIds, board?.id, board?.document.nodes]);
   const selectNodes = (ids: ReadonlySet<string>) => {
     selectionRef.current = ids;
     setSelectedIds(ids);

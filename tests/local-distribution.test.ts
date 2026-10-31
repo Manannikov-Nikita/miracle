@@ -214,3 +214,215 @@ it.each(["timeout", "unauthorized", "malformed"] as const)(
     }
   },
 );
+it("authenticates and gracefully stops every registered project before activation, including moved storage", async () => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const f = fixture();
+  mkdirSync(join(f.install, "run"), { recursive: true });
+  const stops: string[] = [];
+  const servers = [];
+  for (const name of ["first", "second"]) {
+    const token = (name === "first" ? "a" : "b").repeat(64);
+    const server = createServer(async (req, res) => {
+      let body = "";
+      for await (const c of req) body += c;
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      const action = JSON.parse(body).action;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("connection", "close");
+      res.end(JSON.stringify({ ok: true }), () => {
+        if (action === "stop") {
+          stops.push(name);
+          server.close();
+        }
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    writeFileSync(
+      join(f.install, "run", name + ".json"),
+      JSON.stringify({
+        token,
+        port: (server.address() as { port: number }).port,
+        pid: process.pid,
+        dataDir: join(f.root, name, "moved storage"),
+        projectRoot: join(f.root, name),
+        version: "0.1.0",
+      }),
+    );
+  }
+  try {
+    const result = await new Promise<{ code: number | null; out: string }>(
+      (done, reject) => {
+        const child = spawn(process.execPath, [
+          resolve("release/install.mjs"),
+          f.payload,
+          f.install,
+          f.bin,
+        ]);
+        let out = "";
+        child.stdout.on("data", (c) => (out += c));
+        child.stderr.on("data", (c) => (out += c));
+        child.on("error", reject);
+        child.on("close", (code) => done({ code, out }));
+      },
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(stops.sort()).toEqual(["first", "second"]);
+    expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
+      "0.2.0\n",
+    );
+    expect(existsSync(join(f.root, "first", "moved storage"))).toBe(false);
+    expect(existsSync(join(f.install, "run", "first.json"))).toBe(false);
+  } finally {
+    for (const server of servers) {
+      server.closeAllConnections();
+      if (server.listening)
+        await new Promise<void>((r) => server.close(() => r()));
+    }
+  }
+}, 10000);
+it("waits for the authenticated project's SQLite ownership to drain before activation", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const f = fixture();
+  const dataDir = join(f.root, "project storage");
+  mkdirSync(dataDir);
+  mkdirSync(join(f.install, "run"), { recursive: true });
+  const db = new DatabaseSync(join(dataDir, "miracle.sqlite"));
+  db.exec(
+    "PRAGMA journal_mode=WAL; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; CREATE TABLE marker(value); COMMIT",
+  );
+  writeFileSync(
+    join(f.payload, "dist/server/server/maintenance.js"),
+    `export { assertWorkspaceStopped } from ${JSON.stringify(pathToFileURL(resolve("src/server/maintenance.ts")).href)};`,
+  );
+  let released = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    res.setHeader("connection", "close");
+    res.end(JSON.stringify({ ok: true }), () => {
+      if (JSON.parse(body).action === "stop") {
+        server.close();
+        timer = setTimeout(() => {
+          db.close();
+          released = true;
+        }, 900);
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  writeFileSync(
+    join(f.install, "run", "project.json"),
+    JSON.stringify({
+      token: "a".repeat(64),
+      port: (server.address() as { port: number }).port,
+      pid: process.pid,
+      dataDir,
+      version: "0.1.0",
+    }),
+  );
+  try {
+    const result = await new Promise<{ code: number | null; out: string }>(
+      (done, reject) => {
+        const child = spawn(process.execPath, [
+          "--import",
+          pathToFileURL(resolve("node_modules/tsx/dist/loader.mjs")).href,
+          resolve("release/install.mjs"),
+          f.payload,
+          f.install,
+          f.bin,
+        ]);
+        let out = "";
+        child.stdout.on("data", (c) => (out += c));
+        child.stderr.on("data", (c) => (out += c));
+        child.on("error", reject);
+        child.on("close", (code) => done({ code, out }));
+      },
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(released).toBe(true);
+    expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
+      "0.2.0\n",
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (!released) db.close();
+    server.closeAllConnections();
+    if (server.listening)
+      await new Promise<void>((r) => server.close(() => r()));
+  }
+}, 10000);
+it("rechecks a reset connection after authenticated shutdown before declaring the project stopped", async () => {
+  const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const f = fixture();
+  mkdirSync(join(f.install, "run"), { recursive: true });
+  let stopping = false,
+    reset = false;
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.headers.authorization !== `Bearer ${"a".repeat(64)}`) {
+      res.writeHead(401).end();
+      return;
+    }
+    const action = JSON.parse(body).action;
+    if (action === "status" && stopping && !reset) {
+      reset = true;
+      req.socket.destroy();
+      return;
+    }
+    if (action === "status" && stopping && reset) {
+      res.end(JSON.stringify({ ok: true }), () => server.close());
+      return;
+    }
+    res.end(JSON.stringify({ ok: true }), () => {
+      if (action === "stop") stopping = true;
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  writeFileSync(
+    join(f.install, "run", "project.json"),
+    JSON.stringify({
+      token: "a".repeat(64),
+      port: (server.address() as { port: number }).port,
+      pid: process.pid,
+      dataDir: join(f.root, "missing project"),
+      version: "0.1.0",
+    }),
+  );
+  try {
+    const result = await new Promise<{ code: number | null; out: string }>(
+      (done, reject) => {
+        const child = spawn(process.execPath, [
+          resolve("release/install.mjs"),
+          f.payload,
+          f.install,
+          f.bin,
+        ]);
+        let out = "";
+        child.stdout.on("data", (c) => (out += c));
+        child.stderr.on("data", (c) => (out += c));
+        child.on("error", reject);
+        child.on("close", (code) => done({ code, out }));
+      },
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(reset).toBe(true);
+    expect(server.listening).toBe(false);
+    expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
+      "0.2.0\n",
+    );
+  } finally {
+    server.closeAllConnections();
+    if (server.listening)
+      await new Promise<void>((r) => server.close(() => r()));
+  }
+}, 10000);

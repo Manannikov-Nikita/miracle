@@ -1,13 +1,9 @@
-import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
-export function resolveDataDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.MIRACLE_DATA_DIR) return resolve(env.MIRACLE_DATA_DIR);
-  const home = env.HOME || homedir();
-  const root =
-    platform() === "darwin"
-      ? join(home, "Library", "Application Support", "Miracle")
-      : join(env.XDG_DATA_HOME || join(home, ".local", "share"), "miracle");
-  return join(root, "data");
+export function resolveDataDir(
+  env: NodeJS.ProcessEnv = process.env,
+  projectRoot = process.cwd(),
+): string {
+  return resolve(env.MIRACLE_DATA_DIR || join(projectRoot, ".miracle"));
 }
 export function resolvePort(env: NodeJS.ProcessEnv = process.env): number {
   const value = env.PORT || "3001";

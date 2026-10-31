@@ -3,6 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { resolve, join } from "node:path";
 import {
   mkdtempSync,
+  realpathSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -32,11 +33,14 @@ afterEach(async () => {
   for (const f of cleanup.splice(0)) await f();
 });
 it("authenticates lifecycle, keeps private state, preserves data on restart, and refuses occupied ports", async () => {
-  const root = mkdtempSync(join(tmpdir(), "miracle CLI Проверка "));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "miracle CLI Проверка ")),
+  );
   // WSL needs only the bundled runtime, not Linux GUI tools or PowerShell.
   const env = {
     ...process.env,
     MIRACLE_INSTALL_ROOT: root,
+    MIRACLE_DATA_DIR: join(root, "data"),
     WSL_DISTRO_NAME: "Ubuntu",
     PATH: "",
   };
@@ -109,14 +113,23 @@ it("authenticates lifecycle, keeps private state, preserves data on restart, and
 }, 60000);
 it("refuses startup while an installer holds the activation lock", async () => {
   const { mkdirSync } = await import("node:fs");
-  const root = mkdtempSync(join(tmpdir(), "miracle install lock "));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "miracle install lock ")),
+  );
   mkdirSync(join(root, ".install-lock"));
   const run = (args: string[]) =>
     new Promise<string>((res, rej) => {
       const child = spawn(
         process.execPath,
         ["--import", loader, source, ...args],
-        { env: { ...process.env, MIRACLE_INSTALL_ROOT: root }, cwd: tmpdir() },
+        {
+          env: {
+            ...process.env,
+            MIRACLE_INSTALL_ROOT: root,
+            MIRACLE_DATA_DIR: join(root, "data"),
+          },
+          cwd: tmpdir(),
+        },
       );
       let out = "";
       child.stdout.on("data", (c) => (out += c));
@@ -138,8 +151,8 @@ it.each(["delayed-stop", "unauthorized", "malformed"] as const)(
     const { createServer: createHttpServer } = await import("node:http");
     const { createHash } = await import("node:crypto");
     const { mkdirSync } = await import("node:fs");
-    const root = mkdtempSync(
-      join(tmpdir(), "miracle uncertain control Проверка "),
+    const root = realpathSync(
+      mkdtempSync(join(tmpdir(), "miracle uncertain control Проверка ")),
     );
     const dataDir = join(root, "data");
     mkdirSync(join(root, "run"));
@@ -186,7 +199,11 @@ it.each(["delayed-stop", "unauthorized", "malformed"] as const)(
             process.execPath,
             ["--import", loader, source, ...args],
             {
-              env: { ...process.env, MIRACLE_INSTALL_ROOT: root },
+              env: {
+                ...process.env,
+                MIRACLE_INSTALL_ROOT: root,
+                MIRACLE_DATA_DIR: join(root, "data"),
+              },
               cwd: tmpdir(),
             },
           );
@@ -223,7 +240,9 @@ it("reports stopped only after the HTTP listener and SQLite lifetime lock both c
   const { createServer: createHttpServer } = await import("node:http");
   const { createHash } = await import("node:crypto");
   const { mkdirSync, existsSync } = await import("node:fs");
-  const root = mkdtempSync(join(tmpdir(), "miracle draining lock Проверка "));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "miracle draining lock Проверка ")),
+  );
   const dataDir = join(root, "data");
   mkdirSync(dataDir);
   mkdirSync(join(root, "run"));
@@ -272,7 +291,11 @@ it("reports stopped only after the HTTP listener and SQLite lifetime lock both c
           process.execPath,
           ["--import", loader, source, "stop"],
           {
-            env: { ...process.env, MIRACLE_INSTALL_ROOT: root },
+            env: {
+              ...process.env,
+              MIRACLE_INSTALL_ROOT: root,
+              MIRACLE_DATA_DIR: join(root, "data"),
+            },
             cwd: tmpdir(),
           },
         );

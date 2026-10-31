@@ -40,6 +40,18 @@ import type {
   SqlFunctionCatalog,
 } from "../../shared/types";
 import { api, ApiRequestError, json } from "../api";
+import type { EditorDocument } from "../../shared/agents";
+import {
+  documentToTab,
+  tabFields,
+  type EditorTab,
+} from "../agents/editor-sync";
+import {
+  loadEditorDocuments,
+  recoveryKey,
+  useEditorSync,
+} from "../agents/useEditorSync";
+import { useProjectSync } from "../agents/ProjectSync";
 import { hasDatePlaceholder } from "../../shared/date-batch";
 import DateBatchDialog from "./DateBatchDialog";
 import DateBatchProgress from "./DateBatchProgress";
@@ -97,22 +109,7 @@ monaco.editor.defineTheme("miracle-dark", {
     "editorIndentGuide.background1": "#292f39",
   },
 });
-interface Tab {
-  id: string;
-  name: string;
-  sql: string;
-  connectionId: string;
-  database?: string;
-  catalog?: string;
-  schema?: string;
-  queryId?: string;
-  revision?: number;
-  resultSetId?: string;
-  runId?: string;
-  dateRange?: DateRangeOptions;
-  cursor?: { lineNumber: number; column: number };
-  scrollTop?: number;
-}
+type Tab = EditorTab;
 export interface SqlSourceRequest {
   source: QuerySource;
   name?: string;
@@ -143,10 +140,52 @@ function loadTabs(key: string): Tab[] {
   }
 }
 export default function SqlWorkspace(p: Props) {
+  const [documents, setDocuments] = useState<EditorDocument[] | null>(null);
+  const [error, setError] = useState("");
+  const load = () => {
+    setError("");
+    void loadEditorDocuments(p.workspaceId)
+      .then(setDocuments)
+      .catch((e) => setError(e.message));
+  };
+  useEffect(load, [p.workspaceId]);
+  if (!documents)
+    return (
+      <section className="sql-workspace" aria-label="SQL-редактор">
+        {error ? (
+          <>
+            <ErrorBox>{error}</ErrorBox>
+            <button className="button" onClick={load}>
+              Повторить загрузку SQL
+            </button>
+          </>
+        ) : (
+          <span role="status">
+            <Spinner /> Загружаем SQL-документы…
+          </span>
+        )}
+      </section>
+    );
+  return <LoadedSqlWorkspace {...p} documents={documents} />;
+}
+function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const storage = `miracle:sql-tabs:${p.workspaceId}`;
-  const [tabs, setTabs] = useState<Tab[]>(() =>
-    loadTabs(storage).length
-      ? loadTabs(storage)
+  const [tabs, setTabs] = useState<Tab[]>(() => {
+    let initial = p.documents.map(documentToTab);
+    const recovery = loadTabs(recoveryKey(p.workspaceId));
+    // A stale recovery is retained as a conflicting draft, never silently rebased.
+    for (const tab of recovery) {
+      const remote = initial.find((d) => d.id === tab.id);
+      if (
+        !remote ||
+        (tab.documentRevision ?? 0) >= (remote.documentRevision ?? 0) ||
+        JSON.stringify(tabFields(tab)) !== JSON.stringify(tabFields(remote))
+      ) {
+        initial = [...initial.filter((d) => d.id !== tab.id), tab];
+      }
+    }
+    return initial.length
+      ? initial
       : [
           {
             id: crypto.randomUUID(),
@@ -154,8 +193,16 @@ export default function SqlWorkspace(p: Props) {
             sql: "",
             connectionId: p.activeConnectionId,
           },
-        ],
+        ];
+  });
+  const documentSync = useEditorSync(
+    p.workspaceId,
+    p.documents,
+    tabs,
+    setTabs,
+    p.onNotify,
   );
+  const projectSync = useProjectSync();
   const [activeId, setActiveId] = useState(
     () => localStorage.getItem(`${storage}:active`) || "",
   );
@@ -201,6 +248,54 @@ export default function SqlWorkspace(p: Props) {
   );
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  useEffect(() => {
+    const editor = editorRef.current,
+      model = editor?.getModel();
+    if (
+      !editor ||
+      !model ||
+      model.uri.toString() !==
+        `miracle-query://${p.workspaceId}/${active.id}.sql` ||
+      model.getValue() === active.sql
+    )
+      return;
+    const before = model.getValue(),
+      after = active.sql;
+    let from = 0,
+      oldEnd = before.length,
+      newEnd = after.length;
+    while (from < oldEnd && from < newEnd && before[from] === after[from])
+      from++;
+    while (
+      oldEnd > from &&
+      newEnd > from &&
+      before[oldEnd - 1] === after[newEnd - 1]
+    ) {
+      oldEnd--;
+      newEnd--;
+    }
+    const start = model.getPositionAt(from),
+      end = model.getPositionAt(oldEnd);
+    const selection = editor.getSelection(),
+      scroll = editor.getScrollTop();
+    editor.pushUndoStop();
+    editor.executeEdits("project-agent", [
+      {
+        range: new monaco.Range(
+          start.lineNumber,
+          start.column,
+          end.lineNumber,
+          end.column,
+        ),
+        text: after.slice(from, newEnd),
+      },
+    ]);
+    editor.pushUndoStop();
+    if (selection) editor.setSelection(selection);
+    editor.setScrollTop(scroll);
+    // Local keystroke renders and save acknowledgments may trail Monaco's latest
+    // input. Only an explicit remote replacement may execute a programmatic edit.
+  }, [active.id, active.externalSqlRevision, p.workspaceId]);
   const completionMetadata = useMemo(
     () => createSqlMetadataLoader(p.metadata),
     [p.metadata],
@@ -242,12 +337,21 @@ export default function SqlWorkspace(p: Props) {
     [],
   );
   useEffect(() => {
-    const timer = setTimeout(
-      () => localStorage.setItem(storage, JSON.stringify(tabs)),
-      250,
-    );
-    return () => clearTimeout(timer);
-  }, [tabs, storage]);
+    if (!projectSync) return;
+    return projectSync.register("editor", {
+      context: () => {
+        const editor = editorRef.current,
+          selection = editor?.getSelection();
+        return {
+          editorDocumentId: activeRef.current.id,
+          selection: selection
+            ? editor?.getModel()?.getValueInRange(selection) || undefined
+            : undefined,
+        };
+      },
+      flush: documentSync.flush,
+    });
+  }, [projectSync, documentSync.flush]);
   useEffect(() => {
     localStorage.setItem(`${storage}:active`, active.id);
   }, [active.id, storage]);
@@ -351,6 +455,9 @@ export default function SqlWorkspace(p: Props) {
         pollers.current.delete(tabId);
     }
   }
+  const trackingKey = tabs
+    .map((t) => `${t.id}:${t.resultSetId || ""}:${t.runId || ""}`)
+    .join("|");
   useEffect(() => {
     mounted.current = true;
     for (const t of tabs) {
@@ -370,7 +477,7 @@ export default function SqlWorkspace(p: Props) {
       mounted.current = false;
       for (const c of pollers.current.values()) c.abort();
     };
-  }, []);
+  }, [trackingKey]);
   function open(source: QuerySource, document?: QueryDocument, name?: string) {
     const tabName = document?.name || name || "source.sql";
     const existing = tabsRef.current.find((t) =>
@@ -783,7 +890,14 @@ export default function SqlWorkspace(p: Props) {
     setSaving(true);
     setSaveError("");
     try {
-      const t = activeRef.current;
+      const targetId = activeRef.current.id;
+      // Publish the local draft first: a saved-query update must not echo an
+      // older server editor over keystrokes made during this explicit save.
+      await documentSync.flush();
+      // Acknowledgements or agent edits may arrive while flushing. Keep the
+      // original target even if focus changed, but save its latest revision.
+      const t = documentSync.sync.tabs.find((tab) => tab.id === targetId);
+      if (!t) throw new Error("SQL-файл был закрыт до сохранения");
       const c = p.connections.find(
         (c) => c.id === (t.connectionId || p.activeConnectionId),
       );
@@ -836,7 +950,9 @@ export default function SqlWorkspace(p: Props) {
       return;
     }
     pollers.current.get(id)?.abort();
-    setTabs((ts) => ts.filter((t) => t.id !== id));
+    void documentSync.sync
+      .remove(id)
+      .catch((e) => p.onNotify(e.message, "error"));
   }
   let layout: Record<string, number> | undefined;
   try {
@@ -856,6 +972,36 @@ export default function SqlWorkspace(p: Props) {
       onKeyDown={(event) => event.stopPropagation()}
       onKeyUp={(event) => event.stopPropagation()}
     >
+      {documentSync.error && (
+        <div className="query-error">
+          <ErrorBox>{documentSync.error}</ErrorBox>
+          <button
+            className="text-button"
+            onClick={() => void documentSync.flush().catch(() => {})}
+          >
+            Повторить сохранение
+          </button>
+        </div>
+      )}
+      {[...documentSync.sync.conflicts.keys()].map((id) => (
+        <div className="query-error" key={id} role="alert">
+          <span>
+            SQL изменён в другом окне или агентом. Ваш черновик сохранён.
+          </span>
+          <button
+            className="text-button"
+            onClick={() => documentSync.sync.keepAsCopy(id)}
+          >
+            Сохранить мой черновик копией
+          </button>
+          <button
+            className="text-button"
+            onClick={() => documentSync.sync.useServer(id)}
+          >
+            Загрузить серверную версию
+          </button>
+        </div>
+      ))}
       <div className="pane-heading">
         <span>
           <Code size={16} />
@@ -1047,7 +1193,7 @@ export default function SqlWorkspace(p: Props) {
           <div className="editor-area">
             <Editor
               path={`miracle-query://${p.workspaceId}/${active.id}.sql`}
-              value={active.sql}
+              defaultValue={active.sql}
               onChange={(value) => patch(active.id, { sql: value || "" })}
               language={sqlLanguageForEngine(connection?.engine)}
               theme="miracle-dark"

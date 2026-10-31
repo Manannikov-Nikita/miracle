@@ -1,11 +1,7 @@
-import {
-  Agent,
-  fetch as fetchWithDispatcher,
-  type Response as UndiciResponse,
-} from "undici";
+import { createHttpTransport, type HttpResponse } from "./http-transport.js";
 import type { EngineConnection } from "./connectors.js";
 
-export type TrinoResponse = Response | UndiciResponse;
+export type TrinoResponse = HttpResponse;
 interface TrinoRequestOptions {
   method?: string;
   headers: Record<string, string>;
@@ -64,28 +60,21 @@ export function trinoConnectionError(
 /** A dispatcher belongs to one operation; CA trust never crosses connections. */
 export function createTrinoTransport(c: EngineConnection) {
   const ca = c.trino?.tls?.caCert;
-  const dispatcher = ca
-    ? new Agent({
-        connect: { ca, rejectUnauthorized: true },
-        connections: 1,
-        allowH2: false,
-      })
-    : undefined;
+  const transport = createHttpTransport(
+    ca
+      ? {
+          connect: { ca, rejectUnauthorized: true },
+          connections: 1,
+        }
+      : {},
+  );
   return {
     async request(
       url: string,
       options: TrinoRequestOptions,
     ): Promise<TrinoResponse> {
       try {
-        // Match the dispatch protocol to the installed Agent version. Node's
-        // built-in fetch can bundle a different major version of undici.
-        if (dispatcher)
-          return await fetchWithDispatcher(url, {
-            ...options,
-            dispatcher,
-            redirect: "error",
-          });
-        return await fetch(url, {
+        return await transport.request(url, {
           ...options,
           redirect: "error",
         });
@@ -95,7 +84,7 @@ export function createTrinoTransport(c: EngineConnection) {
     },
     async close() {
       // An aborted or partially read response must not keep pooled sockets alive.
-      await dispatcher?.destroy();
+      await transport.close();
     },
   };
 }

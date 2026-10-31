@@ -1,18 +1,29 @@
 // Runs the native release using only its bundled runtime, from unrelated Unicode paths.
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, readdir } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  readdir,
+  realpath,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join, dirname } from "node:path";
-import { createServer } from "node:net";
 import { createServer as createHttpsServer } from "node:https";
+import { createNativeFetch } from "./helpers/native-fetch.mjs";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
   throw Error("Usage: node tests/local-install-smoke.mjs archive.tar.gz");
-const root = await mkdtemp(join(tmpdir(), "miracle native Проверка "));
+const root = await realpath(
+  await mkdtemp(join(tmpdir(), "miracle native Проверка ")),
+);
 const install = join(root, "installed code"),
   bin = join(root, "bin"),
-  data = join(install, "data");
+  data = join(root, ".miracle"),
+  legacyData = join(install, "data"),
+  secondProject = join(root, "second project");
 const env = {
   ...process.env,
   MIRACLE_INSTALL_ROOT: install,
@@ -22,6 +33,10 @@ const env = {
 delete env.MIRACLE_DATA_DIR;
 delete env.MIRACLE_CONTROL_TOKEN;
 delete env.APP_ORIGIN;
+delete env.PORT;
+delete env.MIRACLE_RUNTIME_PORT;
+delete env.MIRACLE_PROJECT_ROOT;
+delete env.MIRACLE_INSTANCE_ID;
 const safePath = "/usr/bin:/bin";
 async function command(
   executable,
@@ -48,18 +63,14 @@ async function installArchive() {
   return await command("sh", [join(dirname(archive), "install.sh")]);
 }
 let node, cli, trinoServer;
+const transport = createNativeFetch();
+const { fetch } = transport;
 async function run(...args) {
   return await command(join(bin, "miracle"), args, {
     customEnv: { ...env, PATH: safePath },
   });
 }
-async function freePort() {
-  const s = createServer();
-  await new Promise((r) => s.listen(0, "127.0.0.1", r));
-  const port = s.address().port;
-  await new Promise((r) => s.close(r));
-  return port;
-}
+
 try {
   await installArchive();
   const version = (
@@ -74,13 +85,16 @@ try {
   cli = join(code, "dist/server/server/cli.js");
   assert.equal((await command(node, ["--version"])).stdout.trim(), "v24.22.2");
   assert.equal((await run("--version")).stdout.trim(), version);
-  const port = await freePort();
   console.log(
     "Starting bundled application, with system Node absent from PATH",
   );
-  await run("start", "--port", String(port));
+  await run("start");
   const state = JSON.parse((await run("status", "--json")).stdout);
   assert.equal(state.status, "running");
+  const port = state.port;
+  assert(Number.isInteger(port) && port > 0);
+  assert.equal(state.projectRoot, root);
+  assert.equal(state.dataDir, data);
   await run("start");
   assert.equal(
     JSON.parse((await run("status", "--json")).stdout).pid,
@@ -196,16 +210,26 @@ try {
   });
   assert.equal(response.status, 201);
   const board = await response.json();
-  const activeInstall = await installArchive().then(
-    () => false,
-    () => true,
-  );
-  assert(
-    activeInstall,
-    "Installer must refuse an authenticated running workspace",
-  );
   const key = await readFile(join(data, "encryption.key"));
-  await run("stop");
+  await mkdir(secondProject);
+  await run("start", "--project-dir", secondProject);
+  const second = JSON.parse(
+    (await run("status", "--json", "--project-dir", secondProject)).stdout,
+  );
+  assert.equal(second.status, "running");
+  assert.notEqual(second.port, port);
+  assert.equal(second.dataDir, join(secondProject, ".miracle"));
+  await installArchive();
+  assert.equal(
+    JSON.parse((await run("status", "--json")).stdout).status,
+    "stopped",
+  );
+  assert.equal(
+    JSON.parse(
+      (await run("status", "--json", "--project-dir", secondProject)).stdout,
+    ).status,
+    "stopped",
+  );
   const backup = join(root, "portable backup");
   await run("backup", backup);
   await installArchive();
@@ -223,9 +247,28 @@ try {
     200,
   );
   await run("stop");
-  const restored = join(root, "restored workspace");
+  // A former global installation data directory remains explicitly accessible.
+  const restored = legacyData;
   await run("restore", backup, "--data-dir", restored);
   await run("start", "--data-dir", restored, "--port", String(port));
+  const legacyState = JSON.parse(
+    (await run("status", "--json", "--data-dir", restored)).stdout,
+  );
+  assert.equal(legacyState.dataDir, legacyData);
+  assert.equal(legacyState.projectRoot, root);
+  const wrongStorage = await command(
+    join(bin, "miracle"),
+    ["status", "--json"],
+    {
+      allowFailure: true,
+      customEnv: { ...env, PATH: safePath },
+    },
+  );
+  assert.notEqual(wrongStorage.code, 0);
+  assert.match(
+    wrongStorage.stderr,
+    /already running with different data storage/,
+  );
   browser = await session();
   assert.equal(browser.body.workspaceId, workspaceId);
   await verifySavedTrino();
@@ -235,14 +278,14 @@ try {
   assert(!prodPackages.includes("react"));
   assert(!prodPackages.includes("@node-rs"));
   console.log(
-    `PASS: ${process.platform}-${process.arch}, install/reinstall, immutable code, authenticated lifecycle, Trino HTTPS CA persistence and backup/restore, private state, no system runtime`,
+    `PASS: ${process.platform}-${process.arch}, project .miracle and ephemeral ports, live multi-project reinstall, explicit legacy storage, authenticated lifecycle, Trino HTTPS CA persistence and backup/restore, private state, no system runtime`,
   );
 } finally {
+  await transport.destroy();
   if (node && cli) {
     await run("stop").catch(() => {});
-    await run("stop", "--data-dir", join(root, "restored workspace")).catch(
-      () => {},
-    );
+    await run("stop", "--data-dir", legacyData).catch(() => {});
+    await run("stop", "--project-dir", secondProject).catch(() => {});
   }
   if (trinoServer) {
     trinoServer.closeAllConnections();
