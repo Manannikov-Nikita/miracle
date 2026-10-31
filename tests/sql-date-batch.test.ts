@@ -251,15 +251,19 @@ async function render(sql = source.sql) {
   );
   // Native WebCrypto used by migration is independent of Vitest's fake clock.
   // Yield real I/O and wait for the editor instead of assuming render() loaded it.
-  await vi.waitFor(async () => {
-    await act(async () => {
-      await yieldIO();
-    });
-    expect(
-      container.querySelector('[aria-label="Test SQL"]'),
-      container.textContent || "SQL editor not ready",
-    ).not.toBeNull();
-  });
+  // On loaded CI, async act can exceed waitFor's default 1 s real-time budget.
+  await vi.waitFor(
+    async () => {
+      await act(async () => {
+        await yieldIO();
+      });
+      expect(
+        container.querySelector('[aria-label="Test SQL"]'),
+        container.textContent || "SQL editor not ready",
+      ).not.toBeNull();
+    },
+    { timeout: 5000 },
+  );
 }
 function button(label: string) {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>

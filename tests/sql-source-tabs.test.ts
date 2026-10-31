@@ -153,15 +153,19 @@ describe("chart source SQL tabs", () => {
   async function readyEditor() {
     // Legacy migration hashes batches with native WebCrypto before loading the
     // editor. Wait for the real rendered state, including in fake-timer tests.
-    await vi.waitFor(async () => {
-      await act(async () => {
-        await yieldIO();
-      });
-      expect(
-        editor(),
-        container.textContent || "SQL editor not ready",
-      ).not.toBeNull();
-    });
+    // On loaded CI, async act can exceed waitFor's default 1 s real-time budget.
+    await vi.waitFor(
+      async () => {
+        await act(async () => {
+          await yieldIO();
+        });
+        expect(
+          editor(),
+          container.textContent || "SQL editor not ready",
+        ).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
   }
   function tabs() {
     return [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
