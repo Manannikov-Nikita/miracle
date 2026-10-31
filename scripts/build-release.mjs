@@ -95,6 +95,7 @@ try {
   });
   await cp(join(root, "docs/local-installation.md"), join(stage, "README.md"));
   await cp(join(root, "release/install.mjs"), join(stage, "install.mjs"));
+  await cp(join(root, "release/setup-path.mjs"), join(stage, "setup-path.mjs"));
   execFileSync(
     "npm",
     [

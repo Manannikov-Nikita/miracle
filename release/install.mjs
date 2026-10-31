@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { Agent, fetch as packageFetch } from "undici";
+import { setupPath } from "./setup-path.mjs";
 
 if (!["darwin", "linux"].includes(process.platform))
   throw new Error(
@@ -235,7 +236,7 @@ try {
   await writeFile(pointer, version + "\n", { mode: 0o600 });
   await rename(pointer, join(root, "current-version"));
   console.log(
-    `Miracle ${version} installed.\nCommand: ${join(bin, "miracle")}\nAdd ${bin} to PATH if it is not already present.\nNew project data: .miracle in the current project directory`,
+    `Miracle ${version} installed.\nCommand: ${join(bin, "miracle")}\nNew project data: .miracle in the current project directory`,
   );
   for (const [dataDir, port] of legacyWorkspaces) {
     console.log(
@@ -246,4 +247,14 @@ try {
   await controlAgent.destroy();
   if (staging) await rm(staging, { recursive: true, force: true });
   await rm(lock, { recursive: true, force: true });
+}
+// Optional shell setup must not hold the installation lock while awaiting input,
+// or turn an already successful application installation into a failed update.
+try {
+  await setupPath(bin);
+} catch (error) {
+  console.warn(
+    `Miracle is installed, but PATH setup could not finish: ${error.message}`,
+  );
+  console.warn(`Use the full command path: ${join(bin, "miracle")}`);
 }

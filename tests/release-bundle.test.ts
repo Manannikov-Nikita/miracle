@@ -95,6 +95,7 @@ it.each([
         "dist/client/index.html",
         "dist/server/index.js",
         "release/install.mjs",
+        "release/setup-path.mjs",
         `upstream/${runtimeTop}/LICENSE`,
         `upstream/${runtimeTop}/bin/node`,
       ])
@@ -193,7 +194,10 @@ it("refuses an unverified runtime before producing or replacing a release archiv
   try {
     const runtime = join(output, "node.tar.gz");
     writeFileSync(runtime, "not the pinned Node runtime");
-    const archive = join(output, `miracle-${releaseVersion}-darwin-arm64.tar.gz`);
+    const archive = join(
+      output,
+      `miracle-${releaseVersion}-darwin-arm64.tar.gz`,
+    );
     writeFileSync(archive, "prior verified artifact");
     const result = spawnSync(
       process.execPath,

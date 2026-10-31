@@ -37,6 +37,17 @@ curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download
 ~/.local/bin/miracle
 ```
 
+Начиная с установщика 0.3.1, если каталог команды отсутствует в PATH, он предлагает добавить его в настройки вашей оболочки. Подтвердите изменение и откройте новый терминал либо выполните напечатанную команду для текущего окна.
+
+Если после установки появляется `miracle: command not found`, для стандартной установки в zsh или Bash выполните:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+miracle --version
+```
+
+Для постоянной настройки и других оболочек см. [как исправить PATH](docs/local-installation.md#если-терминал-пишет-miracle-command-not-found). До настройки работают команды по полному пути: `~/.local/bin/miracle start` и `~/.local/bin/miracle stop`.
+
 На Windows сначала нужен [WSL 2 с Linux](https://learn.microsoft.com/en-us/windows/wsl/install). Команды установки и запуска выполняются в его терминале; напечатанный адрес откройте в браузере Windows. [Полная инструкция](docs/local-installation.md) содержит требования к WSL, ручную установку, обновление и резервное копирование.
 
 Комплект содержит Node.js; устанавливать runtime, npm или Git отдельно не нужно. Четыре сборки: macOS Intel/Apple Silicon и GNU/Linux x64/ARM64. В WSL 2 используется Linux-сборка. ClickHouse или Trino подключаются отдельно.
