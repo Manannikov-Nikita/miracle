@@ -1,5 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, cpSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  cpSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -167,64 +173,90 @@ it("encrypts launch commands at rest and keeps chat provider fixed", async () =>
   ).toBe(false);
 });
 
-const waitFor = async <T>(
+const waitFor = async <
+  T extends { turns: { status: string; error?: string }[] },
+>(
   read: () => Promise<T>,
   ok: (value: T) => boolean,
 ) => {
+  let value: T | undefined;
   for (let i = 0; i < 150; i++) {
-    const value = await read();
+    value = await read();
     if (ok(value)) return value;
+    const failed = value.turns.find((turn) => turn.status === "failed");
+    if (failed) throw new Error(`Agent turn failed: ${JSON.stringify(failed)}`);
     await new Promise((r) => setTimeout(r, 20));
   }
-  throw new Error("Timed out waiting for agent state");
+  throw new Error(
+    `Timed out waiting for agent state: ${JSON.stringify(value)}`,
+  );
 };
 const fixtureCommand = (provider: string, scenario: string) =>
   `FIXTURE_PROVIDER=${provider} FIXTURE_SCENARIO=${scenario} '${process.execPath}' '${resolve("tests/fixtures/agents/provider.mjs")}'`;
-it("runs a persisted conversation independently of the browser and deduplicates sends", async () => {
-  const s = await open();
-  const profile = (
-    await s.request("POST", "/api/agent-profiles", {
-      name: "Fixture",
-      provider: "claude",
-      command: fixtureCommand("claude", "normal"),
-    })
-  ).json();
-  const chat = (
-    await s.request("POST", "/api/chats", { profileId: profile.id })
-  ).json();
-  const payload = {
-    content: "Read the fixture",
-    clientRequestId: randomUUID(),
-    context: {},
-  };
-  const sent = await s.request(
-    "POST",
-    `/api/chats/${chat.id}/messages`,
-    payload,
-  );
-  expect(sent.statusCode, sent.body).toBe(202);
-  const duplicate = await s.request(
-    "POST",
-    `/api/chats/${chat.id}/messages`,
-    payload,
-  );
-  expect(duplicate.json().id).toBe(sent.json().id);
-  const conversation = await waitFor(
-    async () => (await s.request("GET", `/api/chats/${chat.id}`)).json(),
-    (c) => c.turns[0]?.status === "completed",
-  );
-  expect(
-    conversation.messages.filter((m: any) => m.role === "user"),
-  ).toHaveLength(1);
-  expect(
-    conversation.messages.find((m: any) => m.role === "assistant").content,
-  ).toBe("Hello 🌍");
-  await s.app.close();
-  const again = await open(s.root);
-  expect(
-    (await again.request("GET", `/api/chats/${chat.id}`)).json().messages,
-  ).toEqual(conversation.messages);
-});
+it.each([false, true])(
+  "runs a persisted conversation independently of the browser and deduplicates sends (delayed stdout: %s)",
+  async (delayedStdout) => {
+    const s = await open();
+    let command = fixtureCommand("claude", "normal");
+    if (delayedStdout) {
+      const preload = join(s.root, "delayed-stdout.cjs");
+      // Pipes can flush asynchronously. Force queued writes so process.exit cannot
+      // accidentally appear safe merely because this runner drains stdout quickly.
+      writeFileSync(
+        preload,
+        `
+      const originalWrite = process.stdout._write;
+      process.stdout._write = function (...args) {
+        setTimeout(() => originalWrite.apply(this, args), 25);
+      };
+    `,
+      );
+      command = `NODE_OPTIONS='--require=${preload}' ${command}`;
+    }
+    const profile = (
+      await s.request("POST", "/api/agent-profiles", {
+        name: "Fixture",
+        provider: "claude",
+        command,
+      })
+    ).json();
+    const chat = (
+      await s.request("POST", "/api/chats", { profileId: profile.id })
+    ).json();
+    const payload = {
+      content: "Read the fixture",
+      clientRequestId: randomUUID(),
+      context: {},
+    };
+    const sent = await s.request(
+      "POST",
+      `/api/chats/${chat.id}/messages`,
+      payload,
+    );
+    expect(sent.statusCode, sent.body).toBe(202);
+    const duplicate = await s.request(
+      "POST",
+      `/api/chats/${chat.id}/messages`,
+      payload,
+    );
+    expect(duplicate.json().id).toBe(sent.json().id);
+    const conversation = await waitFor(
+      async () => (await s.request("GET", `/api/chats/${chat.id}`)).json(),
+      (c) => c.turns[0]?.status === "completed",
+    );
+    expect(
+      conversation.messages.filter((m: any) => m.role === "user"),
+    ).toHaveLength(1);
+    expect(
+      conversation.messages.find((m: any) => m.role === "assistant").content,
+    ).toBe("Hello 🌍");
+    await s.app.close();
+    const again = await open(s.root);
+    expect(
+      (await again.request("GET", `/api/chats/${chat.id}`)).json().messages,
+    ).toEqual(conversation.messages);
+  },
+);
 it("enforces one active turn, supports native approvals and cancels owned work", async () => {
   const s = await open();
   const p = (

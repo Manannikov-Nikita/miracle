@@ -123,18 +123,39 @@ export class AgentTransport {
       if (error.code !== "ESRCH") throw error;
     }
   }
+  private async signalAndWait(signal: NodeJS.Signals) {
+    let permissionError: unknown;
+    try {
+      this.signal(signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+      permissionError = error;
+    }
+    await Promise.race([this.closed, delay(1000)]);
+    if (!permissionError) return;
+    // macOS can report EPERM for a group containing only an exiting zombie.
+    // Confirm both pipe closure and group absence; close alone can leave descendants.
+    if (!this.alive && this.child.pid) {
+      try {
+        process.kill(
+          process.platform === "win32" ? this.child.pid : -this.child.pid,
+          0,
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      }
+    }
+    throw permissionError;
+  }
   stop(initial: NodeJS.Signals = "SIGTERM"): Promise<void> {
     return (this.stopPromise ??= (async () => {
       if (!this.alive) return;
-      this.signal(initial);
-      await Promise.race([this.closed, delay(1000)]);
+      await this.signalAndWait(initial);
       if (this.alive && initial !== "SIGTERM") {
-        this.signal("SIGTERM");
-        await Promise.race([this.closed, delay(1000)]);
+        await this.signalAndWait("SIGTERM");
       }
       if (this.alive) {
-        this.signal("SIGKILL");
-        await Promise.race([this.closed, delay(1000)]);
+        await this.signalAndWait("SIGKILL");
       }
       this.child.stdin.destroy();
       this.child.stdout.destroy();

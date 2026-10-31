@@ -3,25 +3,31 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2),
   mode = process.env.FIXTURE_PROVIDER;
+const write = (stream, chunk) =>
+  new Promise((resolve, reject) => {
+    stream.write(chunk, (error) => (error ? reject(error) : resolve()));
+  });
 const trace = (data) => {
   if (process.env.FIXTURE_TRACE)
     appendFileSync(process.env.FIXTURE_TRACE, JSON.stringify(data) + "\n");
 };
 if (args.includes("--version")) {
-  console.log(
-    mode === "claude" ? "2.1.200 (Claude Code)" : "codex-cli 0.136.0",
+  await write(
+    process.stdout,
+    (mode === "claude" ? "2.1.200 (Claude Code)" : "codex-cli 0.136.0") + "\n",
   );
   process.exit(0);
 }
 if (args.includes("--help") && process.env.FIXTURE_SCENARIO === "old-cli") {
-  console.log("old CLI without structured protocol");
+  await write(process.stdout, "old CLI without structured protocol\n");
   process.exit(0);
 }
 if (args.includes("--help")) {
-  console.log(
-    mode === "claude"
+  await write(
+    process.stdout,
+    (mode === "claude"
       ? "--input-format --output-format --verbose --include-partial-messages --permission-prompt-tool --mcp-config --resume"
-      : "--stdio --listen app-server",
+      : "--stdio --listen app-server") + "\n",
   );
   process.exit(0);
 }
@@ -30,7 +36,7 @@ if (
   process.env.FIXTURE_SCENARIO === "required" &&
   !args.includes("mcp_servers.miracle.required=true")
 ) {
-  process.stderr.write("Miracle MCP must be required");
+  await write(process.stderr, "Miracle MCP must be required");
   process.exit(20);
 }
 trace({
@@ -57,9 +63,9 @@ const emit = (value) => {
   const b = Buffer.from(JSON.stringify(value) + "\n");
   chain = chain.then(async () => {
     const pivot = Math.max(1, b.indexOf(Buffer.from("🌍")) + 2);
-    process.stdout.write(b.subarray(0, pivot));
+    await write(process.stdout, b.subarray(0, pivot));
     await new Promise((r) => setTimeout(r, 3));
-    process.stdout.write(b.subarray(pivot));
+    await write(process.stdout, b.subarray(pivot));
   });
   return chain;
 };
@@ -282,7 +288,7 @@ rl.on("line", async (line) => {
       return;
     }
     if (process.env.FIXTURE_SCENARIO === "exit") {
-      process.stderr.write("provider authentication failed");
+      await write(process.stderr, "provider authentication failed");
       process.exit(2);
     }
     await emit({
