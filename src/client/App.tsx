@@ -11,6 +11,8 @@ import Explorer, {
 } from "./components/Explorer";
 import SqlWorkspace, { type SqlSourceRequest } from "./components/SqlWorkspace";
 import BoardWorkspace from "./board/BoardWorkspace";
+import { ProjectSyncProvider, useProjectSync } from "./agents/ProjectSync";
+import AgentAssistant from "./agents/AgentAssistant";
 import WorkspaceRail, { type PaneMode } from "./components/WorkspaceRail";
 export default function App() {
   const [workspaceId, setWorkspaceId] = useState("");
@@ -229,193 +231,214 @@ export default function App() {
       </div>
     );
   return (
-    <div className="app-shell">
-      {workspaceError && <ErrorBox>{workspaceError}</ErrorBox>}
-      <div className="workspace-body">
-        <WorkspaceRail
-          narrow={narrow}
-          mode={narrow ? mobileTab : paneMode}
-          explorer={narrow && !explorerDrawer ? null : explorer}
-          connectionCount={connections.length}
-          onSelectMode={(mode) => {
-            setPaneMode(mode);
-            if (mode !== "split") setMobileTab(mode);
-            setExplorerDrawer(false);
-          }}
-          onTogglePane={(pane) => {
-            if (narrow) setMobileTab(pane);
-            else setPaneMode((mode) => (mode === pane ? "split" : pane));
-            setExplorerDrawer(false);
-          }}
-          onToggleExplorer={(kind) => {
-            if (narrow) {
-              setExplorerDrawer(explorer !== kind || !explorerDrawer);
-              setExplorer(kind);
-            } else setExplorer(explorer === kind ? null : kind);
-          }}
-          onResetLayout={() => {
-            resetLayout();
-            notify("Размеры панелей восстановлены", "success");
-          }}
-          onConnections={() => setConnectionsOpen(true)}
-          onHelp={() => setHelpOpen(true)}
-        />
-        {explorer && (!narrow || explorerDrawer) && (
-          <Explorer
-            onClose={narrow ? () => setExplorerDrawer(false) : undefined}
-            key={workspaceId}
-            kind={explorer}
-            connections={connections}
-            activeConnectionId={connectionId}
-            onConnectionChange={setConnectionId}
-            metadata={metadata}
-            sourceViews={sourceViews}
-            onOpenConnections={() => setConnectionsOpen(true)}
-            onOpenQuery={(q) => {
+    <ProjectSyncProvider workspaceId={workspaceId}>
+      <QueryEvents onChanged={() => setQueryRevision((r) => r + 1)} />
+      <div className="app-shell">
+        {workspaceError && <ErrorBox>{workspaceError}</ErrorBox>}
+        <div className="workspace-body">
+          <WorkspaceRail
+            narrow={narrow}
+            mode={narrow ? mobileTab : paneMode}
+            explorer={narrow && !explorerDrawer ? null : explorer}
+            connectionCount={connections.length}
+            onSelectMode={(mode) => {
+              setPaneMode(mode);
+              if (mode !== "split") setMobileTab(mode);
               setExplorerDrawer(false);
-              setSavedToOpen(q);
-              showSql();
             }}
-            onOpenSource={(q) => {
+            onTogglePane={(pane) => {
+              if (narrow) setMobileTab(pane);
+              else setPaneMode((mode) => (mode === pane ? "split" : pane));
               setExplorerDrawer(false);
-              setSourceToOpen({ source: q });
-              showSql();
             }}
-            queryRevision={queryRevision}
-            onNotify={notify}
+            onToggleExplorer={(kind) => {
+              if (narrow) {
+                setExplorerDrawer(explorer !== kind || !explorerDrawer);
+                setExplorer(kind);
+              } else setExplorer(explorer === kind ? null : kind);
+            }}
+            onResetLayout={() => {
+              resetLayout();
+              notify("Размеры панелей восстановлены", "success");
+            }}
+            onConnections={() => setConnectionsOpen(true)}
+            onHelp={() => setHelpOpen(true)}
           />
-        )}
-        <main className="workbench">
-          <Group
-            orientation="horizontal"
-            groupRef={group}
-            className="main-split"
-            defaultLayout={savedLayout()}
-            disabled={narrow}
-            onLayoutChanged={(l) => {
-              if (workspaceId && !narrow && l.sql > 5 && l.board > 5)
-                localStorage.setItem(
-                  `miracle:workspace-layout:${workspaceId}`,
-                  JSON.stringify(l),
-                );
-            }}
-          >
-            <Panel
-              id="sql"
-              defaultSize="45%"
-              minSize={narrow ? "0px" : "340px"}
-              collapsible
-            >
-              <div
-                className="pane-host"
-                inert={narrow ? mobileTab !== "sql" : paneMode === "board"}
-              >
-                <SqlWorkspace
-                  workspaceId={workspaceId}
-                  key={workspaceId}
-                  connections={connections}
-                  activeConnectionId={connectionId}
-                  onConnectionChange={setConnectionId}
-                  metadata={metadata}
-                  sourceToOpen={sourceToOpen}
-                  savedToOpen={savedToOpen}
-                  onSourceConsumed={() => setSourceToOpen(null)}
-                  onSavedConsumed={() => setSavedToOpen(null)}
-                  onQueriesChanged={() => setQueryRevision((r) => r + 1)}
-                  onResult={(r) => {
-                    setIncomingResult(r);
-                    showBoard();
-                  }}
-                  onNotify={notify}
-                  onOpenConnections={() => setConnectionsOpen(true)}
-                  onMaximize={() =>
-                    setPaneMode(paneMode === "sql" ? "split" : "sql")
-                  }
-                  onCollapse={() =>
-                    narrow ? setMobileTab("board") : setPaneMode("board")
-                  }
-                />
-              </div>
-            </Panel>
-            <Separator
-              className="resize-separator vertical"
-              aria-label="Размер SQL и доски"
-              onDoubleClick={resetLayout}
+          {explorer && (!narrow || explorerDrawer) && (
+            <Explorer
+              onClose={narrow ? () => setExplorerDrawer(false) : undefined}
+              key={workspaceId}
+              kind={explorer}
+              connections={connections}
+              activeConnectionId={connectionId}
+              onConnectionChange={setConnectionId}
+              metadata={metadata}
+              sourceViews={sourceViews}
+              onOpenConnections={() => setConnectionsOpen(true)}
+              onOpenQuery={(q) => {
+                setExplorerDrawer(false);
+                setSavedToOpen(q);
+                showSql();
+              }}
+              onOpenSource={(q) => {
+                setExplorerDrawer(false);
+                setSourceToOpen({ source: q });
+                showSql();
+              }}
+              queryRevision={queryRevision}
+              onNotify={notify}
             />
-            <Panel
-              id="board"
-              defaultSize="55%"
-              minSize={narrow ? "0px" : "400px"}
-              collapsible
+          )}
+          <main className="workbench">
+            <Group
+              orientation="horizontal"
+              groupRef={group}
+              className="main-split"
+              defaultLayout={savedLayout()}
+              disabled={narrow}
+              onLayoutChanged={(l) => {
+                if (workspaceId && !narrow && l.sql > 5 && l.board > 5)
+                  localStorage.setItem(
+                    `miracle:workspace-layout:${workspaceId}`,
+                    JSON.stringify(l),
+                  );
+              }}
             >
-              <div
-                className="pane-host"
-                inert={narrow ? mobileTab !== "board" : paneMode === "sql"}
+              <Panel
+                id="sql"
+                defaultSize="45%"
+                minSize={narrow ? "0px" : "340px"}
+                collapsible
               >
-                <BoardWorkspace
-                  workspaceId={workspaceId}
-                  key={workspaceId}
-                  incomingResult={incomingResult}
-                  onIncomingConsumed={() => setIncomingResult(null)}
-                  onOpenSource={(source, name) => {
-                    setSourceToOpen({ source, name });
-                    showSql();
-                  }}
-                  onNotify={notify}
-                />
-              </div>
-            </Panel>
-          </Group>
-        </main>
-      </div>
-      <Connections
-        open={connectionsOpen}
-        onClose={() => setConnectionsOpen(false)}
-        connections={connections}
-        onChanged={(id) => {
-          if (id) {
-            metadata.invalidate(id);
-            sourceViews.delete(id);
-          }
-          void loadConnections();
-        }}
-        onNotify={notify}
-      />
-      <Modal
-        open={helpOpen}
-        onOpenChange={setHelpOpen}
-        title="Меньше кликов, больше смысла"
-        description="Сочетания клавиш рабочей среды"
-      >
-        <div className="shortcut-list">
-          {[
-            ["Выполнить запрос под курсором или выделение", "⌘ / Ctrl + Enter"],
-            ["Форматировать SQL", "⌥⌘L / Ctrl+Alt+L"],
-            ["Подсказки SQL", "⌘I / Ctrl+Space"],
-            ["Перейти по словам", "⌥ / Ctrl + ← / →"],
-            ["Начало / конец строки", "⌘← / ⌘→ · Home / End"],
-            ["Начало / конец файла", "⌘↑ / ⌘↓ · Ctrl+Home / End"],
-            ["Сохранить SQL-файл", "⌘ / Ctrl + S"],
-            ["Найти в редакторе", "⌘ / Ctrl + F"],
-            ["Отменить действие", "⌘ / Ctrl + Z"],
-            ["Перемещать доску", "Пробел + перетаскивание"],
-            ["Выбрать несколько блоков", "Shift + клик или рамка"],
-            ["Перемещать без прилипания", "Alt / ⌥ + перетаскивание"],
-            ["Удалить выбранный объект", "Delete / Backspace"],
-            ["Настроить объект", "Enter"],
-            ["Изменить размеры панелей", "Стрелки на разделителе"],
-          ].map(([label, key]) => (
-            <div key={label}>
-              <span>{label}</span>
-              <kbd>{key}</kbd>
-            </div>
-          ))}
+                <div
+                  className="pane-host"
+                  inert={narrow ? mobileTab !== "sql" : paneMode === "board"}
+                >
+                  <SqlWorkspace
+                    workspaceId={workspaceId}
+                    key={workspaceId}
+                    connections={connections}
+                    activeConnectionId={connectionId}
+                    onConnectionChange={setConnectionId}
+                    metadata={metadata}
+                    sourceToOpen={sourceToOpen}
+                    savedToOpen={savedToOpen}
+                    onSourceConsumed={() => setSourceToOpen(null)}
+                    onSavedConsumed={() => setSavedToOpen(null)}
+                    onQueriesChanged={() => setQueryRevision((r) => r + 1)}
+                    onResult={(r) => {
+                      setIncomingResult(r);
+                      showBoard();
+                    }}
+                    onNotify={notify}
+                    onOpenConnections={() => setConnectionsOpen(true)}
+                    onMaximize={() =>
+                      setPaneMode(paneMode === "sql" ? "split" : "sql")
+                    }
+                    onCollapse={() =>
+                      narrow ? setMobileTab("board") : setPaneMode("board")
+                    }
+                  />
+                </div>
+              </Panel>
+              <Separator
+                className="resize-separator vertical"
+                aria-label="Размер SQL и доски"
+                onDoubleClick={resetLayout}
+              />
+              <Panel
+                id="board"
+                defaultSize="55%"
+                minSize={narrow ? "0px" : "400px"}
+                collapsible
+              >
+                <div
+                  className="pane-host"
+                  inert={narrow ? mobileTab !== "board" : paneMode === "sql"}
+                >
+                  <BoardWorkspace
+                    workspaceId={workspaceId}
+                    key={workspaceId}
+                    incomingResult={incomingResult}
+                    onIncomingConsumed={() => setIncomingResult(null)}
+                    onOpenSource={(source, name) => {
+                      setSourceToOpen({ source, name });
+                      showSql();
+                    }}
+                    onNotify={notify}
+                  />
+                </div>
+              </Panel>
+            </Group>
+          </main>
         </div>
-      </Modal>
-      <Toasts
-        items={toasts}
-        onDismiss={(id) => setToasts((s) => s.filter((t) => t.id !== id))}
-      />
-    </div>
+        <Connections
+          open={connectionsOpen}
+          onClose={() => setConnectionsOpen(false)}
+          connections={connections}
+          onChanged={(id) => {
+            if (id) {
+              metadata.invalidate(id);
+              sourceViews.delete(id);
+            }
+            void loadConnections();
+          }}
+          onNotify={notify}
+        />
+        <Modal
+          open={helpOpen}
+          onOpenChange={setHelpOpen}
+          title="Меньше кликов, больше смысла"
+          description="Сочетания клавиш рабочей среды"
+        >
+          <div className="shortcut-list">
+            {[
+              [
+                "Выполнить запрос под курсором или выделение",
+                "⌘ / Ctrl + Enter",
+              ],
+              ["Форматировать SQL", "⌥⌘L / Ctrl+Alt+L"],
+              ["Подсказки SQL", "⌘I / Ctrl+Space"],
+              ["Перейти по словам", "⌥ / Ctrl + ← / →"],
+              ["Начало / конец строки", "⌘← / ⌘→ · Home / End"],
+              ["Начало / конец файла", "⌘↑ / ⌘↓ · Ctrl+Home / End"],
+              ["Сохранить SQL-файл", "⌘ / Ctrl + S"],
+              ["Найти в редакторе", "⌘ / Ctrl + F"],
+              ["Отменить действие", "⌘ / Ctrl + Z"],
+              ["Перемещать доску", "Пробел + перетаскивание"],
+              ["Выбрать несколько блоков", "Shift + клик или рамка"],
+              ["Перемещать без прилипания", "Alt / ⌥ + перетаскивание"],
+              ["Удалить выбранный объект", "Delete / Backspace"],
+              ["Настроить объект", "Enter"],
+              ["Изменить размеры панелей", "Стрелки на разделителе"],
+            ].map(([label, key]) => (
+              <div key={label}>
+                <span>{label}</span>
+                <kbd>{key}</kbd>
+              </div>
+            ))}
+          </div>
+        </Modal>
+        <Toasts
+          items={toasts}
+          onDismiss={(id) => setToasts((s) => s.filter((t) => t.id !== id))}
+        />
+        <AgentAssistant />
+      </div>
+    </ProjectSyncProvider>
   );
+}
+
+function QueryEvents({ onChanged }: { onChanged: () => void }) {
+  const sync = useProjectSync();
+  const callback = useRef(onChanged);
+  callback.current = onChanged;
+  useEffect(
+    () =>
+      sync?.subscribe((event) => {
+        if (event.type === "queries.changed") callback.current();
+      }),
+    [sync],
+  );
+  return null;
 }

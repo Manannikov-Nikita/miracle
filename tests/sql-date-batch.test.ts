@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { editorApi } from "./helpers/editor-api";
 import SqlWorkspace from "../src/client/components/SqlWorkspace";
 import { createMetadataStore } from "../src/client/metadata-store";
 import type { QueryRun, ResultSet } from "../src/shared/types";
@@ -20,11 +21,12 @@ vi.mock("@monaco-editor/react", async () => {
   return {
     loader: { config() {} },
     default: (props: {
-      value: string;
+      value?: string;
+      defaultValue?: string;
       path: string;
       onMount: (editor: unknown) => void;
     }) => {
-      harness.value = props.value;
+      harness.value = props.value ?? props.defaultValue ?? "";
       harness.path = props.path;
       useEffect(() => {
         const model = {
@@ -159,36 +161,41 @@ beforeEach(() => {
   requests = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (path: string, options: RequestInit = {}) => {
-      requests.push({ path, options });
-      if (path === "/api/query-runs" && options.method === "POST") {
-        currentRun = {
-          ...currentRun,
-          source: JSON.parse(options.body as string),
-        };
-        return new Response(JSON.stringify(currentRun));
-      }
-      if (path === "/api/query-runs/run")
-        return new Response(JSON.stringify(currentRun));
-      if (path === "/api/result-sets/result")
-        return new Response(JSON.stringify(currentResult));
-      if (path.startsWith("/api/result-sets/result/rows"))
-        return new Response(
-          JSON.stringify({
-            result: currentResult,
-            rows: Array.from({ length: currentResult.rowCount }, (_, i) => [
-              `2026-10-0${i + 1}`,
-            ]),
-            offset: 0,
-            total: currentResult.rowCount,
-          }),
-        );
-      if (path === "/api/query-runs/run/cancel") {
-        currentRun = { ...currentRun, status: "cancelled" };
-        return new Response(JSON.stringify(currentRun));
-      }
-      throw new Error(`Unexpected request ${path}`);
-    }),
+    vi.fn(
+      editorApi(
+        async (path: string, options: RequestInit = {}) => {
+          requests.push({ path, options });
+          if (path === "/api/query-runs" && options.method === "POST") {
+            currentRun = {
+              ...currentRun,
+              source: JSON.parse(options.body as string),
+            };
+            return new Response(JSON.stringify(currentRun));
+          }
+          if (path === "/api/query-runs/run")
+            return new Response(JSON.stringify(currentRun));
+          if (path === "/api/result-sets/result")
+            return new Response(JSON.stringify(currentResult));
+          if (path.startsWith("/api/result-sets/result/rows"))
+            return new Response(
+              JSON.stringify({
+                result: currentResult,
+                rows: Array.from({ length: currentResult.rowCount }, (_, i) => [
+                  `2026-10-0${i + 1}`,
+                ]),
+                offset: 0,
+                total: currentResult.rowCount,
+              }),
+            );
+          if (path === "/api/query-runs/run/cancel") {
+            currentRun = { ...currentRun, status: "cancelled" };
+            return new Response(JSON.stringify(currentRun));
+          }
+          throw new Error(`Unexpected request ${path}`);
+        },
+        () => workspaceId,
+      ),
+    ),
   );
   harness.value = "";
   harness.path = "";

@@ -86,33 +86,68 @@ try {
     )
       throw new Error("Invalid runtime state; inspect it before installation.");
     dataDirectories.add(state.dataDir);
-    let response;
-    try {
-      response = await fetch(
-        `http://127.0.0.1:${state.port}/api/local/control`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${state.token}`,
-            "content-type": "application/json",
+    const control = async (action, allowShutdownDisconnect = false) => {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:${state.port}/api/local/control`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${state.token}`,
+              "content-type": "application/json",
+              connection: "close",
+            },
+            body: JSON.stringify({ action }),
+            signal: AbortSignal.timeout(1500),
+            redirect: "error",
           },
-          body: JSON.stringify({ action: "status" }),
-          signal: AbortSignal.timeout(1500),
-          redirect: "error",
-        },
-      );
-    } catch (error) {
-      if (!["ECONNREFUSED"].includes(error.cause?.code))
-        throw new Error(
-          "Cannot verify whether Miracle is stopped. Retry when local networking is available.",
         );
-      continue;
+        if (!response.ok || (await response.json()).ok !== true)
+          throw new Error(
+            "Cannot authenticate saved runtime state; inspect it before installation.",
+          );
+        return "running";
+      } catch (error) {
+        if (error.cause?.code === "ECONNREFUSED") return "stopped";
+        // A listener may reset a pooled/closing socket during graceful shutdown.
+        // It is still unknown until a fresh request is refused and SQLite releases.
+        if (
+          allowShutdownDisconnect &&
+          ["ECONNRESET", "UND_ERR_SOCKET", "EPIPE"].includes(error.cause?.code)
+        )
+          return "unknown";
+        throw new Error(
+          "Cannot authenticate or verify saved runtime state; active installation unchanged.",
+          { cause: error },
+        );
+      }
+    };
+    if ((await control("status")) === "running") {
+      await control("stop");
+      let stopped = false;
+      for (let attempt = 0; attempt < 200; attempt++) {
+        if ((await control("status", true)) === "stopped") {
+          stopped = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (!stopped)
+        throw new Error(
+          "Timed out waiting for project shutdown; active installation unchanged.",
+        );
     }
-    if (response.ok && (await response.json()).ok === true)
-      throw new Error("Stop Miracle before installing: miracle stop");
-    throw new Error(
-      "Cannot authenticate saved runtime state; inspect it before installation.",
-    );
+    // A refused listener alone is insufficient while SQLite is still draining.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await assertStoppedStorage(state.dataDir);
+        break;
+      } catch (error) {
+        if (attempt >= 199 || error.cause?.errcode !== 5) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    await rm(join(root, "run", name), { force: true });
   }
   for (const dataDir of dataDirectories) await assertStoppedStorage(dataDir);
   const destination = join(root, "versions", version);
@@ -145,7 +180,7 @@ try {
   await writeFile(pointer, version + "\n", { mode: 0o600 });
   await rename(pointer, join(root, "current-version"));
   console.log(
-    `Miracle ${version} installed.\nRun: ${join(bin, "miracle")}\nAdd ${bin} to PATH if it is not already present.\nData: ${join(root, "data")}`,
+    `Miracle ${version} installed.\nRun: ${join(bin, "miracle")}\nAdd ${bin} to PATH if it is not already present.\nProject data: .miracle in the current project directory`,
   );
 } finally {
   if (staging) await rm(staging, { recursive: true, force: true });

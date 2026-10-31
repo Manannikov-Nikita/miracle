@@ -15,9 +15,11 @@ export class ApiRequestError extends Error {
 export interface LocalSession {
   workspaceId: string;
   csrfToken: string;
+  instanceId?: string;
 }
 let sessionRefresh: Promise<LocalSession> | undefined;
 let workspaceId: string | undefined;
+let instanceId: string | undefined;
 let workspaceChanged: ApiRequestError | undefined;
 function changedWorkspace(): ApiRequestError {
   if (!workspaceChanged) {
@@ -40,9 +42,13 @@ export function openLocalSession(): Promise<LocalSession> {
   if (!sessionRefresh) {
     sessionRefresh = request<LocalSession>("/api/session", {})
       .then((session) => {
-        if (workspaceId && session.workspaceId !== workspaceId)
+        if (
+          (workspaceId && session.workspaceId !== workspaceId) ||
+          (instanceId && session.instanceId !== instanceId)
+        )
           throw changedWorkspace();
         workspaceId = session.workspaceId;
+        instanceId = session.instanceId;
         setCsrfToken(session.csrfToken);
         return session;
       })
@@ -63,6 +69,8 @@ async function request<T>(path: string, options: RequestInit): Promise<T> {
     !["/api/session", "/api/health", "/api/local/control"].includes(endpoint)
   )
     headers.set("X-Miracle-Workspace", workspaceId);
+  if (instanceId && endpoint !== "/api/session")
+    headers.set("X-Miracle-Instance", instanceId);
   if (options.body && !(options.body instanceof FormData))
     headers.set("Content-Type", "application/json");
   if (options.method && !["GET", "HEAD"].includes(options.method.toUpperCase()))
@@ -78,7 +86,10 @@ async function request<T>(path: string, options: RequestInit): Promise<T> {
       : await response
           .json()
           .catch(() => ({ error: "Сервер вернул некорректный ответ" }));
-  if (response.status === 409 && data?.code === "WORKSPACE_CHANGED")
+  if (
+    response.status === 409 &&
+    ["WORKSPACE_CHANGED", "INSTANCE_CHANGED"].includes(data?.code)
+  )
     throw changedWorkspace();
   if (!response.ok)
     throw new ApiRequestError(
@@ -144,3 +155,53 @@ export async function waitForRun(
   }
 }
 export const json = (value: unknown) => JSON.stringify(value);
+
+/** SSE uses fetch so local instance binding applies to the long-lived request too. */
+export async function openEventStream(
+  after: number,
+  signal: AbortSignal,
+): Promise<Response> {
+  if (workspaceChanged) throw workspaceChanged;
+  const headers = new Headers({ Accept: "text/event-stream" });
+  if (workspaceId) headers.set("X-Miracle-Workspace", workspaceId);
+  if (instanceId) headers.set("X-Miracle-Instance", instanceId);
+  const response = await fetch(`/api/events?after=${after}`, {
+    headers,
+    signal,
+    credentials: "same-origin",
+  });
+  if (response.status === 401 || response.status === 403) {
+    await openLocalSession();
+    signal.throwIfAborted();
+    const refreshed = new Headers({
+      Accept: "text/event-stream",
+      "X-Miracle-Workspace": workspaceId || "",
+      "X-Miracle-Instance": instanceId || "",
+    });
+    const retry = await fetch(`/api/events?after=${after}`, {
+      headers: refreshed,
+      signal,
+      credentials: "same-origin",
+    });
+    if (!retry.ok)
+      throw new ApiRequestError(
+        "Не удалось подключиться к событиям проекта",
+        retry.status,
+      );
+    return retry;
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    if (
+      response.status === 409 &&
+      ["WORKSPACE_CHANGED", "INSTANCE_CHANGED"].includes(data.code)
+    )
+      throw changedWorkspace();
+    throw new ApiRequestError(
+      data.error || "Не удалось подключиться к событиям проекта",
+      response.status,
+      data.code,
+    );
+  }
+  return response;
+}

@@ -79,7 +79,7 @@ function page<T>(
   };
 }
 
-async function readPage(
+export async function readPage(
   c: EngineConnection,
   id: string,
   kind: Kind,

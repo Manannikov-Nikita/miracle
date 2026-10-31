@@ -2,8 +2,9 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { projectSchema } from "./project-schema.js";
 const timestamp = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
-export const WORKSPACE_SCHEMA_VERSION = 3;
+export const WORKSPACE_SCHEMA_VERSION = 4;
 const jsonFields = new Set(["source", "document", "columns", "rows", "batch"]);
 /** One prepared-statement connection owns the workspace until close. */
 export class Database {
@@ -89,15 +90,14 @@ export function migrate(db: Database, initialize?: () => void) {
   if (version > WORKSPACE_SCHEMA_VERSION)
     throw new Error("Workspace schema is newer than this version of Miracle");
   if (version === WORKSPACE_SCHEMA_VERSION) return;
-  if (version === 1 || version === 2) {
+  if (version >= 1 && version <= 3) {
     db.transaction(() => {
       if (version === 1)
         db.sqlite.exec(
           "ALTER TABLE query_runs ADD COLUMN batch TEXT CHECK(batch IS NULL OR json_valid(batch));",
         );
-      db.sqlite.exec(
-        "ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT; PRAGMA user_version=3;",
-      );
+      if (version < 3) db.sqlite.exec("ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT;");
+      db.sqlite.exec(projectSchema);
     });
     return;
   }
@@ -116,6 +116,7 @@ export function migrate(db: Database, initialize?: () => void) {
  CREATE INDEX runs_status ON query_runs(status); CREATE INDEX runs_started ON query_runs(started_at); CREATE INDEX refs_result ON board_result_refs(result_set_id);
  PRAGMA user_version=3;
  `);
+    db.sqlite.exec(projectSchema);
     db.query("INSERT INTO app_settings(key,value) VALUES('workspace_id',?1)", [
       randomUUID(),
     ]);

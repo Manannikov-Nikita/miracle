@@ -19,6 +19,9 @@ import {
 } from "./db.js";
 import { loadKey, SecretBox, verifyEncryptionKey } from "./secrets.js";
 import { resolveDataDir, resolvePort } from "./config.js";
+import { ProjectStore } from "./project-store.js";
+import { registerProjectRoutes } from "./project-routes.js";
+import { WorkspaceOperations } from "./workspace-operations.js";
 import {
   mergeClickHouseOptions,
   publicClickHouseOptions,
@@ -30,7 +33,9 @@ import {
   validateTrinoConnection,
 } from "./trinoOptions.js";
 import { assertReadOnly } from "./sql.js";
-import { registerMetadataRoutes } from "./metadata.js";
+import { registerMetadataRoutes, readPage } from "./metadata.js";
+import { AgentManager } from "./agents/manager.js";
+import { registerAgentRoutes } from "./agents/routes.js";
 import {
   prepareDateBatch,
   performDateBatch,
@@ -65,6 +70,9 @@ export interface Limits {
 }
 export interface AppOptions {
   dataDir?: string;
+  projectRoot?: string;
+  instanceId?: string;
+  runtimeOrigin?: () => string;
   controlToken?: string;
   onShutdown?: () => void;
   encryptionKey?: Buffer;
@@ -131,6 +139,11 @@ export async function buildApp(
   options = z
     .object({
       dataDir: z.string().min(1).optional(),
+      projectRoot: z.string().min(1).optional(),
+      instanceId: z.string().min(1).optional(),
+      runtimeOrigin: z
+        .custom<() => string>((value) => typeof value === "function")
+        .optional(),
       controlToken: z
         .string()
         .min(1)
@@ -164,6 +177,8 @@ export async function buildApp(
     .parse(options);
   const port = resolvePort();
   const dataDir = options.dataDir || resolveDataDir();
+  const projectRoot = options.projectRoot || process.cwd();
+  const instanceId = options.instanceId || randomUUID();
   const configuredOrigin =
     options.appOrigin || process.env.APP_ORIGIN || `http://127.0.0.1:${port}`;
   const originUrl = new URL(configuredOrigin);
@@ -181,6 +196,11 @@ export async function buildApp(
     );
   const appOrigin = originUrl.origin;
   const expectedHost = originUrl.host;
+  const currentOrigin = () => options.runtimeOrigin?.() || appOrigin;
+  const currentHost = () =>
+    options.runtimeOrigin ? new URL(currentOrigin()).host : expectedHost;
+  const sessionCookie = () =>
+    `miracle_session_${new URL(currentOrigin()).port || (secure ? "443" : "80")}`;
   const secure = options.cookieSecure ?? originUrl.protocol === "https:";
   const envNum = (name: string, fallback: number) => {
     const value = Number(process.env[name] || fallback);
@@ -240,6 +260,12 @@ export async function buildApp(
     const workspaceId = db.query(
       "SELECT value FROM app_settings WHERE key='workspace_id'",
     ).rows[0].value as string;
+    const projectStore = new ProjectStore(db, box, {
+      workspaceId,
+      instanceId,
+      projectRoot,
+      dataDir,
+    });
     interruptQueryRuns(db);
     retention(db);
     await app.register(cookie);
@@ -278,9 +304,9 @@ export async function buildApp(
       });
     });
     app.addHook("onRequest", async (req, reply) => {
-      if (req.headers.host !== expectedHost)
+      if (req.headers.host !== currentHost())
         throw err(403, "Недопустимый Host");
-      if (req.headers.origin && req.headers.origin !== appOrigin)
+      if (req.headers.origin && req.headers.origin !== currentOrigin())
         throw err(403, "Недопустимый Origin");
       if (req.headers["sec-fetch-site"] === "cross-site")
         throw err(403, "Недопустимый источник запроса");
@@ -292,7 +318,7 @@ export async function buildApp(
       // Removed account routes remain absent, including for callers without a session.
       if (/^\/api\/(auth|setup|users)(\/|$)/.test(path!))
         return reply.code(404).send({ error: "Маршрут не найден" });
-      const sid = req.cookies.miracle_session;
+      const sid = req.cookies[sessionCookie()];
       if (
         sid &&
         browserSession &&
@@ -305,6 +331,15 @@ export async function buildApp(
       if (path === "/api/session" && req.method === "GET") return;
       if (!req.sessionId)
         throw err(401, "Локальная сессия завершена", "LOCAL_SESSION_EXPIRED");
+      if (
+        req.headers["x-miracle-instance"] !== undefined &&
+        req.headers["x-miracle-instance"] !== instanceId
+      )
+        throw err(
+          409,
+          "Экземпляр проекта изменился. Перезагрузите страницу",
+          "WORKSPACE_CHANGED",
+        );
       const requestedWorkspace = req.headers["x-miracle-workspace"];
       if (
         requestedWorkspace !== undefined &&
@@ -338,6 +373,7 @@ export async function buildApp(
     };
     const uuid = (req: FastifyRequest, key = "id") =>
       z.uuid().parse((req.params as any)[key]);
+    registerProjectRoutes(app, projectStore, need);
     app.get("/api/health", async () => ({ ok: true }));
     app.get("/api/session", async (_req, reply) => {
       if (!browserSession || browserSession.expires <= Date.now()) {
@@ -350,7 +386,7 @@ export async function buildApp(
         };
       }
       // Read the current pair here, rather than a hook's earlier TTL snapshot.
-      reply.setCookie("miracle_session", browserSession.token, {
+      reply.setCookie(sessionCookie(), browserSession.token, {
         httpOnly: true,
         secure,
         sameSite: "strict",
@@ -360,7 +396,12 @@ export async function buildApp(
           Math.ceil((browserSession.expires - Date.now()) / 1000),
         ),
       });
-      return { workspaceId, csrfToken: browserSession.csrf };
+      return {
+        workspaceId,
+        instanceId,
+        projectRoot,
+        csrfToken: browserSession.csrf,
+      };
     });
     app.post("/api/local/control", async (req, reply) => {
       const authorization = req.headers.authorization;
@@ -626,55 +667,29 @@ export async function buildApp(
         }
       },
     );
+    const operations = new WorkspaceOperations(projectStore, connection);
     app.get("/api/queries", async (req) => {
       need(req);
-      return db
-        .query("SELECT * FROM queries ORDER BY updated_at DESC")
-        .rows.map(queryDto);
+      return operations.queries();
     });
     app.post("/api/queries", async (req, reply) => {
       need(req);
-      const b = sourceSchema.extend({ name: nameSchema }).parse(req.body);
-      const { name, ...source } = b;
-      await connection(source.connectionId);
-      const r = db.query(
-        "INSERT INTO queries(id,name,source) VALUES(?1,?2,?3) RETURNING *",
-        [randomUUID(), name, source],
-      ).rows[0];
+      const value = await operations.saveQuery(req.body);
       reply.code(201);
-      return queryDto(r);
+      return value;
     });
     app.patch("/api/queries/:id", async (req) => {
       need(req);
-      const id = uuid(req);
-      const b = sourceSchema
-        .extend({
-          name: nameSchema,
-          baseRevision: z.number().int().nonnegative(),
-        })
-        .parse(req.body);
-      const { name, baseRevision, ...source } = b;
-      await connection(source.connectionId);
-      const r = db.query(
-        "UPDATE queries SET name=?2,source=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
-        [id, name, source, baseRevision],
-      ).rows[0];
-      if (!r)
-        throw err(
-          409,
-          "Запрос изменён в другой вкладке. Перезагрузите или сохраните копию",
-          "REVISION_CONFLICT",
-        );
-      return queryDto(r);
+      return operations.saveQuery(req.body, uuid(req));
     });
     app.delete("/api/queries/:id", async (req) => {
       need(req);
-      if (!db.query("DELETE FROM queries WHERE id=?1", [uuid(req)]).rowCount)
-        throw err(404, "Запрос не найден");
-      return { ok: true };
+      return operations.deleteQuery(uuid(req), req.body);
     });
-    async function startRun(req: FastifyRequest, source: QuerySource) {
-      need(req);
+    async function startRun(
+      source: QuerySource,
+      mutationId: string = randomUUID(),
+    ) {
       const engine = await connection(source.connectionId);
       let batch;
       try {
@@ -683,23 +698,24 @@ export async function buildApp(
         throw err(400, e.message);
       }
       const id = randomUUID();
-      const c = db;
-      let created;
-      try {
-        c.query("BEGIN");
-        const r = c.query(
+      let fresh = false;
+      const created = projectStore.once("query-run", mutationId, source, () => {
+        const r = db.query(
           "SELECT id FROM query_runs WHERE status IN ('running','cancelling')",
         );
         if (r.rows.length >= limits.maxGlobalRuns)
           throw err(429, "Достигнут лимит одновременных запросов");
-        created = c.query(
+        fresh = true;
+        return db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES(?1,'running',?2,?3) RETURNING *",
           [id, source, batch],
         ).rows[0];
-        c.query("COMMIT");
-      } catch (e) {
-        c.query("ROLLBACK");
-        throw e;
+      });
+      if (!fresh) {
+        const current = db.query("SELECT * FROM query_runs WHERE id=?1", [
+          created.id,
+        ]).rows[0];
+        return runDto(current || created);
       }
       const state: {
         controller: AbortController;
@@ -813,7 +829,12 @@ export async function buildApp(
       }
     }
     app.post("/api/query-runs", async (req, reply) => {
-      const r = await startRun(req, sourceSchema.parse(req.body));
+      need(req);
+      const r = await startRun(
+        sourceSchema.parse(req.body),
+        z.object({ mutationId: z.uuid().optional() }).parse(req.body)
+          .mutationId,
+      );
       reply.code(202);
       return r;
     });
@@ -839,11 +860,14 @@ export async function buildApp(
       if (!r) throw err(404, "Выполнение не найдено");
       return runDto(r);
     });
-    app.post("/api/query-runs/:id/cancel", async (req) => {
-      need(req);
-      const id = uuid(req);
-      const r = db.query("SELECT * FROM query_runs WHERE id=?1", [id]).rows[0];
-      if (!r) throw err(404, "Выполнение не найдено");
+    function queryStatus(id: string) {
+      const row = db.query("SELECT * FROM query_runs WHERE id=?1", [id])
+        .rows[0];
+      if (!row) throw err(404, "Выполнение не найдено");
+      return runDto(row);
+    }
+    function cancelRun(id: string) {
+      queryStatus(id);
       const state = live.get(id);
       if (state) {
         db.query(
@@ -853,9 +877,11 @@ export async function buildApp(
         state.controller.abort();
         void state.cancel?.().catch(() => {});
       }
-      return runDto(
-        db.query("SELECT * FROM query_runs WHERE id=?1", [id]).rows[0],
-      );
+      return queryStatus(id);
+    }
+    app.post("/api/query-runs/:id/cancel", async (req) => {
+      need(req);
+      return cancelRun(uuid(req));
     });
     async function getResult(id: string) {
       const r = db.query("SELECT * FROM result_sets WHERE id=?1", [id]).rows[0];
@@ -932,128 +958,27 @@ export async function buildApp(
         );
       return { result, rows: data };
     });
-    function saveRefs(c: any, id: string, document: BoardDocument) {
-      const ids = [
-        ...new Set(
-          document.nodes.flatMap((n) =>
-            n.data.resultSetId ? [n.data.resultSetId] : [],
-          ),
-        ),
-      ];
-      c.query("DELETE FROM board_result_refs WHERE board_id=?1", [id]);
-      for (const resultId of ids) {
-        const r = c.query("SELECT id,row_count FROM result_sets WHERE id=?1", [
-          resultId,
-        ]).rows[0];
-        if (!r) throw err(400, "Результат блока не найден");
-        if (
-          c.query(
-            "SELECT id FROM query_runs WHERE result_set_id=?1 AND status IN ('running','cancelling')",
-            [resultId],
-          ).rowCount
-        )
-          throw err(
-            409,
-            "Дождитесь завершения или остановите пакет перед добавлением результата на доску",
-          );
-        if (
-          document.nodes.some(
-            (n) => n.data.resultSetId === resultId && n.data.view === "chart",
-          ) &&
-          r.row_count > 5000
-        )
-          throw err(422, "График превышает лимит 5000 точек");
-        c.query(
-          "INSERT INTO board_result_refs(board_id,result_set_id) VALUES(?1,?2)",
-          [id, resultId],
-        );
-      }
-    }
     app.get("/api/boards", async (req) => {
       need(req);
-      return db
-        .query(
-          "SELECT id,name,revision,updated_at FROM boards ORDER BY updated_at DESC",
-        )
-        .rows.map((r) => ({
-          id: r.id,
-          name: r.name,
-          revision: r.revision,
-          updatedAt: new Date(r.updated_at).toISOString(),
-        }));
+      return operations.boards();
     });
     app.get("/api/boards/:id", async (req) => {
       need(req);
-      const r = db.query("SELECT * FROM boards WHERE id=?1", [uuid(req)])
-        .rows[0];
-      if (!r) throw err(404, "Доска не найдена");
-      return boardDto(r);
+      return operations.board(uuid(req));
     });
     app.post("/api/boards", async (req, reply) => {
       need(req);
-      const b = z
-        .object({
-          name: nameSchema,
-          document: boardDocumentSchema.default({
-            schemaVersion: 1,
-            nodes: [],
-            edges: [],
-          }),
-        })
-        .parse(req.body);
-      const id = randomUUID();
-      const c = db;
-      try {
-        c.query("BEGIN");
-        const r = c.query(
-          "INSERT INTO boards(id,name,document) VALUES(?1,?2,?3) RETURNING *",
-          [id, b.name, b.document],
-        ).rows[0];
-        saveRefs(c, id, b.document);
-        c.query("COMMIT");
-        reply.code(201);
-        return boardDto(r);
-      } catch (e) {
-        c.query("ROLLBACK");
-        throw e;
-      }
+      const value = operations.createBoard(req.body);
+      reply.code(201);
+      return value;
     });
     app.patch("/api/boards/:id", async (req) => {
       need(req);
-      const id = uuid(req);
-      const b = z
-        .object({
-          baseRevision: z.number().int().nonnegative(),
-          name: nameSchema.optional(),
-          document: boardDocumentSchema,
-        })
-        .parse(req.body);
-      const c = db;
-      try {
-        c.query("BEGIN");
-        const r = c.query(
-          "UPDATE boards SET name=COALESCE(?2,name),document=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
-          [id, b.name, b.document, b.baseRevision],
-        ).rows[0];
-        if (!r)
-          throw err(
-            409,
-            "Доска изменена в другой вкладке. Перезагрузите или сохраните копию",
-            "REVISION_CONFLICT",
-          );
-        saveRefs(c, id, b.document);
-        c.query("COMMIT");
-        return boardDto(r);
-      } catch (e) {
-        c.query("ROLLBACK");
-        throw e;
-      }
+      return operations.updateBoard(uuid(req), req.body);
     });
     app.delete("/api/boards/:id", async (req) => {
       need(req);
-      if (!db.query("DELETE FROM boards WHERE id=?1", [uuid(req)]).rowCount)
-        throw err(404, "Доска не найдена");
-      return { ok: true };
+      return operations.deleteBoard(uuid(req), req.body);
     });
     app.post("/api/boards/:id/nodes/:nodeId/refresh", async (req, reply) => {
       need(req);
@@ -1078,10 +1003,56 @@ export async function buildApp(
           "Источник изменён. Перезагрузите доску",
           "REVISION_CONFLICT",
         );
-      const r = await startRun(req, node.data.source);
+      const r = await startRun(node.data.source);
       reply.code(202);
       return r;
     });
+    const agentManager = new AgentManager(
+      projectStore,
+      operations,
+      {
+        connections: () =>
+          db
+            .query(
+              "SELECT id,name,engine,database_name,catalog,schema_name FROM connections",
+            )
+            .rows.map((r) => ({
+              id: r.id,
+              name: r.name,
+              engine: r.engine,
+              database: r.database_name || undefined,
+              catalog: r.catalog || undefined,
+              schema: r.schema_name || undefined,
+            })),
+        schema: async (id, input) => {
+          const query = z
+            .object({
+              kind: z.enum(["schemas", "tables", "columns"]).default("schemas"),
+              schema: z.string().optional(),
+              table: z.string().optional(),
+              catalog: z.string().optional(),
+              cursor: z.string().optional(),
+              limit: z.number().int().min(1).max(500).default(100),
+            })
+            .parse(input || {});
+          const { kind, ...paging } = query;
+          return readPage(
+            await connection(id),
+            id,
+            kind,
+            paging,
+            AbortSignal.timeout(30000),
+          );
+        },
+        run: startRun,
+        status: queryStatus,
+        cancel: cancelRun,
+        result: getResult,
+        rows,
+      },
+      currentOrigin,
+    );
+    registerAgentRoutes(app, agentManager, need);
     const closeRuns = async () => {
       for (const state of live.values()) {
         state.controller.abort();
@@ -1101,6 +1072,7 @@ export async function buildApp(
     app.addHook("onClose", async () => {
       clearInterval(cleaner);
       await closeRuns();
+      projectStore.close();
       db.close();
     });
     if (options.serveStatic !== false) {

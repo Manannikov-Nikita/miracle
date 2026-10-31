@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import SqlWorkspace, {
   type SqlSourceRequest,
 } from "../src/client/components/SqlWorkspace";
+import { editorApi } from "./helpers/editor-api";
 import type { Connection, QuerySource } from "../src/shared/types";
 import { createMetadataStore } from "../src/client/metadata-store";
 
@@ -12,10 +13,14 @@ import { createMetadataStore } from "../src/client/metadata-store";
 // its tab/context controls, replacing only the editor with an editable textarea.
 vi.mock("@monaco-editor/react", () => ({
   loader: { config() {} },
-  default: (p: { value: string; onChange: (value: string) => void }) =>
+  default: (p: {
+    value?: string;
+    defaultValue?: string;
+    onChange: (value: string) => void;
+  }) =>
     createElement("textarea", {
       "aria-label": "Test SQL editor",
-      value: p.value,
+      value: p.value ?? p.defaultValue ?? "",
       onChange: (event: { target: { value: string } }) =>
         p.onChange(event.target.value),
     }),
@@ -98,11 +103,10 @@ describe("chart source SQL tabs", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
-        async () =>
-          new Response("[]", {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
+        editorApi(
+          async () => new Response("[]", { status: 200 }),
+          () => props.workspaceId,
+        ),
       ),
     );
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -205,7 +209,13 @@ describe("chart source SQL tabs", () => {
     expect(connect).toBeDefined();
     await act(async () => connect!.click());
     expect(props.onOpenConnections).toHaveBeenCalledOnce();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.every(([path]) =>
+          String(path).startsWith("/api/editor-documents"),
+        ),
+    ).toBe(true);
     const add = container.querySelector<HTMLButtonElement>(
       '[aria-label="Новый SQL-файл"]',
     );
@@ -231,9 +241,9 @@ describe("chart source SQL tabs", () => {
     await render();
     expect(editor().value).toBe("");
     expect(tabs()).toHaveLength(1);
-    expect(localStorage.getItem(storage)).toContain(
-      "select preserved_local_edit",
-    );
+    expect(
+      localStorage.getItem("miracle:sql-recovery:source-tab-test"),
+    ).toContain("select preserved_local_edit");
   });
 
   it("opens the literal chart title and its pinned SQL and query context", async () => {
@@ -316,5 +326,38 @@ describe("chart source SQL tabs", () => {
     expect(tabs()).toHaveLength(2);
     expect(editor().value).toBe("select unsaved_draft");
     expect(props.onSavedConsumed).toHaveBeenCalledOnce();
+  });
+  it("preserves recovered connection and context edits when a newer server document has identical SQL", async () => {
+    const document = {
+      id: "context-recovery",
+      name: "server.sql",
+      sql: "select 1",
+      connectionId: "trino",
+      catalog: "server",
+      schema: "public",
+      revision: 7,
+      updatedAt: "now",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify([document])),
+    );
+    localStorage.setItem(`${storage}:imported`, "1");
+    localStorage.setItem(
+      "miracle:sql-recovery:source-tab-test",
+      JSON.stringify([
+        {
+          id: document.id,
+          name: "my-name.sql",
+          sql: "select 1",
+          connectionId: "clickhouse",
+          database: "my-draft-database",
+          documentRevision: 5,
+        },
+      ]),
+    );
+    await render();
+    expect(activeTab()).toBe("my-name.sql");
+    expect(context("База запроса")).toBe("my-draft-database");
+    expect(container.textContent).toContain("Ваш черновик сохранён");
   });
 });

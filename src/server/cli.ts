@@ -2,13 +2,16 @@ import { randomBytes, createHash } from "node:crypto";
 import {
   mkdir,
   readFile,
+  readdir,
   writeFile,
   rename,
   rm,
   open,
   chmod,
+  realpath,
+  stat,
 } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -30,6 +33,8 @@ interface State {
   pid: number;
   dataDir: string;
   version: string;
+  projectRoot?: string;
+  instanceId?: string;
 }
 function installRoot() {
   if (process.env.MIRACLE_INSTALL_ROOT)
@@ -74,11 +79,79 @@ async function control(
 }
 async function storageStopped(dataDir: string) {
   try {
+    // Status and installer checks must not create a missing/moved workspace.
+    const file = await stat(join(dataDir, "miracle.sqlite")).catch((error) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!file) return true;
     const { assertWorkspaceStopped } = await import("./maintenance.js");
     await assertWorkspaceStopped(dataDir);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return join(await canonicalPath(dirname(absolute)), basename(absolute));
+  }
+}
+async function assertProjectStorage(
+  root: string,
+  projectRoot: string,
+  dataDir: string,
+) {
+  const registry = join(root, "run");
+  const names = await readdir(registry).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    let candidate: State;
+    try {
+      candidate = JSON.parse(
+        await readFile(join(registry, name), "utf8"),
+      ) as State;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw new Error(
+        "Invalid private runtime state; inspect the installation run directory.",
+      );
+    }
+    // Older releases registered only storage identity and retain data-dir access.
+    if (
+      typeof candidate.projectRoot !== "string" ||
+      (await canonicalPath(candidate.projectRoot)) !== projectRoot
+    )
+      continue;
+    if (
+      typeof candidate.dataDir !== "string" ||
+      !Number.isInteger(candidate.port) ||
+      candidate.port < 1 ||
+      candidate.port > 65535 ||
+      !/^[a-f0-9]{64}$/.test(candidate.token)
+    )
+      throw new Error(
+        "Invalid private runtime state; inspect the installation run directory.",
+      );
+    const registeredData = await canonicalPath(candidate.dataDir);
+    if (registeredData === dataDir) continue;
+    const health = await control(candidate, "status");
+    if (health === "stopped" && (await storageStopped(registeredData)))
+      continue;
+    if (health !== "running")
+      throw new Error(
+        `Cannot verify the existing project instance using data storage ${registeredData}. Retry with its --data-dir; no additional server was started.`,
+      );
+    throw new Error(
+      `Project is already running with different data storage: ${registeredData}. Use that --data-dir for status or stop, and run miracle stop before changing storage.`,
+    );
   }
 }
 function openBrowser(url: string) {
@@ -94,12 +167,16 @@ function openBrowser(url: string) {
 let startupLock: string | undefined;
 async function main() {
   const args = process.argv.slice(2);
-  const command = args.shift() || "open";
+  const command =
+    args[0]?.startsWith("-") &&
+    !["--version", "-v", "--help", "-h"].includes(args[0])
+      ? "open"
+      : args.shift() || "open";
   if (["--version", "version", "-v"].includes(command))
     return console.log(version);
   if (["--help", "help", "-h"].includes(command))
     return console.log(
-      `Miracle ${version}\nUsage: miracle [open|start|serve|stop|status|backup DIRECTORY|restore DIRECTORY]\n  --port N          Local port (default 3001)\n  --data-dir PATH   Workspace directory\n  status --json     Machine-readable state\n  --version         Installed version\n`,
+      `Miracle ${version}\nUsage: miracle [open|start|serve|stop|status|backup DIRECTORY|restore DIRECTORY]\n  --port N          Local port (default: choose a free port)\n  --project-dir PATH Project directory (default: current directory)\n  --data-dir PATH   Storage override (default: PROJECT/.miracle)\n  status --json     Machine-readable state\n  --version         Installed version\n`,
     );
   if (process.platform === "win32")
     throw new Error("On Windows, run Miracle inside a WSL2 Linux terminal.");
@@ -111,16 +188,18 @@ async function main() {
     throw new Error(`Unknown command: ${command}. Run miracle --help.`);
   let portArgument: string | undefined,
     dataArgument: string | undefined,
+    projectArgument: string | undefined,
     json = false;
   const positional: string[] = [];
   while (args.length) {
     const arg = args.shift()!;
-    if (arg === "--port" || arg === "--data-dir") {
+    if (arg === "--port" || arg === "--data-dir" || arg === "--project-dir") {
       const value = args.shift();
       if (!value || value.startsWith("--"))
         throw new Error(`${arg} needs a value`);
       if (arg === "--port") portArgument = value;
-      else dataArgument = value;
+      else if (arg === "--data-dir") dataArgument = value;
+      else projectArgument = value;
     } else if (arg === "--json") json = true;
     else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
     else positional.push(arg);
@@ -129,17 +208,23 @@ async function main() {
     throw new Error(`Invalid arguments for ${command}. Run miracle --help.`);
   const root = installRoot();
   const config = await import("./config.js");
-  const dataDir = resolve(
-    dataArgument ||
-      config.resolveDataDir({
+  const projectRoot = await realpath(resolve(projectArgument || process.cwd()));
+  if (!(await stat(projectRoot)).isDirectory())
+    throw new Error("Project path must be a directory");
+  const dataDir = await canonicalPath(
+    config.resolveDataDir(
+      {
         ...process.env,
-        MIRACLE_DATA_DIR: process.env.MIRACLE_DATA_DIR || join(root, "data"),
-      }),
+        ...(dataArgument ? { MIRACLE_DATA_DIR: dataArgument } : {}),
+      },
+      projectRoot,
+    ),
   );
-  const configuredPort = config.resolvePort({
-    ...process.env,
-    ...(portArgument ? { PORT: portArgument } : {}),
-  });
+  await assertProjectStorage(root, projectRoot, dataDir);
+  const explicitPort = portArgument || process.env.PORT;
+  const configuredPort = explicitPort
+    ? config.resolvePort({ PORT: explicitPort })
+    : 0;
   const stateFile = join(
     root,
     "run",
@@ -167,9 +252,18 @@ async function main() {
   if (health === "stopped" && !(await storageStopped(dataDir)))
     health = "unknown";
   const running = health === "running";
+  if (
+    ["open", "start", "serve"].includes(command) &&
+    state?.projectRoot &&
+    state.projectRoot !== projectRoot
+  )
+    throw new Error(
+      `Storage is registered to another project: ${state.projectRoot}. Use that project or a separate data directory.`,
+    );
   if (command === "status") {
     const result = {
       status: health === "unknown" ? "error" : health,
+      projectRoot: state?.projectRoot || projectRoot,
       ...(running
         ? {
             port: state!.port,
@@ -233,7 +327,7 @@ async function main() {
     );
   }
   if (running) {
-    if (portArgument && state!.port !== configuredPort)
+    if (explicitPort && state!.port !== configuredPort)
       throw new Error(
         `Miracle is already running on port ${state!.port}; stop it before changing port.`,
       );
@@ -253,13 +347,17 @@ async function main() {
     );
   }
   startupLock = lock;
+  // A competing launch may have published its registry entry after our first scan.
+  await assertProjectStorage(root, projectRoot, dataDir);
   await mkdir(join(root, "run"), { recursive: true, mode: 0o700 });
   await chmod(join(root, "run"), 0o700);
   await mkdir(join(root, "logs"), { recursive: true, mode: 0o700 });
-  const logPath = join(root, "logs", "miracle.log");
+  const projectKey = createHash("sha256").update(projectRoot).digest("hex");
+  const logPath = join(root, "logs", `${projectKey}.log`);
   const log = await open(logPath, "a", 0o600);
   await log.chmod(0o600);
   const token = randomBytes(32).toString("hex");
+  const instanceId = randomBytes(16).toString("hex");
   const index = fileURLToPath(
     new URL(
       import.meta.url.endsWith(".ts") ? "./index.ts" : "./index.js",
@@ -271,17 +369,39 @@ async function main() {
     [...(import.meta.url.endsWith(".ts") ? process.execArgv : []), index],
     {
       detached: command !== "serve",
-      stdio: command === "serve" ? "inherit" : ["ignore", log.fd, log.fd],
-      cwd: root,
+      stdio:
+        command === "serve"
+          ? ["inherit", "inherit", "inherit", "ipc"]
+          : ["ignore", log.fd, log.fd, "ipc"],
+      cwd: projectRoot,
       env: {
         ...process.env,
         MIRACLE_DATA_DIR: dataDir,
-        PORT: String(configuredPort),
+        PORT: configuredPort ? String(configuredPort) : "",
+        MIRACLE_RUNTIME_PORT: String(configuredPort),
+        MIRACLE_PROJECT_ROOT: projectRoot,
+        MIRACLE_INSTANCE_ID: instanceId,
         APP_ORIGIN: `http://127.0.0.1:${configuredPort}`,
         MIRACLE_CONTROL_TOKEN: token,
       },
     },
   );
+  let announcedPort: number | undefined;
+  child.on("message", (message: unknown) => {
+    const ready = message as {
+      type?: string;
+      port?: number;
+      instanceId?: string;
+    };
+    if (
+      ready?.type === "miracle-ready" &&
+      ready.instanceId === instanceId &&
+      Number.isInteger(ready.port) &&
+      ready.port! > 0 &&
+      ready.port! <= 65535
+    )
+      announcedPort = ready.port;
+  });
   await log.close();
   let childError: Error | undefined;
   child.on("error", (error) => {
@@ -293,20 +413,29 @@ async function main() {
     pid: child.pid!,
     dataDir,
     version,
+    projectRoot,
+    instanceId,
   };
   let ready = false;
   for (let i = 0; i < 150; i++) {
     if (childError || child.exitCode !== null) break;
-    if ((await control(candidate, "status")) === "running") {
+    if (announcedPort) candidate.port = announcedPort;
+    if (announcedPort && (await control(candidate, "status")) === "running") {
       ready = true;
       break;
     }
     await pause(100);
   }
   if (!ready) {
+    if (child.connected) child.disconnect();
     child.unref();
     // This token identifies only the child we created. Never use a stored PID.
-    await control(candidate, "stop");
+    const stopped =
+      candidate.port && (await control(candidate, "stop")) === "running";
+    // A child which never publishes readiness still belongs to this launch.
+    // ChildProcess.kill is never used with a PID loaded from runtime state.
+    if (!stopped && child.exitCode === null && !child.killed)
+      child.kill("SIGTERM");
     const detail = (await readFile(logPath, "utf8"))
       .slice(-2000)
       .replaceAll(token, "[redacted]");
@@ -314,12 +443,13 @@ async function main() {
       `Miracle could not start on port ${configuredPort}. The port may be occupied or workspace already open. See ${logPath}.\n${detail}`,
     );
   }
+  if (child.connected) child.disconnect();
   const temporary = `${stateFile}.${token}.tmp`;
   await writeFile(temporary, JSON.stringify(candidate) + "\n", { mode: 0o600 });
   await rename(temporary, stateFile);
   await rm(startupLock!, { recursive: true, force: true });
   startupLock = undefined;
-  const url = `http://127.0.0.1:${configuredPort}`;
+  const url = `http://127.0.0.1:${candidate.port}`;
   console.log(url);
   if (command === "serve") {
     for (const signal of ["SIGINT", "SIGTERM"] as const)

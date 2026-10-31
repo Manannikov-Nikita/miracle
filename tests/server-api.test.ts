@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, expect, it } from "vitest";
 import { buildApp } from "../src/server/app.js";
 import type { FastifyInstance } from "fastify";
@@ -191,7 +192,10 @@ it("validates graph and result references, rejects stale revisions, retains refe
   expect(
     (await request("GET", "/api/result-sets/" + resultId)).statusCode,
   ).toBe(200);
-  await request("DELETE", "/api/boards/" + b.json().id);
+  await request("DELETE", "/api/boards/" + b.json().id, {
+    baseRevision: b.json().revision,
+    mutationId: randomUUID(),
+  });
   await retention(app.miracle.db);
   expect(
     (await request("GET", "/api/result-sets/" + resultId)).statusCode,

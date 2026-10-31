@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Board, BoardDocument, BoardSummary } from "../../shared/types";
 import { api } from "../api";
+import { useProjectSync } from "../agents/ProjectSync";
 import { emptyDocument } from "./model";
 function persist(key: string, value: unknown) {
   try {
@@ -17,6 +18,7 @@ export function useBoard(
   workspaceId: string,
   notify: (text: string, tone?: "error" | "success" | "info") => void,
 ) {
+  const projectSync = useProjectSync();
   const [list, setList] = useState<BoardSummary[]>([]);
   const [board, setBoard] = useState<Board | null>(null);
   const [state, setState] = useState("Загрузка…");
@@ -28,6 +30,16 @@ export function useBoard(
   const history = useRef<BoardDocument[]>([]);
   const future = useRef<BoardDocument[]>([]);
   const saving = useRef(false);
+  const inFlightDocument = useRef("");
+  const pendingMutation = useRef<{
+    id: string;
+    boardId: string;
+    revision: number;
+    document: string;
+  } | null>(null);
+  const savingDone = useRef<Promise<void> | null>(null);
+  const conflictRef = useRef(false);
+  conflictRef.current = conflict;
   const loadSequence = useRef(0);
   const mounted = useRef(true);
   const [historyTick, setHistoryTick] = useState(0);
@@ -183,19 +195,38 @@ export function useBoard(
     )
       return;
     saving.current = true;
+    let finishSave!: () => void;
+    savingDone.current = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    inFlightDocument.current = JSON.stringify(snapshot.document);
     setState("Сохранение…");
     const serialized = JSON.stringify(snapshot.document);
+    if (
+      pendingMutation.current?.boardId !== snapshot.id ||
+      pendingMutation.current.revision !== snapshot.revision ||
+      pendingMutation.current.document !== serialized
+    )
+      pendingMutation.current = {
+        id: crypto.randomUUID(),
+        boardId: snapshot.id,
+        revision: snapshot.revision,
+        document: serialized,
+      };
     try {
       const result = await api<Board>(`/api/boards/${snapshot.id}`, {
         method: "PATCH",
         body: JSON.stringify({
           baseRevision: snapshot.revision,
+          mutationId: pendingMutation.current.id,
           document: snapshot.document,
         }),
       });
       if (current.current?.id !== snapshot.id) return;
-      saved.current = serialized;
       const now = current.current;
+      if (now.revision > result.revision) return;
+      pendingMutation.current = null;
+      saved.current = serialized;
       assign({
         ...now,
         revision: result.revision,
@@ -232,6 +263,7 @@ export function useBoard(
         /revision|conflict|конфликт/i.test(error.message) ||
         error.code === "REVISION_CONFLICT"
       ) {
+        conflictRef.current = true;
         setConflict(true);
         setState("Конфликт версий");
       } else {
@@ -240,8 +272,118 @@ export function useBoard(
       }
     } finally {
       saving.current = false;
+      inFlightDocument.current = "";
+      finishSave();
+      savingDone.current = null;
     }
   }, [assign, conflict, workspaceId, notify]);
+  useEffect(() => {
+    if (!projectSync) return;
+    const receive = (value: Board) => {
+      setList((items) =>
+        items.some((b) => b.id === value.id)
+          ? items.map((b) =>
+              b.id === value.id && b.revision < value.revision ? value : b,
+            )
+          : [value, ...items],
+      );
+      const old = current.current;
+      if (!old || old.id !== value.id || value.revision <= old.revision) return;
+      const serialized = JSON.stringify(value.document);
+      const dirty = JSON.stringify(old.document) !== saved.current;
+      if (
+        dirty &&
+        serialized !== inFlightDocument.current &&
+        serialized !== pendingMutation.current?.document
+      ) {
+        conflictRef.current = true;
+        setConflict(true);
+        setState("Конфликт версий — локальный черновик сохранён");
+        return;
+      }
+      if (!dirty && JSON.stringify(old.document) !== serialized) {
+        history.current.push(old.document);
+        if (history.current.length > 60) history.current.shift();
+        future.current = [];
+        setHistoryTick((n) => n + 1);
+      }
+      saved.current = serialized;
+      assign(
+        serialized === inFlightDocument.current ||
+          serialized === pendingMutation.current?.document
+          ? { ...old, revision: value.revision, updatedAt: value.updatedAt }
+          : value,
+      );
+      setState("Сохранено");
+    };
+    const removeRemote = (id: string) => {
+      setList((items) => items.filter((b) => b.id !== id));
+      const old = current.current;
+      if (old?.id !== id) return;
+      if (JSON.stringify(old.document) !== saved.current) {
+        conflictRef.current = true;
+        setConflict(true);
+        setState("Доска удалена. Локальный черновик сохранён");
+      } else {
+        assign(null);
+        saved.current = "";
+      }
+    };
+    const unsubscribe = projectSync.subscribe((event) => {
+      if (event.type === "board.updated") receive(event.data as Board);
+      if (event.type === "board.deleted")
+        removeRemote(event.entityId || (event.data as { id: string }).id);
+    });
+    const reconnect = projectSync.onReconnect(() => {
+      const requestedBoard = current.current;
+      void api<BoardSummary[]>("/api/boards")
+        .then((items) => {
+          setList(items);
+          const old = current.current;
+          if (
+            old &&
+            old.id === requestedBoard?.id &&
+            old.revision === requestedBoard.revision &&
+            !items.some((b) => b.id === old.id)
+          )
+            removeRemote(old.id);
+          else if (old)
+            void api<Board>(`/api/boards/${old.id}`)
+              .then(receive)
+              .catch((e) => notify(e.message, "error"));
+        })
+        .catch((e) => notify(e.message, "error"));
+    });
+    return () => {
+      unsubscribe();
+      reconnect();
+    };
+  }, [projectSync, assign, notify]);
+  const flush = useCallback(async () => {
+    if (savingDone.current) await savingDone.current;
+    if (conflictRef.current)
+      throw new Error("Разрешите конфликт доски перед отправкой сообщения.");
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (
+        !current.current ||
+        JSON.stringify(current.current.document) === saved.current
+      )
+        return;
+      await save();
+      if (conflictRef.current)
+        throw new Error("Конфликт версий доски. Локальный черновик сохранён.");
+    }
+    throw new Error(
+      "Не удалось сохранить доску. Повторите отправку после сохранения.",
+    );
+  }, [save]);
+  useEffect(() => {
+    if (!projectSync) return;
+    return projectSync.register("board", {
+      context: () => ({ boardId: current.current?.id }),
+      flush,
+    });
+  }, [projectSync, flush]);
   useEffect(() => {
     if (!board || conflict) return;
     const timer = setTimeout(() => void save(), 650);
@@ -261,12 +403,11 @@ export function useBoard(
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
   const create = async (name: string, document = emptyDocument()) => {
-    const previous = current.current;
     const value = await api<Board>("/api/boards", {
       method: "POST",
       body: JSON.stringify({ name, document }),
     });
-    if (conflict && previous) persist(draftKey(workspaceId, previous.id), null);
+    // The original conflicting draft remains recoverable after creating a copy.
     ++loadSequence.current;
     setLoading(false);
     setList((items) => [value, ...items]);
@@ -289,6 +430,7 @@ export function useBoard(
       method: "PATCH",
       body: JSON.stringify({
         baseRevision: fresh.revision,
+        mutationId: crypto.randomUUID(),
         name,
         document: fresh.document,
       }),
@@ -302,7 +444,22 @@ export function useBoard(
   const remove = async () => {
     const value = current.current;
     if (!value) return;
-    await api(`/api/boards/${value.id}`, { method: "DELETE" });
+    try {
+      await api(`/api/boards/${value.id}`, {
+        method: "DELETE",
+        body: JSON.stringify({
+          baseRevision: value.revision,
+          mutationId: crypto.randomUUID(),
+        }),
+      });
+    } catch (error) {
+      if ((error as { status?: number }).status === 409) {
+        conflictRef.current = true;
+        setConflict(true);
+        setState("Доска изменена. Обновите версию перед удалением.");
+      }
+      throw error;
+    }
     persist(draftKey(workspaceId, value.id), null);
     ++loadSequence.current;
     const remaining = list.filter((b) => b.id !== value.id);
@@ -351,6 +508,7 @@ export function useBoard(
     remove,
     reload,
     save,
+    flush,
     undo,
     redo,
     recordHistory,
