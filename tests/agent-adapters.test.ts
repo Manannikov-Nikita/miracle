@@ -22,6 +22,75 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 describe("native agent adapters", () => {
+  it.each(["child-completed", "child-error"])(
+    "Codex isolates parent messages and completion from %s during native resume",
+    async (scenario) => {
+      const f = setup("codex", scenario);
+      const events: AdapterEvent[] = [];
+      const p = startAgentTurn({
+        provider: "codex",
+        command: f.command,
+        cwd: f.cwd,
+        prompt: "continue",
+        resumeSessionId: "codex-session",
+        mcp: { url: "http://127.0.0.1/mcp", token: "secret" },
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "approval") p.respond(event.id, "deny");
+        },
+      });
+      await expect(p.completion).resolves.toEqual({
+        sessionId: "codex-session",
+      });
+      expect(events.filter((event) => event.type === "message")).toEqual([
+        { type: "message", text: "Parent before response. " },
+        { type: "message", text: "Parent finished" },
+      ]);
+      expect(events.filter((event) => event.type === "approval")).toMatchObject(
+        [{ id: "child-approval", details: { threadId: "child-session" } }],
+      );
+      const trace = readFileSync(f.trace, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(
+        trace.find((entry) => entry.wire?.id === "child-approval")?.wire.result,
+      ).toEqual({ decision: "decline" });
+      expect(
+        trace.some((entry) => entry.wire?.method === "thread/resume"),
+      ).toBe(true);
+    },
+  );
+  it("Codex interrupts the root turn after a child turn starts", async () => {
+    const f = setup("codex", "child-cancel");
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const p = startAgentTurn({
+      provider: "codex",
+      command: f.command,
+      cwd: f.cwd,
+      prompt: "wait",
+      mcp: { url: "http://127.0.0.1/mcp", token: "secret" },
+      onEvent: (event) => {
+        if (event.type === "approval") p.respond(event.id, "deny");
+        if (event.type === "action" && event.text === "parent-ready") ready();
+      },
+    });
+    const done = p.completion.catch((error) => error);
+    await Promise.race([started, done]);
+    await p.cancel();
+    expect((await done).code).toBe("AGENT_CANCELLED");
+    const trace = readFileSync(f.trace, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      trace.find((entry) => entry.wire?.method === "turn/interrupt")?.wire
+        .params,
+    ).toEqual({ threadId: "codex-session", turnId: "turn-1" });
+  });
   it("Codex streams Unicode across chunks, translates approvals and sends native cwd/input/config", async () => {
     const f = setup("codex");
     const events: AdapterEvent[] = [];

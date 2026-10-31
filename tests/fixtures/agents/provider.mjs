@@ -41,6 +41,19 @@ trace({
 });
 let chain = Promise.resolve();
 const emit = (value) => {
+  // All v2 turn/item notifications carry their owning thread and turn.
+  if (
+    mode === "codex" &&
+    value.method &&
+    value.id === undefined &&
+    /^(turn\/|item\/|error$)/.test(value.method)
+  ) {
+    value.params = {
+      threadId: "codex-session",
+      ...(!value.method.startsWith("turn/") ? { turnId: "turn-1" } : {}),
+      ...value.params,
+    };
+  }
   const b = Buffer.from(JSON.stringify(value) + "\n");
   chain = chain.then(async () => {
     const pivot = Math.max(1, b.indexOf(Buffer.from("🌍")) + 2);
@@ -163,6 +176,99 @@ rl.on("line", async (line) => {
       !Array.isArray(m.params.input[0].text_elements)
     )
       process.exit(12);
+    if (process.env.FIXTURE_SCENARIO.startsWith("child-")) {
+      await emit({
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      await emit({
+        method: "item/agentMessage/delta",
+        params: { itemId: "parent-early", delta: "Parent before response. " },
+      });
+      await emit({
+        method: "turn/started",
+        params: {
+          threadId: "child-session",
+          turn: { id: "child-turn", status: "inProgress" },
+        },
+      });
+      await emit({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "child-session",
+          turnId: "child-turn",
+          itemId: "parent-final",
+          delta: "Child private reply",
+        },
+      });
+      await emit({
+        method: "item/completed",
+        params: {
+          threadId: "child-session",
+          turnId: "child-turn",
+          item: {
+            id: "child-final",
+            type: "agentMessage",
+            text: "Child final",
+          },
+        },
+      });
+      if (process.env.FIXTURE_SCENARIO === "child-error")
+        await emit({
+          method: "error",
+          params: {
+            threadId: "child-session",
+            turnId: "child-turn",
+            willRetry: false,
+            error: { message: "Child failed" },
+          },
+        });
+      await emit({
+        method: "turn/completed",
+        params: {
+          threadId: "child-session",
+          turn: { id: "child-turn", status: "completed", error: null },
+        },
+      });
+      // A previous turn of a resumed root thread must be ignored as well.
+      await emit({
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "previous-turn",
+          itemId: "previous-message",
+          delta: "Previous turn",
+        },
+      });
+      await emit({
+        method: "turn/completed",
+        params: {
+          turn: { id: "previous-turn", status: "completed", error: null },
+        },
+      });
+      await emit({
+        id: m.id,
+        result: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      await emit({
+        method: "turn/started",
+        params: {
+          threadId: "child-session",
+          turn: { id: "child-turn-2", status: "inProgress" },
+        },
+      });
+      await emit({
+        id: "child-approval",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "child-session",
+          turnId: "child-turn-2",
+          itemId: "child-command",
+          command: "pwd",
+          reason: "Child asks permission",
+        },
+      });
+      return;
+    }
     await emit({
       id: m.id,
       result: { turn: { id: "turn-1", status: "inProgress" } },
@@ -210,6 +316,37 @@ rl.on("line", async (line) => {
       id: 101,
       method: "item/commandExecution/requestApproval",
       params: { command: "pwd", reason: "Please approve" },
+    });
+    return;
+  }
+  if (m.id === "child-approval" && m.result) {
+    if (m.result.decision !== "decline") process.exit(22);
+    await emit({
+      method: "item/started",
+      params: {
+        item: {
+          id: "parent-work",
+          type: "commandExecution",
+          command: "parent-ready",
+          cwd: process.cwd(),
+          status: "inProgress",
+        },
+      },
+    });
+    if (process.env.FIXTURE_SCENARIO === "child-cancel") return;
+    await emit({
+      method: "item/completed",
+      params: {
+        item: {
+          id: "parent-final",
+          type: "agentMessage",
+          text: "Parent finished",
+        },
+      },
+    });
+    await emit({
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed", error: null } },
     });
     return;
   }

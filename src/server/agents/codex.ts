@@ -43,6 +43,8 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
     turnId: string | undefined,
     nextId = 1,
     stderr = "";
+  let startingTurn = false;
+  const earlyNotifications: { method: string; params: any }[] = [];
   const streamed = new Set<string>();
   const approvals = new Map<
     string,
@@ -148,23 +150,32 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       }
       return;
     }
-    if (message.method === "turn/started") turnId = params.turn?.id || turnId;
+    handleNotification(message.method, params);
+  }, finish);
+  function handleNotification(method: string, params: any) {
+    // App Server also broadcasts child-agent threads. Only the turn returned
+    // by our own turn/start request owns this process's text and completion.
+    if (settled || !sessionId || params.threadId !== sessionId) return;
+    if (!turnId) {
+      if (startingTurn) earlyNotifications.push({ method, params });
+      return;
+    }
+    if ((params.turnId ?? params.turn?.id) !== turnId) return;
     if (
-      message.method === "item/agentMessage/delta" &&
+      method === "item/agentMessage/delta" &&
       typeof params.delta === "string"
     ) {
       streamed.add(params.itemId);
       emit({ type: "message", text: params.delta });
     }
     if (
-      (message.method === "item/started" ||
-        message.method === "item/completed") &&
+      (method === "item/started" || method === "item/completed") &&
       params.item
     ) {
       const item = params.item;
       if (
         item.type === "agentMessage" &&
-        message.method === "item/completed" &&
+        method === "item/completed" &&
         !streamed.has(item.id) &&
         typeof item.text === "string"
       )
@@ -175,12 +186,12 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
         emit({
           type: "action",
           text: String(item.command || item.tool || item.query || item.type),
-          details: { ...item, phase: message.method.split("/")[1] },
+          details: { ...item, phase: method.split("/")[1] },
         });
     }
-    if (message.method === "error" && params.willRetry !== true)
+    if (method === "error" && params.willRetry !== true)
       finish(agentError(clean(params.error?.message || "Codex turn failed")));
-    if (message.method === "turn/completed") {
+    if (method === "turn/completed") {
       const turn = params.turn;
       if (turn?.status === "failed")
         finish(agentError(clean(turn.error?.message || "Codex turn failed")));
@@ -192,7 +203,7 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
           agentError("Codex returned an unrecognized turn completion status"),
         );
     }
-  }, finish);
+  }
   void transport.closed.then((result) => {
     if (!settled)
       finish(
@@ -243,6 +254,7 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       sessionId = thread?.thread?.id;
       if (!sessionId) throw agentError("Codex did not return a thread ID");
       emit({ type: "session", sessionId });
+      startingTurn = true;
       const turn = await request("turn/start", {
         threadId: sessionId,
         cwd: options.cwd,
@@ -251,6 +263,9 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       turnId = turn?.turn?.id;
       if (!turnId && !settled)
         throw agentError("Codex did not return a turn ID");
+      startingTurn = false;
+      for (const notification of earlyNotifications.splice(0))
+        handleNotification(notification.method, notification.params);
     } catch (error: any) {
       finish(
         error instanceof Error

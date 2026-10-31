@@ -39,3 +39,24 @@ The review added regression coverage for stale deletes, resolved permission even
 ## Boundaries
 
 Backups include Miracle state, editor documents and conversations. Project files and provider-native session storage remain separate. Copied profiles require local confirmation. Windows support is through WSL; this verification ran on macOS. Claude's real execution is intentionally unverified as described above.
+
+## NYC Taxi demo: real agent regression check
+
+On 2026-10-31, the actual Codex profile was exercised through the Miracle chat on the local NYC Taxi demo (1,000,660 ClickHouse rows). The first attempt exposed a protocol bug: a helper's `turn/completed` notification prematurely completed the parent Miracle turn and stopped its CLI process. The editor and saved query had been written, but execution, board changes and the local SQL file were unfinished.
+
+The adapter now accepts text, action, error and completion notifications only for its own thread and the turn returned by `turn/start`. Notifications arriving before that response are buffered. Helper approval requests still reach the user. Three deterministic regressions failed before the fix and passed after it; independent review also checked the installed CLI's generated protocol types and early completion/error delivery.
+
+After rebuilding and restarting the demo server, the same native Codex session continued successfully:
+
+- Read project instructions and the dataset manifest with native file tools; read the schema and saved application state through Miracle MCP.
+- Spawned and waited for another helper, then continued the parent task after the helper completed.
+- Executed and read the monthly aggregation: July 192,802 trips / 16.07 USD average; August 557,407 / 16.36; September 250,451 / 16.43. Counts sum to the manifest's 1,000,660 rows and match an independent ClickHouse query.
+- Created `sql/agent-monthly.sql`, matching the editor and saved query, and added a result table plus a note beneath the original six board blocks without duplicates.
+- Continued while the browser tab was closed; reopening restored the conversation and board changes.
+- A separate cancellation test stopped the turn's CLI and its sleeping Python child. Other Codex processes, Miracle and ClickHouse remained running; the dataset count was unchanged.
+
+Fresh checks after this fix: **58 test files / 726 tests passed**, typecheck and production build passed, and `git diff --check` passed. The full HTTP/process test suite was run with local networking permitted. The build retains the existing large-bundle advisory. Real Claude execution remains intentionally untested.
+
+Cancellation preserves the action event log: an interrupted command can retain its last `started/inProgress` entry, while the enclosing turn is correctly `cancelled` and no owned process remains.
+
+Observed UI limitation: an MCP query result is available in history and on the board, but `run_query` does not automatically attach it to the SQL editor's result pane. The editor's text and the query's result are persisted independently; the demo therefore shows the agent's monthly result on its board table.
