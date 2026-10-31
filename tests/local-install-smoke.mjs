@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { createServer as createHttpsServer } from "node:https";
+import { createNativeFetch } from "./helpers/native-fetch.mjs";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
   throw Error("Usage: node tests/local-install-smoke.mjs archive.tar.gz");
@@ -62,6 +63,8 @@ async function installArchive() {
   return await command("sh", [join(dirname(archive), "install.sh")]);
 }
 let node, cli, trinoServer;
+const transport = createNativeFetch();
+const { fetch } = transport;
 async function run(...args) {
   return await command(join(bin, "miracle"), args, {
     customEnv: { ...env, PATH: safePath },
@@ -278,6 +281,7 @@ try {
     `PASS: ${process.platform}-${process.arch}, project .miracle and ephemeral ports, live multi-project reinstall, explicit legacy storage, authenticated lifecycle, Trino HTTPS CA persistence and backup/restore, private state, no system runtime`,
   );
 } finally {
+  await transport.destroy();
   if (node && cli) {
     await run("stop").catch(() => {});
     await run("stop", "--data-dir", legacyData).catch(() => {});

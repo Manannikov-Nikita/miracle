@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { Agent, fetch as packageFetch } from "undici";
 
 if (!["darwin", "linux"].includes(process.platform))
   throw new Error(
@@ -81,6 +82,8 @@ async function assertStoppedStorage(dataDir) {
   await assertWorkspaceStopped(dataDir);
 }
 let staging;
+// Use the bundled dependency's dispatcher, not Node 24's shared undici 7 pool.
+const controlAgent = new Agent({ allowH2: false });
 try {
   // Re-read under the same lock that protects activation. An update may have
   // spent minutes downloading while a newer release became active.
@@ -123,7 +126,7 @@ try {
     if (!state.projectRoot) legacyWorkspaces.set(state.dataDir, state.port);
     const control = async (action, allowShutdownDisconnect = false) => {
       try {
-        const response = await fetch(
+        const response = await packageFetch(
           `http://127.0.0.1:${state.port}/api/local/control`,
           {
             method: "POST",
@@ -135,6 +138,7 @@ try {
             body: JSON.stringify({ action }),
             signal: AbortSignal.timeout(1500),
             redirect: "error",
+            dispatcher: controlAgent,
           },
         );
         if (!response.ok || (await response.json()).ok !== true)
@@ -239,6 +243,7 @@ try {
     );
   }
 } finally {
+  await controlAgent.destroy();
   if (staging) await rm(staging, { recursive: true, force: true });
   await rm(lock, { recursive: true, force: true });
 }

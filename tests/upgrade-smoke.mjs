@@ -17,6 +17,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { createNativeFetch } from "./helpers/native-fetch.mjs";
 
 const [candidateArgument, ...legacyArguments] = process.argv.slice(2);
 if (!candidateArgument || legacyArguments.length !== 2)
@@ -60,6 +61,8 @@ const root = await realpath(
 );
 const fixtures = [];
 const cleanup = [];
+const transport = createNativeFetch();
+const { fetch } = transport;
 const username = "upgrade-reader",
   password = "synthetic-upgrade-secret";
 const expectedAuth = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
@@ -515,6 +518,7 @@ try {
     `PASS upgrade matrix: ${target}, 0.2.0/0.2.1 × global/custom storage, bundled Node only`,
   );
 } finally {
+  await transport.destroy();
   for (const stop of cleanup.reverse()) await stop().catch(() => {});
   for (const server of fixtures) {
     server.closeAllConnections();

@@ -2,6 +2,11 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve, isAbsolute } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import {
+  createHttpTransport,
+  type HttpRequestOptions,
+  type HttpResponse,
+} from "./http-transport.js";
 
 const repository = "Manannikov-Nikita/miracle";
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -44,7 +49,7 @@ interface UpdateInput {
   env?: NodeJS.ProcessEnv;
 }
 interface UpdateDependencies {
-  fetch?: (url: string, options?: RequestInit) => Promise<Response>;
+  fetch?: (url: string, options?: HttpRequestOptions) => Promise<HttpResponse>;
   run?: (installer: string, env: NodeJS.ProcessEnv) => Promise<void>;
   log?: (message: string) => void;
 }
@@ -63,7 +68,7 @@ async function runInstaller(installer: string, env: NodeJS.ProcessEnv) {
     );
   });
 }
-async function responseText(response: Response, limit: number) {
+async function responseText(response: HttpResponse, limit: number) {
   if (!response.ok)
     throw new Error(
       `Release download failed (HTTP ${response.status}); installation unchanged.`,
@@ -92,9 +97,32 @@ export async function updateInstallation(
   input: UpdateInput,
   dependencies: UpdateDependencies = {},
 ) {
+  if (dependencies.fetch)
+    return performUpdate(
+      input,
+      dependencies as UpdateDependencies & {
+        fetch: NonNullable<UpdateDependencies["fetch"]>;
+      },
+    );
+  const transport = createHttpTransport();
+  try {
+    return await performUpdate(input, {
+      ...dependencies,
+      fetch: transport.request,
+    });
+  } finally {
+    await transport.close();
+  }
+}
+async function performUpdate(
+  input: UpdateInput,
+  dependencies: UpdateDependencies & {
+    fetch: NonNullable<UpdateDependencies["fetch"]>;
+  },
+) {
   const { check, to } = parseUpdateArguments(input.args);
   const env = input.env || process.env;
-  const fetchRelease = dependencies.fetch || fetch;
+  const fetchRelease = dependencies.fetch;
   const log = dependencies.log || console.log;
   const root = resolve(input.installRoot);
   // Never let a source checkout or an old executable update an unrelated install.

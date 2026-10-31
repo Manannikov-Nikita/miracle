@@ -15,6 +15,9 @@ import { join, resolve, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { createHttpTransport } from "./http-transport.js";
+
+const controlTransport = createHttpTransport();
 
 const packageRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const sourceRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -53,7 +56,7 @@ async function control(
   action: "status" | "stop",
 ): Promise<ControlState> {
   try {
-    const response = await fetch(
+    const response = await controlTransport.request(
       `http://127.0.0.1:${state.port}/api/local/control`,
       {
         method: "POST",
@@ -479,7 +482,11 @@ async function main() {
 }
 main()
   .finally(async () => {
-    if (startupLock) await rm(startupLock, { recursive: true, force: true });
+    try {
+      await controlTransport.close();
+    } finally {
+      if (startupLock) await rm(startupLock, { recursive: true, force: true });
+    }
   })
   .catch((error) => {
     console.error(
