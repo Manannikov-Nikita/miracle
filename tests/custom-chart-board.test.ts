@@ -107,3 +107,27 @@ it("starts the diagnostic renderer even when the separate table preview request 
   expect(host.querySelector(".custom-chart")).not.toBeNull();
   expect(host.textContent).not.toContain("Preview unavailable");
 });
+
+it("can return from a failed fallback table to the custom chart", async () => {
+  failure.rows = true;
+  await act(async () =>
+    root.render(
+      createElement(ResultView, {
+        id: "snapshot",
+        view: "custom",
+        boardId: "board",
+        nodeId: "node",
+      }),
+    ),
+  );
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>("button")!.click(),
+  );
+  expect(host.textContent).toContain("Preview unavailable");
+  const back = Array.from(host.querySelectorAll("button")).find(
+    (button) => button.textContent === "Вернуться к графику",
+  );
+  expect(back).toBeDefined();
+  await act(async () => back!.click());
+  expect(host.textContent).toContain("Не удалось открыть кастомный график");
+});

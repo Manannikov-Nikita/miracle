@@ -345,46 +345,25 @@ export default function ResultView({
       />
     );
   }
-  if (error)
-    return (
-      <ErrorBox
-        className="board-error nowheel"
-        error={error}
-        title="Не удалось загрузить снимок."
-        hint="Повторите загрузку данных этого блока."
-        actions={
-          <button type="button" onClick={() => setRetry((n) => n + 1)}>
-            Повторить загрузку
-          </button>
-        }
-      />
-    );
-  if (!result || result.id !== id)
-    return (
-      <div className="board-loading" role="status">
-        Загрузка снимка…
-      </div>
-    );
-  if (view === "chart")
-    return (
-      <Chart result={result} spec={chart ?? defaultChart(result.columns)} />
-    );
-  if (view === "custom")
-    return (
-      <div className="board-custom-table-preview">
-        <button type="button" onClick={() => setShowCustomTable(false)}>
-          Вернуться к графику
+  const content = error ? (
+    <ErrorBox
+      className="board-error nowheel"
+      error={error}
+      title="Не удалось загрузить снимок."
+      hint="Повторите загрузку данных этого блока."
+      actions={
+        <button type="button" onClick={() => setRetry((n) => n + 1)}>
+          Повторить загрузку
         </button>
-        <TableView
-          key={id}
-          result={result}
-          initialRows={rows}
-          spec={table}
-          visibleColumns={visibleColumns}
-        />
-      </div>
-    );
-  return (
+      }
+    />
+  ) : !result || result.id !== id ? (
+    <div className="board-loading" role="status">
+      Загрузка снимка…
+    </div>
+  ) : view === "chart" ? (
+    <Chart result={result} spec={chart ?? defaultChart(result.columns)} />
+  ) : (
     <TableView
       key={id}
       result={result}
@@ -392,5 +371,15 @@ export default function ResultView({
       spec={table}
       visibleColumns={visibleColumns}
     />
+  );
+  return view === "custom" ? (
+    <div className="board-custom-table-preview">
+      <button type="button" onClick={() => setShowCustomTable(false)}>
+        Вернуться к графику
+      </button>
+      {content}
+    </div>
+  ) : (
+    content
   );
 }

@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { setTimeout as pause } from "node:timers/promises";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -15,6 +16,7 @@ const spec = {
 };
 let resize: (entries: any[]) => void;
 function setup() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   dom = new JSDOM('<div id="app"></div>', { url: "http://localhost" });
   vi.stubGlobal("window", dom.window);
   vi.stubGlobal("document", dom.window.document);
@@ -32,15 +34,48 @@ function setup() {
   );
   root = createRoot(document.getElementById("app")!);
 }
-async function flush(ms = 30) {
+async function resizeAndFlush(width: number, height: number) {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+    resize([{ contentRect: { width, height } }]);
+    // Only the debounce is clock-driven. Native WebCrypto work must settle
+    // through the observable DOM checks below, not a guessed wall-clock delay.
+    await vi.advanceTimersByTimeAsync(120);
   });
+}
+async function waitFor(assertion: () => void) {
+  const deadline = Date.now() + 3000;
+  let lastError: unknown;
+  do {
+    // End each act scope so React commits effects before the next condition
+    // check. The Node timer remains real while browser debounces are faked.
+    await act(async () => {
+      await pause(10);
+    });
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  } while (Date.now() < deadline);
+  throw lastError;
+}
+async function waitForFrame(
+  previous?: HTMLIFrameElement,
+): Promise<HTMLIFrameElement> {
+  let frame: HTMLIFrameElement | null = null;
+  await waitFor(() => {
+    frame = document.querySelector("iframe");
+    expect(frame).not.toBeNull();
+    if (previous) expect(frame).not.toBe(previous);
+  });
+  return frame!;
 }
 afterEach(async () => {
   if (root) await act(() => root.unmount());
   dom?.window.close();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 it("sizes from the content box, preserves the frame across zoom and rebuilds on size/theme changes", async () => {
@@ -67,25 +102,19 @@ it("sizes from the content box, preserves the frame across zoom and rebuilds on 
       }),
     ),
   );
-  await act(() => resize([{ contentRect: { width: 600, height: 400 } }]));
-  await flush(180);
-  const first = document.querySelector("iframe")!;
-  expect(first).not.toBeNull();
+  await resizeAndFlush(600, 400);
+  const first = await waitForFrame();
   expect(first.title).toBe("Выручка по месяцам");
   document.querySelector<HTMLElement>(".custom-chart")!.style.transform =
     "scale(.5)";
-  await act(() => resize([{ contentRect: { width: 600, height: 400 } }]));
-  await flush(150);
+  await resizeAndFlush(600, 400);
   expect(document.querySelector("iframe")).toBe(first);
-  await act(() => resize([{ contentRect: { width: 700, height: 400 } }]));
-  await flush(180);
-  const second = document.querySelector("iframe")!;
-  expect(second).not.toBe(first);
+  await resizeAndFlush(700, 400);
+  const second = await waitForFrame(first);
   await act(() => {
     document.documentElement.dataset.theme = "light";
   });
-  await flush();
-  expect(document.querySelector("iframe")).not.toBe(second);
+  await waitForFrame(second);
   expect(document.querySelector(".custom-chart-description")?.textContent).toBe(
     "Выручка по месяцам",
   );
@@ -121,9 +150,10 @@ it("offers a keyboard button to retry a failed fetch and to show the source tabl
       }),
     ),
   );
-  await act(() => resize([{ contentRect: { width: 600, height: 400 } }]));
-  await flush(180);
-  expect(document.querySelector('[role="alert"]')).not.toBeNull();
+  await resizeAndFlush(600, 400);
+  await waitFor(() =>
+    expect(document.querySelector('[role="alert"]')).not.toBeNull(),
+  );
   const buttons = Array.from(document.querySelectorAll("button"));
   await act(() =>
     buttons
@@ -135,7 +165,6 @@ it("offers a keyboard button to retry a failed fetch and to show the source tabl
   await act(() =>
     buttons.find((button) => button.textContent === "Повторить")!.click(),
   );
-  await flush();
+  await waitForFrame();
   expect(document.querySelector('[role="alert"]')).toBeNull();
-  expect(document.querySelector("iframe")).not.toBeNull();
 });
