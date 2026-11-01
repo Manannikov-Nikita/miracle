@@ -107,6 +107,45 @@ describe("board inspector settings integration", () => {
     await act(async () => element.click());
   }
 
+  it("switches custom charts to tables and back without losing their source", async () => {
+    const customChart = {
+      version: 1 as const,
+      description: "Каскад с итогом",
+      html: "<svg></svg>",
+      css: "",
+      javascript: "api.root.textContent = 'test';",
+    };
+    const node = fixture();
+    node.data.view = "custom";
+    node.data.customChart = customChart;
+    await render(node);
+    expect(button("Кастомный график").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(button("Таблица").getAttribute("aria-pressed")).toBe("false");
+    expect(container.textContent).toContain("Каскад с итогом");
+    expect(
+      container.querySelector('[aria-label="Раздел настроек таблицы"]'),
+    ).toBeNull();
+    expect(container.querySelector('[aria-label="Ось X"]')).toBeNull();
+    await click(button("Таблица"));
+    expect(current.data.view).toBe("table");
+    expect(current.data.customChart).toEqual(customChart);
+    await click(button("Кастомный график"));
+    expect(current.data.view).toBe("custom");
+    expect(current.data.customChart).toEqual(customChart);
+    expect(uncaught).toEqual([]);
+  });
+
+  it("does not offer an empty custom chart for a regular result", async () => {
+    await render(fixture());
+    expect(
+      [...container.querySelectorAll("button")].some(
+        (button) => button.textContent === "Кастомный график",
+      ),
+    ).toBe(false);
+  });
+
   it("shows chart settings exclusively for a graph block", async () => {
     await render(fixture());
     expect(container.querySelector('[aria-label="Ось X"]')).not.toBeNull();

@@ -5,7 +5,9 @@ import { ChartSettings } from "./ResultView";
 import { defaultChart } from "./model";
 import TableSettings from "./TableSettings";
 import { createTableSpec } from "./tableModel";
+import CustomChartDetails from "./CustomChartDetails";
 export default function Inspector({
+  boardId,
   node,
   result,
   editable,
@@ -13,6 +15,7 @@ export default function Inspector({
   close,
   openSource,
 }: {
+  boardId?: string;
   node: BoardNode;
   result?: ResultSet;
   editable: boolean;
@@ -65,9 +68,9 @@ export default function Inspector({
             <div className="board-view-tabs">
               <button
                 disabled={!editable}
-                aria-pressed={node.data.view !== "chart"}
+                aria-pressed={!node.data.view || node.data.view === "table"}
                 onClick={() => {
-                  if (node.data.view === "chart")
+                  if (node.data.view && node.data.view !== "table")
                     change({ ...node, data: { ...node.data, view: "table" } });
                 }}
               >
@@ -90,7 +93,25 @@ export default function Inspector({
               >
                 График
               </button>
+              {node.data.customChart && (
+                <button
+                  disabled={!editable}
+                  aria-pressed={node.data.view === "custom"}
+                  onClick={() => {
+                    if (node.data.view !== "custom")
+                      change({
+                        ...node,
+                        data: { ...node.data, view: "custom" },
+                      });
+                  }}
+                >
+                  Кастомный график
+                </button>
+              )}
             </div>
+            {node.data.view === "custom" && node.data.customChart && (
+              <CustomChartDetails boardId={boardId} node={node} />
+            )}
             {node.data.view === "chart" && result && (
               <ChartSettings
                 result={result}
@@ -102,7 +123,7 @@ export default function Inspector({
                 }}
               />
             )}
-            {node.data.view !== "chart" && result && (
+            {(!node.data.view || node.data.view === "table") && result && (
               <TableSettings
                 key={node.id}
                 result={result}

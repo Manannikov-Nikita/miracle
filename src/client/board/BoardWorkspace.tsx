@@ -1128,6 +1128,7 @@ function Workspace({
         )}
         {selectedNode && inspecting && board && (
           <Inspector
+            boardId={board.id}
             node={selectedNode}
             result={
               selectedNode.data.resultSetId

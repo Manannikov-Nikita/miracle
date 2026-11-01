@@ -132,7 +132,7 @@ export default function ArtifactNode({
       <header className="board-node-header">
         <span className="board-node-kind" aria-hidden="true">
           {data.kind === "result" ? (
-            data.view === "chart" ? (
+            data.view === "chart" || data.view === "custom" ? (
               <ChartLine size={16} />
             ) : (
               <Table size={16} />
@@ -194,9 +194,12 @@ export default function ArtifactNode({
       >
         {data.kind === "result" && data.resultSetId && (
           <ResultView
+            boardId={actions.boardId}
+            nodeId={id}
             id={data.resultSetId}
             view={data.view ?? "table"}
             chart={data.chart}
+            customChart={data.customChart}
             visibleColumns={data.visibleColumns}
             table={data.table}
             onMetadata={actions.metadata}

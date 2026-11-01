@@ -645,10 +645,34 @@
 .board-view-tabs {
   display: flex;
   gap: 4px;
+  flex-wrap: wrap;
 }
 .board-view-tabs button {
   flex: 1;
   border: 1px solid var(--board-border);
+}
+.board-custom-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+.board-custom-details > p {
+  margin: 0;
+}
+.board-custom-table-preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.board-custom-table-preview > button {
+  align-self: flex-start;
+  margin: 4px;
+}
+.board-custom-table-preview > .board-table {
+  flex: 1;
+  min-height: 0;
 }
 .board-view-tabs button[aria-pressed="true"] {
   color: var(--board-accent);

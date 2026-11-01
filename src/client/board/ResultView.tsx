@@ -8,6 +8,8 @@ import { chartOptions } from "./chartOptions";
 import ChartCanvas from "./ChartCanvas";
 import TableView from "./TableView";
 import ChartTypePicker from "./ChartTypePicker";
+import type { CustomChartSpec } from "../../shared/custom-charts";
+import CustomChart from "./CustomChart";
 
 function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   const [rows, setRows] = useState<Cell[][] | null>(null);
@@ -271,16 +273,22 @@ export function ChartSettings({
   );
 }
 export default function ResultView({
+  boardId,
+  nodeId,
   id,
   view,
   chart,
+  customChart,
   visibleColumns,
   table,
   onMetadata,
 }: {
+  boardId?: string;
+  nodeId?: string;
   id: string;
-  view: "table" | "chart";
+  view: "table" | "chart" | "custom";
   chart?: ChartSpec;
+  customChart?: CustomChartSpec;
   visibleColumns?: string[];
   table?: TableSpec;
   onMetadata?: (result: ResultSet) => void;
@@ -289,6 +297,8 @@ export default function ResultView({
   const [rows, setRows] = useState<Cell[][]>([]);
   const [error, setError] = useState<Error | null>(null);
   const [retry, setRetry] = useState(0);
+  const [showCustomTable, setShowCustomTable] = useState(false);
+  useEffect(() => setShowCustomTable(false), [id, view, boardId, nodeId]);
   useEffect(() => {
     setRows([]);
     setResult(null);
@@ -333,6 +343,46 @@ export default function ResultView({
   if (view === "chart")
     return (
       <Chart result={result} spec={chart ?? defaultChart(result.columns)} />
+    );
+  if (view === "custom" && !showCustomTable) {
+    if (!customChart || !boardId || !nodeId)
+      return (
+        <ErrorBox
+          className="board-error nowheel"
+          title="Не удалось открыть кастомный график."
+          error="Не найдены исходники или адрес блока."
+          hint="Попросите агента восстановить график. Данные доступны в таблице."
+          actions={
+            <button type="button" onClick={() => setShowCustomTable(true)}>
+              Показать таблицу
+            </button>
+          }
+        />
+      );
+    return (
+      <CustomChart
+        boardId={boardId}
+        nodeId={nodeId}
+        resultSetId={id}
+        spec={customChart}
+        onShowTable={() => setShowCustomTable(true)}
+      />
+    );
+  }
+  if (view === "custom")
+    return (
+      <div className="board-custom-table-preview">
+        <button type="button" onClick={() => setShowCustomTable(false)}>
+          Вернуться к графику
+        </button>
+        <TableView
+          key={id}
+          result={result}
+          initialRows={rows}
+          spec={table}
+          visibleColumns={visibleColumns}
+        />
+      </div>
     );
   return (
     <TableView
