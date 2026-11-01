@@ -1,0 +1,42 @@
+.custom-chart {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.custom-chart-host,
+.custom-chart-overlay {
+  position: absolute;
+  inset: 0;
+}
+.custom-chart-frame {
+  display: block;
+  border: 0;
+  width: 100%;
+  height: 100%;
+}
+.custom-chart-overlay {
+  overflow: auto;
+}
+.custom-chart-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.custom-chart-diagnostic {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
+}
