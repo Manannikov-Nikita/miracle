@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { boardDocumentSchema, sourceSchema } from "./validation.js";
+import {
+  boardDocumentSchema,
+  boardEdgeAppearanceSchema,
+  boardEdgePointSchema,
+  sourceSchema,
+} from "./validation.js";
 import { ProjectStore, problem } from "./project-store.js";
 import type {
   Board,
@@ -362,18 +367,43 @@ export class WorkspaceOperations {
           case "update_edge": {
             const edge = document.edges.find((e) => e.id === key);
             if (!edge) throw problem(404, "Связь не найдена");
+            const patch = z
+              .object({
+                label: z.string().max(500).optional(),
+                labelPosition: z
+                  .number()
+                  .finite()
+                  .min(0)
+                  .max(1)
+                  .nullable()
+                  .optional(),
+                appearance: boardEdgeAppearanceSchema.optional(),
+                source: z.string().min(1).max(200).nullable().optional(),
+                target: z.string().min(1).max(200).nullable().optional(),
+                sourcePoint: boardEdgePointSchema.nullable().optional(),
+                targetPoint: boardEdgePointSchema.nullable().optional(),
+                bend: boardEdgePointSchema.nullable().optional(),
+                sourceHandle: z
+                  .enum(["top", "right", "bottom", "left"])
+                  .nullable()
+                  .optional(),
+                targetHandle: z
+                  .enum(["top", "right", "bottom", "left"])
+                  .nullable()
+                  .optional(),
+              })
+              .strict()
+              .parse(op.patch);
+            // Null clears optional geometry fields. The complete document
+            // validates both ends before any write commits.
             Object.assign(
               edge,
-              z
-                .object({
-                  label: z.string().max(200).optional(),
-                  source: z.string().optional(),
-                  target: z.string().optional(),
-                  sourceHandle: z.string().optional(),
-                  targetHandle: z.string().optional(),
-                })
-                .strict()
-                .parse(op.patch),
+              Object.fromEntries(
+                Object.entries(patch).map(([key, value]) => [
+                  key,
+                  value === null ? undefined : value,
+                ]),
+              ),
             );
             break;
           }

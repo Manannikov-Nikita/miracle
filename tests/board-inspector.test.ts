@@ -117,6 +117,73 @@ describe("board inspector settings integration", () => {
     expect(uncaught).toEqual([]);
   });
 
+  it.each(["table", "chart"] as const)(
+    "does not edit a %s block when its current view is clicked again",
+    async (view) => {
+      const node = fixture(view);
+      // Legacy table blocks omit view; charts may use inferred settings.
+      if (view === "table") delete node.data.view;
+      await render(node);
+      await click(button(view === "table" ? "Таблица" : "График"));
+      expect(changes).toEqual([]);
+      expect(current).toEqual(node);
+    },
+  );
+
+  it("groups source and chart appearance behind disclosures without changing data", async () => {
+    const node = fixture();
+    node.data.source = result.source;
+    await render(node);
+    const source = container.querySelector<HTMLDetailsElement>(
+      ".board-source-details",
+    );
+    const appearance = container.querySelector<HTMLDetailsElement>(
+      ".board-chart-appearance",
+    );
+    expect(source).not.toBeNull();
+    expect(source?.open).toBe(false);
+    expect(appearance).not.toBeNull();
+    expect(appearance?.open).toBe(false);
+    expect(source?.querySelector("button")?.textContent?.trim()).toBe(
+      "Открыть SQL",
+    );
+    expect(appearance?.querySelector('[aria-label="Числа"]')).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Ось X"]')?.closest("details"),
+    ).toBeNull();
+    await click(source!.querySelector("summary")!);
+    await click(appearance!.querySelector("summary")!);
+    expect(source?.open).toBe(true);
+    expect(appearance?.open).toBe(true);
+    expect(changes).toEqual([]);
+  });
+
+  it("focuses its first field and returns focus to the opening control on close", async () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    await render(fixture());
+    expect(document.activeElement).toBe(
+      container.querySelector('input[maxlength="500"]'),
+    );
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
+  it("does not steal focus back when the user has moved outside the inspector", async () => {
+    const trigger = document.createElement("button");
+    const elsewhere = document.createElement("button");
+    document.body.append(trigger, elsewhere);
+    trigger.focus();
+    await render(fixture());
+    elsewhere.focus();
+    await act(async () => root.render(null));
+    expect(document.activeElement).toBe(elsewhere);
+    trigger.remove();
+    elsewhere.remove();
+  });
+
   it.each(["table", undefined] as const)(
     "shows the full table settings for view %s",
     async (view) => {

@@ -39,7 +39,7 @@
   z-index: 1;
 }
 .table-view .table-cell-frozen {
-  background: var(--board-surface, #202329);
+  background: var(--board-surface, #27292d);
 }
 .table-cell-bar {
   position: absolute;
@@ -60,7 +60,7 @@
   z-index: 3;
 }
 .table-view .board-table-scroll tfoot td {
-  background: #272b33;
+  background: var(--board-raised);
   border-top: 1px solid var(--board-border);
   padding-top: 6px;
   padding-bottom: 6px;

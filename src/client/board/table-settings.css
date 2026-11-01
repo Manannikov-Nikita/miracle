@@ -21,7 +21,7 @@
   padding: 6px 4px;
   color: var(--board-muted);
   background: transparent;
-  font-size: 11px;
+  font-size: 13px;
 }
 .board-workspace .table-settings-tabs button[aria-pressed="true"] {
   color: var(--board-text);
@@ -32,7 +32,7 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  font-size: 11px;
+  font-size: 13px;
 }
 .table-settings .select-trigger > span:first-child {
   overflow: hidden;
@@ -64,12 +64,12 @@
 }
 .table-setting-order > span {
   color: var(--board-muted);
-  font-size: 10px;
+  font-size: 12px;
   padding: 0 4px;
 }
 .table-settings .table-setting-help {
   margin: 0;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--board-muted);
 }
@@ -80,7 +80,7 @@
 }
 .table-setting-details summary {
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
   color: var(--board-text);
   padding: 2px 0;
 }
@@ -97,13 +97,28 @@
   border-left: 2px solid var(--board-border);
   padding: 4px 0 4px 10px;
 }
+.table-setting-rule-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--board-muted);
+  font-size: 12px;
+}
+.board-workspace .table-setting-rule-heading .table-setting-remove,
+.board-workspace .table-setting-order > button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  flex-shrink: 0;
+}
 .table-setting-section {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 .table-settings button {
-  font-size: 11px;
+  font-size: 13px;
 }
 .table-setting-rule .table-setting-remove,
 .table-settings .table-setting-reset {
@@ -119,7 +134,7 @@
   border-radius: 4px;
   color: var(--board-text);
   background: var(--board-raised);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.6;
 }
 .table-setting-warning > button {
@@ -127,11 +142,11 @@
   margin-top: 8px;
 }
 .table-settings .table-setting-error {
-  font-size: 10px;
-  color: #f0a5a5;
+  font-size: 12px;
+  color: var(--board-danger);
 }
 .table-settings [aria-invalid="true"] {
-  border-color: #f0a5a5;
+  border-color: var(--board-danger);
 }
 .table-settings button:disabled,
 .table-settings input:disabled {

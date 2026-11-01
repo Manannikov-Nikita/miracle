@@ -12,6 +12,11 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  ConnectionDiagnosticError,
+  connectionValidationError,
+  queryErrorText,
+} from "./connectionErrors.js";
+import {
   Database,
   migrate,
   retention,
@@ -283,7 +288,16 @@ export async function buildApp(
         promise?: Promise<void>;
       }
     >();
-    app.setErrorHandler((e: any, _req, reply) => {
+    app.setErrorHandler((e: any, req, reply) => {
+      if (
+        e instanceof z.ZodError &&
+        /^\/api\/connections(?:\/|\?|$)/.test(req.url)
+      )
+        e = connectionValidationError(e);
+      if (e instanceof ConnectionDiagnosticError)
+        return reply
+          .code(e.statusCode)
+          .send({ error: e.message, code: e.code, details: e.details });
       if (e instanceof z.ZodError)
         return reply
           .code(400)
@@ -478,6 +492,7 @@ export async function buildApp(
         validateClickHouseConnection(b);
         validateTrinoConnection(b);
       } catch (e: any) {
+        if (e instanceof ConnectionDiagnosticError) throw e;
         throw err(400, e.message);
       }
       return {
@@ -567,6 +582,7 @@ export async function buildApp(
         const result = await engineMetadata(c, "SELECT version()");
         return { ok: true, version: String(result.rows[0]?.[0] || "") };
       } catch (e: any) {
+        if (e instanceof ConnectionDiagnosticError) throw e;
         throw err(400, e.message);
       }
     });
@@ -585,6 +601,7 @@ export async function buildApp(
         const r = await engineMetadata(c, "SELECT version()");
         return { ok: true, version: String(r.rows[0]?.[0] || "") };
       } catch (e: any) {
+        if (e instanceof ConnectionDiagnosticError) throw e;
         throw err(400, e.message);
       }
     });
@@ -608,6 +625,7 @@ export async function buildApp(
               },
         );
       } catch (e: any) {
+        if (e instanceof ConnectionDiagnosticError) throw e;
         throw err(400, e.message);
       }
     });
@@ -632,6 +650,7 @@ export async function buildApp(
           type: String(row[1]),
         }));
       } catch (e: any) {
+        if (e instanceof ConnectionDiagnosticError) throw e;
         throw err(400, e.message);
       }
     });
@@ -663,6 +682,7 @@ export async function buildApp(
             aggregateCombinators: combinators.rows.map((row) => String(row[0])),
           };
         } catch (e: any) {
+          if (e instanceof ConnectionDiagnosticError) throw e;
           throw err(400, e.message);
         }
       },
@@ -807,13 +827,11 @@ export async function buildApp(
       } catch (e: any) {
         await state.cancel?.().catch(() => {});
         const cancelled = state.controller.signal.aborted && !timedOut;
-        let message = timedOut
+        const message = timedOut
           ? "Превышено время выполнения запроса"
           : cancelled
             ? "Запрос отменён"
-            : String(e.message || "Ошибка запроса").slice(0, 4000);
-        if (engine.password)
-          message = message.replaceAll(engine.password, "[скрыто]");
+            : queryErrorText(e, engine);
         db.query(
           "UPDATE query_runs SET status=?2,error=?3,elapsed_ms=?4,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
           [

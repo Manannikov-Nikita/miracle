@@ -38,7 +38,6 @@ describe("personal board drafts and revisions", () => {
   let rejectRevision: boolean;
   let emitSavedBoard: boolean;
   let afterSaveEcho: (() => void) | undefined;
-  let beforeSave: (() => void) | undefined;
   const notify = vi.fn();
   function Workspace({ id }: { id: string }) {
     store = useBoard(id, notify);
@@ -77,7 +76,6 @@ describe("personal board drafts and revisions", () => {
     rejectRevision = false;
     emitSavedBoard = false;
     afterSaveEcho = undefined;
-    beforeSave = undefined;
     vi.stubGlobal("fetch", async (path: string, options: RequestInit = {}) => {
       if (path === "/api/boards")
         return response(boards.map(({ document, ...summary }) => summary));
@@ -97,7 +95,6 @@ describe("personal board drafts and revisions", () => {
       if (options.method === "PATCH") {
         const patch = JSON.parse(options.body as string);
         changes.push(patch);
-        beforeSave?.();
         if (rejectRevision || patch.baseRevision !== board.revision)
           return response(
             { error: "Revision conflict", code: "REVISION_CONFLICT" },
@@ -304,7 +301,7 @@ describe("personal board drafts and revisions", () => {
       expect(changes).toHaveLength(1);
     },
   );
-  it("shows agent blocks immediately while retaining a local viewport change and rebasing its save", async () => {
+  it("ignores viewport-only changes without creating writes, history or conflicts", async () => {
     await open();
     await act(async () =>
       store.change(
@@ -312,63 +309,57 @@ describe("personal board drafts and revisions", () => {
         false,
       ),
     );
+    expect(store.state).toBe("Сохранено");
+    expect(store.board?.document.viewport).toBeUndefined();
+    expect(store.canUndo).toBe(false);
+    expect(
+      localStorage.getItem("miracle:board-draft:workspace-a:first"),
+    ).toBeNull();
+    await act(async () => store.flush());
+    expect(changes).toEqual([]);
+    expect(store.board?.revision).toBe(3);
+
     boards[0] = {
       ...boards[0],
       revision: 4,
-      document: {
-        ...documentWith("agent block"),
-        viewport: { x: 20, y: 30, zoom: 1 },
-      },
+      document: documentWith("agent block"),
     };
     await act(async () =>
       project.emit({ id: 4, type: "board.updated", data: boards[0] }),
     );
     expect(store.board?.document.nodes[0].data.text).toBe("agent block");
-    expect(store.board?.document.viewport).toEqual({
-      x: 120,
-      y: 80,
-      zoom: 0.7,
-    });
     expect(store.conflict).toBe(false);
-    await act(async () => store.save());
-    expect(boards[0].document.nodes[0].data.text).toBe("agent block");
-    expect(boards[0].document.viewport).toEqual({ x: 120, y: 80, zoom: 0.7 });
-    expect(store.board?.revision).toBe(5);
-    expect(changes).toMatchObject([{ baseRevision: 4 }]);
+    await act(async () => store.flush());
+    expect(store.board?.revision).toBe(4);
+    expect(changes).toEqual([]);
     await act(async () => store.undo());
     expect(store.board?.document.nodes[0].data.text).toBe("server first");
-    expect(store.board?.document.viewport).toEqual({
-      x: 120,
-      y: 80,
-      zoom: 0.7,
-    });
   });
-  it("does not turn a safely rebased viewport into a conflict when its old request is rejected", async () => {
-    await open();
-    await act(async () =>
-      store.change(
-        { ...store.board!.document, viewport: { x: 120, y: 80, zoom: 0.7 } },
-        false,
-      ),
+  it("migrates an old viewport-only draft without treating its stale revision as a conflict", async () => {
+    localStorage.setItem(
+      "miracle:board-draft:workspace-a:first",
+      JSON.stringify({
+        baseRevision: 2,
+        document: {
+          ...documentWith("server first"),
+          viewport: { x: 120, y: 80, zoom: 0.7 },
+        },
+      }),
     );
-    beforeSave = () => {
-      beforeSave = undefined;
-      boards[0].revision = 4;
-      boards[0].document = documentWith("agent block");
-      project.emit({
-        id: 4,
-        type: "board.updated",
-        data: structuredClone(boards[0]),
-      });
-    };
-    await act(async () => store.save());
+    await open();
     expect(store.conflict).toBe(false);
-    expect(store.board?.document.nodes[0].data.text).toBe("agent block");
-    expect(store.board?.revision).toBe(4);
-    await act(async () => store.save());
-    expect(boards[0].document.nodes[0].data.text).toBe("agent block");
-    expect(boards[0].document.viewport).toEqual({ x: 120, y: 80, zoom: 0.7 });
-    expect(changes).toMatchObject([{ baseRevision: 3 }, { baseRevision: 4 }]);
+    expect(store.state).toBe("Сохранено");
+    expect(store.board?.revision).toBe(3);
+    expect(
+      localStorage.getItem("miracle:board-draft:workspace-a:first"),
+    ).toBeNull();
+    expect(
+      JSON.parse(
+        localStorage.getItem("miracle:board-viewport:workspace-a:first")!,
+      ),
+    ).toEqual({ x: 120, y: 80, zoom: 0.7 });
+    await act(async () => store.flush());
+    expect(changes).toEqual([]);
   });
   it("retains a dirty local board on agent events and blocks sending until the conflict is resolved", async () => {
     await open();

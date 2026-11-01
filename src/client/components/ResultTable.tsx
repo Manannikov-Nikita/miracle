@@ -9,6 +9,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { CaretLeft, CaretRight, Copy, Table } from "@phosphor-icons/react";
 import type { Cell, ResultSet } from "../../shared/types";
 import { getResultRows } from "../api";
+import { describeError } from "../error-message";
 import { ErrorBox, IconButton, Spinner } from "./UI";
 export function cellText(value: Cell | undefined): string {
   if (value === null || value === undefined) return "NULL";
@@ -27,7 +28,13 @@ export default function ResultTable({
     offset: number;
     rows: Cell[][];
   }>();
-  const [offset, setOffset] = useState(0);
+  const [requestedOffset, setOffset] = useState(0);
+  const limit = 500;
+  const offset = Math.min(
+    requestedOffset,
+    Math.max(0, Math.ceil(result.rowCount / limit) - 1) * limit,
+  );
+  useEffect(() => setOffset(offset), [offset]);
   // Keep rows during refreshes of this page, never under another page's label.
   const rows =
     page?.resultId === result.id && page.offset === offset ? page.rows : [];
@@ -35,7 +42,6 @@ export default function ResultTable({
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   const parent = useRef<HTMLDivElement>(null);
-  const limit = 500;
   useEffect(() => {
     setOffset(0);
     setPage(undefined);
@@ -49,7 +55,7 @@ export default function ResultTable({
         if (valid) setPage({ resultId: result.id, offset, rows: r.rows });
       })
       .catch((e) => {
-        if (valid) setError(e.message);
+        if (valid) setError(describeError(e).details);
       })
       .finally(() => {
         if (valid) setBusy(false);
@@ -129,7 +135,11 @@ export default function ResultTable({
     <div className="result-table-shell">
       {error && (
         <div className="result-refresh-error">
-          <ErrorBox>{error}</ErrorBox>
+          <ErrorBox
+            error={error}
+            title="Не удалось загрузить строки результата."
+            hint="Повторите загрузку. Это прочитает сохранённый результат без повторного выполнения SQL."
+          />
           <button
             type="button"
             className="text-button"
@@ -232,31 +242,35 @@ export default function ResultTable({
           >
             <Copy size={14} />
           </IconButton>
-          <span className="page-count">
-            {result.rowCount
-              ? `${offset + 1}–${Math.min(offset + limit, result.rowCount)}`
-              : "0"}
-          </span>
-          <IconButton
-            label="Предыдущая страница"
-            disabled={offset === 0 || busy}
-            onClick={() => {
-              setOffset((o) => Math.max(0, o - limit));
-              parent.current?.scrollTo(0, 0);
-            }}
-          >
-            <CaretLeft size={14} />
-          </IconButton>
-          <IconButton
-            label="Следующая страница"
-            disabled={offset + limit >= result.rowCount || busy}
-            onClick={() => {
-              setOffset((o) => o + limit);
-              parent.current?.scrollTo(0, 0);
-            }}
-          >
-            <CaretRight size={14} />
-          </IconButton>
+          {result.rowCount > limit && (
+            <>
+              <span className="page-count">
+                {result.rowCount
+                  ? `${offset + 1}–${Math.min(offset + limit, result.rowCount)}`
+                  : "0"}
+              </span>
+              <IconButton
+                label="Предыдущая страница"
+                disabled={offset === 0 || busy}
+                onClick={() => {
+                  setOffset((o) => Math.max(0, o - limit));
+                  parent.current?.scrollTo(0, 0);
+                }}
+              >
+                <CaretLeft size={14} />
+              </IconButton>
+              <IconButton
+                label="Следующая страница"
+                disabled={offset + limit >= result.rowCount || busy}
+                onClick={() => {
+                  setOffset((o) => o + limit);
+                  parent.current?.scrollTo(0, 0);
+                }}
+              >
+                <CaretRight size={14} />
+              </IconButton>
+            </>
+          )}
         </div>
       </div>
     </div>

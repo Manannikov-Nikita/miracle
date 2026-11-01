@@ -401,8 +401,7 @@ export default function App() {
         <Modal
           open={helpOpen}
           onOpenChange={setHelpOpen}
-          title="Меньше кликов, больше смысла"
-          description="Сочетания клавиш рабочей среды"
+          title="Сочетания клавиш"
         >
           <div className="shortcut-list">
             {[

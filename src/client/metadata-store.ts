@@ -1,4 +1,5 @@
 import type { SchemaTable, SqlFunctionCatalog } from "../shared/types";
+import { describeError } from "./error-message";
 import type {
   MetadataColumn,
   MetadataPage,
@@ -79,7 +80,7 @@ interface Job {
   run: () => Promise<void>;
 }
 const message = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+  describeError(error).details || String(error);
 
 /** One store belongs to one workspace. It outlives both Explorer and editor mounts. */
 export function createMetadataStore(request: Request) {

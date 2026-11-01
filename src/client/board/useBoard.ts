@@ -3,6 +3,7 @@ import type { Board, BoardDocument, BoardSummary } from "../../shared/types";
 import { api } from "../api";
 import { useProjectSync } from "../agents/ProjectSync";
 import { emptyDocument } from "./model";
+import { readBoardViewport, saveBoardViewport } from "./viewport";
 // Validation rebuilds objects in schema order. Key insertion order is not a document edit.
 function contentKey(value: unknown) {
   return JSON.stringify(value, (_key, part) =>
@@ -91,13 +92,25 @@ export function useBoard(
               Array.isArray(draft.document.nodes) &&
               Array.isArray(draft.document.edges)
             ) {
+              if (
+                draft.document.viewport &&
+                !readBoardViewport(workspaceId, id)
+              )
+                saveBoardViewport(workspaceId, id, draft.document.viewport);
               local = {
                 ...loaded,
                 revision: draft.baseRevision,
-                document: draft.document,
+                document: {
+                  ...draft.document,
+                  viewport: loaded.document.viewport,
+                },
               };
-              restored = contentKey(draft.document) !== saved.current;
-              if (!restored) local = loaded;
+              restored =
+                canvasKey(draft.document) !== canvasKey(loaded.document);
+              if (!restored) {
+                local = loaded;
+                persist(draftKey(workspaceId, id), null);
+              }
               setConflict(restored && draft.baseRevision !== loaded.revision);
             }
           } else setConflict(false);
@@ -175,8 +188,9 @@ export function useBoard(
             : node;
         }),
       };
-      // React Flow can emit the existing viewport again after fitting the canvas.
-      if (contentKey(document) === contentKey(old.document)) return;
+      // Navigation is personal view state, never a document edit.
+      document = { ...document, viewport: old.document.viewport };
+      if (canvasKey(document) === canvasKey(old.document)) return;
       if (record) {
         history.current.push(old.document);
         if (history.current.length > 60) history.current.shift();
@@ -337,7 +351,11 @@ export function useBoard(
         setState("Конфликт версий — локальный черновик сохранён");
         return;
       }
-      if (!ownSave && (!dirty || viewportOnly) && local !== serialized) {
+      if (
+        !ownSave &&
+        (!dirty || viewportOnly) &&
+        canvasKey(old.document) !== canvasKey(value.document)
+      ) {
         history.current.push(old.document);
         if (history.current.length > 60) history.current.shift();
         future.current = [];

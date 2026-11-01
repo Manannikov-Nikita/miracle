@@ -23,7 +23,9 @@
   box-shadow:
     0 24px 80px #0d11144d,
     0 4px 16px #0d111433;
-  overflow: hidden;
+  /* Only the transcript and sheet bodies scroll. Hidden would let browser
+     focus restoration scroll this outer panel and displace absolute sheets. */
+  overflow: clip;
   font-size: 14px;
 }
 .agent-toggle {
@@ -88,7 +90,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--agent-muted);
   min-width: 0;
   overflow: hidden;
@@ -176,7 +178,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   overflow: auto;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.65;
   padding: 14px;
   background: #191b1e;
@@ -339,7 +341,7 @@
   border-radius: 8px;
   background: var(--agent-bg);
   color: var(--agent-soft);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.3;
 }
 .agent-context-chip > span {
@@ -354,8 +356,8 @@
 .agent-context-chip button {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -385,7 +387,7 @@
   justify-content: space-between;
   padding: 4px 8px 8px;
   color: var(--agent-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .agent-file-picker-heading kbd {
   border: 1px solid var(--agent-line);
@@ -447,7 +449,7 @@
   font-size: inherit;
 }
 .agent-file-picker p.agent-file-picker-hint {
-  font-size: 11px;
+  font-size: 12px;
   padding-bottom: 2px;
 }
 .agent-panel .agent-composer textarea {
@@ -553,7 +555,7 @@
 }
 .agent-composer-caption {
   color: var(--agent-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
   text-align: center;
   margin: 9px 0 0;
@@ -563,7 +565,7 @@
   align-items: center;
   gap: 8px;
   min-height: 28px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--agent-soft);
   padding: 0 10px 4px;
 }
@@ -571,7 +573,7 @@
   margin-left: auto;
   border: 0;
   background: none;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--agent-text);
   text-decoration: underline;
 }
@@ -632,13 +634,13 @@
   margin-left: auto;
 }
 .agent-menu-hint {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--agent-muted);
   margin: 10px;
   max-width: 230px;
 }
 .agent-menu-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--agent-muted);
   padding: 8px 10px;
 }
@@ -652,7 +654,7 @@
   font-weight: 500;
 }
 .agent-profile-option small {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--agent-muted);
 }
 .agent-dialog-overlay,
@@ -667,6 +669,7 @@
   position: absolute;
   inset: auto 12px 12px;
   max-height: calc(100% - 32px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--agent-bg);
@@ -674,7 +677,7 @@
   border-radius: 16px;
   z-index: 4;
   box-shadow: 0 16px 48px #0004;
-  overflow: hidden;
+  overflow: clip;
 }
 .agent-dialog-heading,
 .agent-activity-header {
@@ -693,7 +696,10 @@
   margin: 0;
 }
 .agent-settings {
+  min-height: 0;
+  flex: 1 1 auto;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 20px 24px;
 }
 .agent-settings-intro {
@@ -723,10 +729,10 @@
 }
 .agent-profiles textarea {
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.7;
   resize: vertical;
-  min-height: 100px;
+  min-height: 76px;
 }
 .agent-actions {
   display: flex;
@@ -745,7 +751,7 @@
 }
 .agent-hint {
   color: var(--agent-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.65;
   margin: 0;
 }
@@ -814,7 +820,7 @@
   text-overflow: ellipsis;
 }
 .agent-history-item small {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--agent-muted);
 }
 .agent-activity-summary {
@@ -834,7 +840,7 @@
   padding: 0;
   background: transparent;
   color: var(--agent-muted);
-  font-size: 11px;
+  font-size: 12px;
   text-align: left;
 }
 .agent-activity-trigger:hover {
@@ -854,7 +860,7 @@
 }
 .agent-activity-description {
   color: var(--agent-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   margin: 6px 0 0;
 }
@@ -888,7 +894,7 @@
   margin-left: auto;
   flex: none;
   color: var(--agent-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .agent-activity-item-heading small[data-state="failed"],
 .agent-activity-icon[data-state="failed"] {
@@ -905,7 +911,7 @@
 }
 .agent-activity-raw {
   margin-top: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--agent-muted);
 }
 .agent-message.system {
@@ -923,7 +929,7 @@
 }
 .agent-approval-heading {
   color: #e3c48b;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   margin-bottom: 10px;
   display: flex;
@@ -932,14 +938,14 @@
 }
 .agent-approval-details {
   color: var(--agent-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .agent-approval-details summary {
   cursor: pointer;
   padding: 6px 0;
 }
 .agent-approval-resolved {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--agent-muted);
   margin: 12px 0;
 }
@@ -1033,4 +1039,85 @@
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* Profile management keeps setup, trust and deletion in distinct groups. */
+.agent-profile-fields {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.agent-profile-picker {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.agent-profile-picker label {
+  flex: 1;
+  min-width: 0;
+}
+.agent-profile-picker > button {
+  margin-bottom: 3px;
+}
+.agent-profile-fields :disabled,
+.agent-profile-actions button:disabled,
+.agent-profile-trust button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.agent-profile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-profile-actions .button {
+  min-height: 36px;
+}
+.agent-profile-delete:hover {
+  color: var(--danger);
+}
+.agent-profile-trust {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--agent-line);
+}
+.agent-profile-trusted {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--agent-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.agent-profile-trusted svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--mint);
+}
+.agent-profile-delete-dialog {
+  padding: 20px;
+  gap: 12px;
+}
+.agent-profile-delete-dialog h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.agent-profile-delete-dialog p {
+  margin: 0;
+  color: var(--agent-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.agent-profile-delete-dialog .agent-actions {
+  justify-content: flex-end;
+}
+.agent-profile-delete-dialog .button.danger {
+  color: var(--danger);
 }

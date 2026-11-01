@@ -9,6 +9,7 @@ import {
   mergeClickHouseOptions,
   validateClickHouseConnection,
 } from "../src/server/clickhouseOptions.js";
+import type { ConnectionDiagnosticError } from "../src/server/connectionErrors.js";
 import {
   certificates,
   tlsServer,
@@ -57,12 +58,12 @@ it("keeps certificate trust and hostname verification mandatory", async () => {
   try {
     const c = conn(f.url);
     c.clickhouse!.tls!.caCert = certs.wrongCa;
-    await expect(run(c)).rejects.toThrow("проверьте адрес, TLS");
+    await expect(run(c)).rejects.toMatchObject({ code: "CONNECTION_TLS_CA" });
     await expect(
       run(conn(f.url.replace("localhost", "127.0.0.1"))),
-    ).rejects.toThrow("проверьте адрес, TLS");
+    ).rejects.toMatchObject({ code: "CONNECTION_TLS_HOSTNAME" });
     c.clickhouse = undefined;
-    await expect(run(c)).rejects.toThrow("проверьте адрес, TLS");
+    await expect(run(c)).rejects.toMatchObject({ code: "CONNECTION_TLS_CA" });
   } finally {
     await closeTls(f.server);
   }
@@ -185,11 +186,16 @@ it("rejects redirects, bounded error text and gzip bombs safely", async () => {
     }
   });
   try {
-    await expect(run(conn(f.url))).rejects.toThrow("HTTP 302");
+    await expect(run(conn(f.url))).rejects.toMatchObject({
+      code: "CONNECTION_REDIRECT",
+      details: "ClickHouse HTTP 302",
+    });
     mode = "error";
-    const failure = await run(conn(f.url)).catch((error) => error as Error);
+    const failure = await run(conn(f.url)).catch(
+      (error) => error as ConnectionDiagnosticError,
+    );
     expect(failure).toBeInstanceOf(Error);
-    const message = (failure as Error).message;
+    const message = (failure as ConnectionDiagnosticError).details!;
     expect(message).toContain("Code: 62.");
     expect(message).not.toContain("secret");
     expect(message).not.toContain("BEGIN PRIVATE");
@@ -214,7 +220,7 @@ it("suppresses incomplete engine errors when the connection drops inside a refle
     c.password = password;
     const error = await run(c).catch((value) => value as Error);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(
+    expect((error as ConnectionDiagnosticError).details).toBe(
       "ClickHouse HTTP 401: не удалось прочитать сообщение движка",
     );
   } finally {
@@ -234,17 +240,15 @@ it.each(["password", "authorization", "partial-password"] as const)(
         reflection === "authorization"
           ? req.headers.authorization!.slice(6)
           : password;
-      res.end(
-        (reflection === "partial-password" ? "x".repeat(1990) : "") + reflected,
-      );
+      res.end("x".repeat(1024 * 1024 - 20) + reflected);
     });
     try {
       const c = conn(f.url);
       c.password = password;
       const error = await run(c).catch((value) => value as Error);
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toBe(
-        "ClickHouse HTTP 401: сообщение движка превышает допустимый размер",
+      expect((error as ConnectionDiagnosticError).details).toBe(
+        "ClickHouse HTTP 401: Ответ превышает 1 МБ; полные подробности доступны в журнале сервера БД.",
       );
     } finally {
       await closeTls(f.server);

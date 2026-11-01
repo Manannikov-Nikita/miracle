@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { ArrowLeft, ArrowRight, Plus, Trash } from "@phosphor-icons/react";
 import type { Column, ResultSet } from "../../shared/types";
 import type {
   TableAggregate,
@@ -222,6 +223,21 @@ function ConditionalSettings({
         </p>
         {thresholds.map((threshold, index) => (
           <div className="table-setting-rule" key={index}>
+            <div className="table-setting-rule-heading">
+              <span>Порог {index + 1}</span>
+              <button
+                type="button"
+                className="table-setting-remove"
+                disabled={disabled}
+                aria-label={`Удалить порог ${index + 1}`}
+                title={`Удалить порог ${index + 1}`}
+                onClick={() =>
+                  set({ thresholds: thresholds.filter((_, i) => i !== index) })
+                }
+              >
+                <Trash size={16} aria-hidden="true" />
+              </button>
+            </div>
             <Draft
               label={`Порог ${index + 1} · от`}
               value={threshold.value}
@@ -249,17 +265,6 @@ function ConditionalSettings({
                 })
               }
             />
-            <button
-              type="button"
-              className="table-setting-remove"
-              disabled={disabled}
-              aria-label={`Удалить порог ${index + 1}`}
-              onClick={() =>
-                set({ thresholds: thresholds.filter((_, i) => i !== index) })
-              }
-            >
-              Удалить
-            </button>
           </div>
         ))}
         <button
@@ -269,7 +274,7 @@ function ConditionalSettings({
             set({ thresholds: [...thresholds, { value: "0", color: "green" }] })
           }
         >
-          + Порог
+          <Plus size={16} aria-hidden="true" /> Порог
         </button>
       </details>
       <details className="table-setting-details">
@@ -281,6 +286,21 @@ function ConditionalSettings({
         </p>
         {mappings.map((mapping, index) => (
           <div className="table-setting-rule" key={index}>
+            <div className="table-setting-rule-heading">
+              <span>Подстановка {index + 1}</span>
+              <button
+                type="button"
+                className="table-setting-remove"
+                disabled={disabled}
+                aria-label={`Удалить подстановку ${index + 1}`}
+                title={`Удалить подстановку ${index + 1}`}
+                onClick={() =>
+                  set({ mappings: mappings.filter((_, i) => i !== index) })
+                }
+              >
+                <Trash size={16} aria-hidden="true" />
+              </button>
+            </div>
             <label className="table-setting-check">
               <input
                 type="checkbox"
@@ -343,17 +363,6 @@ function ConditionalSettings({
                 })
               }
             />
-            <button
-              type="button"
-              className="table-setting-remove"
-              disabled={disabled}
-              aria-label={`Удалить подстановку ${index + 1}`}
-              onClick={() =>
-                set({ mappings: mappings.filter((_, i) => i !== index) })
-              }
-            >
-              Удалить
-            </button>
           </div>
         ))}
         <button
@@ -363,7 +372,7 @@ function ConditionalSettings({
             set({ mappings: [...mappings, { value: "", text: "" }] })
           }
         >
-          + Подстановка
+          <Plus size={16} aria-hidden="true" /> Подстановка
         </button>
       </details>
     </>
@@ -434,17 +443,19 @@ function ColumnSettings({
             type="button"
             disabled={disabled || position <= 0}
             aria-label="Переместить столбец влево"
+            title="Переместить столбец влево"
             onClick={() => move(-1)}
           >
-            ←
+            <ArrowLeft size={16} aria-hidden="true" />
           </button>
           <button
             type="button"
             disabled={disabled || position >= order.length - 1}
             aria-label="Переместить столбец вправо"
+            title="Переместить столбец вправо"
             onClick={() => move(1)}
           >
-            →
+            <ArrowRight size={16} aria-hidden="true" />
           </button>
         </div>
         <Draft
@@ -640,6 +651,21 @@ function DataSettings({
       </p>
       {filters.map((filter, index) => (
         <div className="table-setting-rule" key={index}>
+          <div className="table-setting-rule-heading">
+            <span>Фильтр {index + 1}</span>
+            <button
+              type="button"
+              className="table-setting-remove"
+              disabled={disabled}
+              aria-label={`Удалить фильтр ${index + 1}`}
+              title={`Удалить фильтр ${index + 1}`}
+              onClick={() =>
+                set({ filters: filters.filter((_, i) => i !== index) })
+              }
+            >
+              <Trash size={16} aria-hidden="true" />
+            </button>
+          </div>
           <Choice
             label={`Фильтр ${index + 1} · столбец`}
             value={filter.column}
@@ -665,17 +691,6 @@ function DataSettings({
               change={(value) => changeFilter(index, { value })}
             />
           )}
-          <button
-            type="button"
-            className="table-setting-remove"
-            disabled={disabled}
-            aria-label={`Удалить фильтр ${index + 1}`}
-            onClick={() =>
-              set({ filters: filters.filter((_, i) => i !== index) })
-            }
-          >
-            Удалить фильтр
-          </button>
         </div>
       ))}
       <button
@@ -690,7 +705,7 @@ function DataSettings({
           })
         }
       >
-        + Фильтр
+        <Plus size={16} aria-hidden="true" /> Фильтр
       </button>
       <>
         <Choice

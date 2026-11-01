@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ReactFlow,
   ReactFlowProvider,
   Background,
   BackgroundVariant,
   Controls,
   ConnectionMode,
   MiniMap,
-  applyEdgeChanges,
   useReactFlow,
   type NodeChange,
   type EdgeChange,
@@ -15,6 +13,20 @@ import {
   type ResizeParams,
 } from "@xyflow/react";
 import * as Dialog from "@radix-ui/react-dialog";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import {
+  ArrowCounterClockwise,
+  ArrowClockwise,
+  DotsThree,
+  FileMd,
+  FloppyDisk,
+  LinkSimple,
+  Note,
+  PencilSimple,
+  Plus,
+  SlidersHorizontal,
+  Trash,
+} from "@phosphor-icons/react";
 import "@xyflow/react/dist/style.css";
 import type {
   BoardDocument,
@@ -28,11 +40,22 @@ import type {
 import { api, waitForRun } from "../api";
 import { useProjectSync } from "../agents/ProjectSync";
 import { Select } from "../components/Select";
+import { ErrorBox } from "../components/UI";
 import ArtifactNode, {
   BoardActions,
   type ArtifactFlowNode,
 } from "./ArtifactNode";
 import Inspector from "./Inspector";
+import BoardFlow from "./BoardFlow";
+import BoardEdgeView, {
+  type BoardFlowEdge,
+  type BoardEdgeGeometryPatch,
+} from "./BoardEdgeView";
+import {
+  edgeGeometryKey,
+  toBoardFlow,
+  type BoardCanvasNode,
+} from "./edge-flow";
 import {
   applyRefresh,
   createResultNode,
@@ -41,7 +64,8 @@ import {
   removeNode,
 } from "./model";
 import { useBoard } from "./useBoard";
-import { applyBoardNodeChanges, toArtifactFlowNode } from "./flow-nodes";
+import { readBoardViewport, saveBoardViewport } from "./viewport";
+import { applyBoardNodeChanges } from "./flow-nodes";
 import { boardHandleSide } from "./connection-sides";
 import {
   alignBoardNodes,
@@ -61,7 +85,8 @@ export interface BoardWorkspaceProps {
   onOpenSource: (source: QuerySource, title: string) => void;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
 }
-const nodeTypes = { artifact: ArtifactNode };
+const nodeTypes = { artifact: ArtifactNode, "edge-anchor": () => null };
+const edgeTypes = { board: BoardEdgeView };
 // Documents store explicit sizes, while transient React Flow measurements are not persisted.
 const boardFitOptions = { padding: 0.15, includeHiddenNodes: true };
 function Workspace({
@@ -81,10 +106,25 @@ function Workspace({
   const workspaceRef = useRef<HTMLElement>(null);
   const store = useBoard(workspaceId, notify);
   const { board, editable, change } = store;
-  const flow = useReactFlow<ArtifactFlowNode>();
+  // Choose the camera once per board; remote content updates must not move it.
+  const initialViewport = useMemo(
+    () =>
+      board
+        ? (readBoardViewport(workspaceId, board.id) ?? board.document.viewport)
+        : undefined,
+    [workspaceId, board?.id],
+  );
+  const flow = useReactFlow<BoardCanvasNode, BoardFlowEdge>();
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
     new Set(),
+  );
+  const renderedBoard = useMemo(
+    () =>
+      board
+        ? toBoardFlow(board.document, selectedIds)
+        : { nodes: [], edges: [] },
+    [board?.document, selectedIds],
   );
   const selectionRef = useRef<ReadonlySet<string>>(selectedIds);
   const projectSync = useProjectSync();
@@ -119,6 +159,13 @@ function Workspace({
   const snapCancelled = useRef(false);
   const [inspecting, setInspecting] = useState(false);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const hasSelection =
+    board?.document.nodes.some((node) => selectedIds.has(node.id)) ||
+    board?.document.edges.some((edge) => edge.id === selectedEdge);
+  const [editingEdge, setEditingEdge] = useState<string | null>(null);
+  useEffect(() => {
+    if (editingEdge !== selectedEdge) setEditingEdge(null);
+  }, [editingEdge, selectedEdge]);
   const [metadata, setMetadata] = useState<Record<string, ResultSet>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [dialog, setDialog] = useState<
@@ -126,7 +173,9 @@ function Workspace({
   >(null);
   const [name, setName] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
-  const [dialogError, setDialogError] = useState("");
+  const [dialogError, setDialogError] = useState<Error | null>(null);
+  const boardMenuTrigger = useRef<HTMLButtonElement>(null);
+  const dialogTrigger = useRef<HTMLElement | null>(null);
   const [rebind, setRebind] = useState<ResultSet | null>(null);
   const [latestResult, setLatestResult] = useState<ResultSet | null>(null);
   const gesture = useRef<BoardDocument | null>(null);
@@ -223,11 +272,15 @@ function Workspace({
     snapCancelled.current = false;
     setInspecting(false);
     setSelectedEdge(null);
-    if (board?.document.viewport)
-      void flow.setViewport(board.document.viewport);
-    else if (board)
-      requestAnimationFrame(() => void flow.fitView(boardFitOptions));
-  }, [board?.id]);
+    setEditingEdge(null);
+    if (initialViewport) void flow.setViewport(initialViewport);
+    else if (board) {
+      const frame = requestAnimationFrame(
+        () => void flow.fitView(boardFitOptions),
+      );
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [workspaceId, board?.id]);
   useEffect(() => {
     const available = new Set(board?.document.nodes.map((node) => node.id));
     const ids = new Set(
@@ -386,9 +439,14 @@ function Workspace({
     setSelected(node.id);
     selectNodes(new Set([node.id]));
   };
-  const onNodesChange = (changes: NodeChange<ArtifactFlowNode>[]) => {
+  const onNodesChange = (incoming: NodeChange<BoardCanvasNode>[]) => {
     const current = store.current.current;
     if (!current) return;
+    const nodeIds = new Set(current.document.nodes.map((node) => node.id));
+    const changes = incoming.filter(
+      (item) =>
+        item.type !== "add" && item.type !== "replace" && nodeIds.has(item.id),
+    ) as NodeChange<ArtifactFlowNode>[];
     const selectionChanges = changes.filter(
       (c) => c.type === "select" || c.type === "remove",
     );
@@ -480,7 +538,9 @@ function Workspace({
       ...current.document,
       nodes: next,
       edges: current.document.edges.filter(
-        (e) => !removed.has(e.source) && !removed.has(e.target),
+        (e) =>
+          (!e.source || !removed.has(e.source)) &&
+          (!e.target || !removed.has(e.target)),
       ),
     };
     change(document, !gesture.current);
@@ -529,8 +589,80 @@ function Workspace({
     });
   };
   const selectedNode = board?.document.nodes.find((n) => n.id === selected);
-  const edge = board?.document.edges.find((e) => e.id === selectedEdge);
-  const openDialog = (kind: NonNullable<typeof dialog>) => {
+  const updateEdge = (
+    boardId: string,
+    id: string,
+    patch: Partial<Pick<BoardEdge, "label" | "appearance">>,
+  ) => {
+    const current = store.current.current;
+    if (!editableRef.current || !current || current.id !== boardId) return;
+    change({
+      ...current.document,
+      edges: current.document.edges.map((edge) =>
+        edge.id === id
+          ? {
+              ...edge,
+              ...patch,
+              ...(patch.appearance
+                ? {
+                    appearance: { ...edge.appearance, ...patch.appearance },
+                  }
+                : {}),
+            }
+          : edge,
+      ),
+    });
+  };
+  const removeEdge = (boardId: string, id: string) => {
+    const current = store.current.current;
+    if (!editableRef.current || !current || current.id !== boardId) return;
+    change({
+      ...current.document,
+      edges: current.document.edges.filter((edge) => edge.id !== id),
+    });
+    setSelectedEdge(null);
+    setEditingEdge(null);
+    workspaceRef.current?.focus({ preventScroll: true });
+  };
+  const updateEdgeGeometry = (
+    boardId: string,
+    id: string,
+    patch: BoardEdgeGeometryPatch,
+    expected?: BoardEdge,
+  ) => {
+    const current = store.current.current;
+    if (!editableRef.current || !current || current.id !== boardId) return;
+    const edge = current.document.edges.find((item) => item.id === id);
+    if (
+      !edge ||
+      (expected && edgeGeometryKey(edge) !== edgeGeometryKey(expected))
+    )
+      return;
+    const next = {
+      ...edge,
+      ...patch,
+      ...(patch.appearance
+        ? { appearance: { ...edge.appearance, ...patch.appearance } }
+        : {}),
+    };
+    const nodeIds = new Set(current.document.nodes.map((node) => node.id));
+    if (
+      (next.source && !nodeIds.has(next.source)) ||
+      (next.target && !nodeIds.has(next.target))
+    )
+      return;
+    change({
+      ...current.document,
+      edges: current.document.edges.map((item) =>
+        item.id === id ? next : item,
+      ),
+    });
+  };
+  const openDialog = (
+    kind: NonNullable<typeof dialog>,
+    trigger = document.activeElement as HTMLElement | null,
+  ) => {
+    dialogTrigger.current = trigger;
     setName(
       kind === "rename"
         ? (board?.name ?? "")
@@ -538,12 +670,12 @@ function Workspace({
           ? `${board?.name ?? "Доска"} — копия`
           : "Новая доска",
     );
-    setDialogError("");
+    setDialogError(null);
     setDialog(kind);
   };
   const submit = async () => {
     setDialogBusy(true);
-    setDialogError("");
+    setDialogError(null);
     try {
       if (dialog === "delete") await store.remove();
       else if (!name.trim()) throw new Error("Введите название доски.");
@@ -553,7 +685,7 @@ function Workspace({
       } else await store.create(name.trim());
       setDialog(null);
     } catch (e) {
-      setDialogError((e as Error).message);
+      setDialogError(e instanceof Error ? e : new Error(String(e)));
     } finally {
       setDialogBusy(false);
     }
@@ -606,11 +738,11 @@ function Workspace({
           store.redo();
         }
       }}
-      className="board-workspace"
+      className={`board-workspace${hasSelection ? " board-has-selection" : ""}`}
       aria-label="Аналитическая доска"
     >
       <div className="board-header">
-        <span className="board-heading">ДОСКА</span>
+        <span className="board-heading">Доска</span>
         <Select
           aria-label="Выбрать доску"
           value={board?.id ?? ""}
@@ -623,29 +755,65 @@ function Workspace({
         <span
           className={`board-save-state${store.conflict ? " board-warning" : ""}`}
           role="status"
+          title={editable ? store.state : "Только просмотр"}
         >
           {editable ? store.state : "Только просмотр"}
         </span>
         {editable && (
           <>
-            <button onClick={() => openDialog("new")} title="Создать доску">
-              ＋
+            <button
+              onClick={() => openDialog("new")}
+              title="Создать доску"
+              aria-label="Создать доску"
+              className="board-header-icon"
+            >
+              <Plus size={17} aria-hidden="true" />
             </button>
             {board && (
-              <>
-                <button
-                  onClick={() => openDialog("rename")}
-                  title="Переименовать доску"
-                >
-                  Имя
-                </button>
-                <button
-                  onClick={() => openDialog("delete")}
-                  title="Удалить доску"
-                >
-                  Удалить
-                </button>
-              </>
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    ref={boardMenuTrigger}
+                    className="board-header-icon"
+                    title="Действия с доской"
+                    aria-label="Действия с доской"
+                  >
+                    <DotsThree size={19} weight="bold" aria-hidden="true" />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    className="dropdown-menu"
+                    align="end"
+                    sideOffset={6}
+                    collisionPadding={8}
+                    onCloseAutoFocus={(event) => {
+                      if (dialog) event.preventDefault();
+                    }}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    onKeyUp={(event) => event.stopPropagation()}
+                  >
+                    <DropdownMenu.Item
+                      onSelect={() =>
+                        openDialog("rename", boardMenuTrigger.current)
+                      }
+                    >
+                      <PencilSimple size={16} aria-hidden="true" />
+                      Переименовать доску
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Separator />
+                    <DropdownMenu.Item
+                      className="board-menu-danger"
+                      onSelect={() =>
+                        openDialog("delete", boardMenuTrigger.current)
+                      }
+                    >
+                      <Trash size={16} aria-hidden="true" />
+                      Удалить доску
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
             )}
           </>
         )}
@@ -663,38 +831,52 @@ function Workspace({
       )}
       {board && (
         <div className="board-tools">
-          <span>Добавить</span>
-          <button disabled={!editable} onClick={() => addText("note")}>
-            ▧ Заметка
+          <button
+            disabled={!editable}
+            onClick={() => addText("note")}
+            title="Добавить заметку"
+            aria-label="Добавить заметку"
+            className="board-tools-icon"
+          >
+            <Note size={18} aria-hidden="true" />
           </button>
-          <button disabled={!editable} onClick={() => addText("markdown")}>
-            M↓ Markdown
+          <button
+            disabled={!editable}
+            onClick={() => addText("markdown")}
+            title="Добавить Markdown"
+            aria-label="Добавить Markdown"
+            className="board-tools-icon"
+          >
+            <FileMd size={18} aria-hidden="true" />
           </button>
           <span className="board-tools-divider" />
           <button
             disabled={!editable || !store.canUndo}
             onClick={store.undo}
+            className="board-tools-icon"
             aria-label="Отменить изменение"
             title="Отменить"
           >
-            ↶
+            <ArrowCounterClockwise size={16} aria-hidden="true" />
           </button>
           <button
             disabled={!editable || !store.canRedo}
             onClick={store.redo}
+            className="board-tools-icon"
             aria-label="Повторить изменение"
             title="Повторить"
           >
-            ↷
+            <ArrowClockwise size={16} aria-hidden="true" />
           </button>
           <button
             disabled={!selectedNode}
             onClick={() => setInspecting((value) => !value)}
+            className="board-tools-icon"
+            aria-label="Свойства"
+            aria-pressed={inspecting && !!selectedNode}
+            title="Свойства выбранного блока"
           >
-            Свойства
-          </button>
-          <button onClick={() => void flow.fitView(boardFitOptions)}>
-            Вписать
+            <SlidersHorizontal size={16} aria-hidden="true" />
           </button>
           {editable && selectedNode?.data.kind === "result" && (
             <button
@@ -703,14 +885,21 @@ function Workspace({
                 latestResult.id === selectedNode.data.resultSetId
               }
               title="Заменить источник выбранного блока последним добавленным SQL-результатом"
+              className="board-tools-icon"
+              aria-label="Перепривязать"
               onClick={() => setRebind(latestResult)}
             >
-              Перепривязать
+              <LinkSimple size={16} aria-hidden="true" />
             </button>
           )}
           {editable && store.state.includes("Не сохранено") && (
-            <button onClick={() => void store.save()}>
-              Повторить сохранение
+            <button
+              onClick={() => void store.save()}
+              className="board-tools-icon"
+              aria-label="Повторить сохранение"
+              title="Повторить сохранение"
+            >
+              <FloppyDisk size={16} aria-hidden="true" />
             </button>
           )}
         </div>
@@ -749,31 +938,89 @@ function Workspace({
       >
         {board ? (
           <BoardActions.Provider value={actionContext}>
-            <ReactFlow<ArtifactFlowNode, BoardEdge>
+            <BoardFlow
+              gestureScope={`${workspaceId}:${board.id}`}
               colorMode="dark"
-              nodes={board.document.nodes.map((node) =>
-                toArtifactFlowNode(node, selectedIds),
+              nodes={renderedBoard.nodes}
+              edges={renderedBoard.edges.map(
+                ({ edge: e, source, target }): BoardFlowEdge => ({
+                  ...e,
+                  source,
+                  target,
+                  ariaLabel: e.label ? `Стрелка: ${e.label}` : "Стрелка",
+                  sourceHandle: e.sourceHandle ?? "right",
+                  targetHandle: e.targetHandle ?? "left",
+                  selected: e.id === selectedEdge,
+                  type: "board",
+                  data: {
+                    edge: e,
+                    gestureScope: `${workspaceId}:${board.id}`,
+                    editable,
+                    editing: editingEdge === e.id,
+                    onSelect: () => {
+                      setSelectedEdge(e.id);
+                      setSelected(null);
+                      selectNodes(new Set());
+                      setInspecting(false);
+                    },
+                    onEdit: () => {
+                      if (!editable) return;
+                      setSelectedEdge(e.id);
+                      setEditingEdge(e.id);
+                      setSelected(null);
+                      selectNodes(new Set());
+                      setInspecting(false);
+                    },
+                    onFinishEdit: () =>
+                      setEditingEdge((current) =>
+                        current === e.id ? null : current,
+                      ),
+                    onChange: (patch) => updateEdge(board.id, e.id, patch),
+                    onGeometryChange: (patch, expected) =>
+                      updateEdgeGeometry(board.id, e.id, patch, expected),
+                    onDelete: () => removeEdge(board.id, e.id),
+                    onClose: () => {
+                      setSelectedEdge(null);
+                      setEditingEdge(null);
+                      workspaceRef.current?.focus({ preventScroll: true });
+                    },
+                  },
+                }),
               )}
-              edges={board.document.edges.map((e) => ({
-                ...e,
-                sourceHandle: e.sourceHandle ?? "right",
-                targetHandle: e.targetHandle ?? "left",
-                selected: e.id === selectedEdge,
-                type: "smoothstep",
-                markerEnd: { type: "arrowclosed" as never, color: "#8c95a7" },
-                style: { stroke: "#8c95a7" },
-                labelStyle: { fill: "#dfe3eb" },
-                labelBgStyle: { fill: "#202329" },
-              }))}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               onNodesChange={onNodesChange}
-              onEdgesChange={(changes: EdgeChange<BoardEdge>[]) => {
-                if (editable && changes.some((c) => c.type === "remove"))
+              onEdgesChange={(changes: EdgeChange<BoardFlowEdge>[]) => {
+                const selection = [...changes]
+                  .reverse()
+                  .find((item) => item.type === "select" && item.selected);
+                if (selection?.type === "select") {
+                  setSelectedEdge(selection.id);
+                  setSelected(null);
+                  selectNodes(new Set());
+                } else if (
+                  changes.some(
+                    (item) =>
+                      item.type === "select" &&
+                      !item.selected &&
+                      item.id === selectedEdge,
+                  )
+                )
+                  setSelectedEdge(null);
+                const current = store.current.current;
+                if (
+                  editableRef.current &&
+                  current?.id === board.id &&
+                  changes.some((c) => c.type === "remove")
+                )
                   change({
-                    ...board.document,
-                    edges: applyEdgeChanges<BoardEdge>(
-                      changes,
-                      board.document.edges,
+                    ...current.document,
+                    edges: current.document.edges.filter(
+                      (edge) =>
+                        !changes.some(
+                          (item) =>
+                            item.type === "remove" && item.id === edge.id,
+                        ),
                     ),
                   });
               }}
@@ -783,6 +1030,7 @@ function Workspace({
                 connection.source !== connection.target
               }
               onNodeClick={(_, node) => {
+                if (node.type !== "artifact") return;
                 if (selectionRef.current.has(node.id)) setSelected(node.id);
                 setSelectedEdge(null);
               }}
@@ -810,10 +1058,8 @@ function Workspace({
                 setInspecting(false);
               }}
               onMoveEnd={(_, viewport) => {
-                if (editable) {
-                  const current = store.current.current;
-                  if (current) change({ ...current.document, viewport }, false);
-                }
+                if (store.current.current?.id === board.id)
+                  saveBoardViewport(workspaceId, board.id, viewport);
               }}
               nodesDraggable={editable}
               nodesConnectable={editable}
@@ -827,7 +1073,7 @@ function Workspace({
               deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
               minZoom={0.15}
               maxZoom={2}
-              defaultViewport={board.document.viewport}
+              defaultViewport={initialViewport}
               proOptions={{ hideAttribution: true }}
             >
               <AlignmentGuides guides={guides} />
@@ -835,19 +1081,20 @@ function Workspace({
                 variant={BackgroundVariant.Dots}
                 gap={24}
                 size={1}
-                color="#343944"
+                color="var(--board-border)"
               />
               <Controls
                 showInteractive={false}
                 fitViewOptions={boardFitOptions}
               />
               <MiniMap
+                style={{ width: 120, height: 75 }}
                 pannable
                 zoomable
-                nodeColor="#343944"
-                maskColor="#181a1fb8"
+                nodeColor="var(--board-border)"
+                maskColor="color-mix(in srgb, var(--board-bg) 72%, transparent)"
               />
-              {!board.document.nodes.length && (
+              {!board.document.nodes.length && !board.document.edges.length && (
                 <div className="board-canvas-empty">
                   <strong>Начните с результата запроса</strong>
                   <span>
@@ -859,7 +1106,7 @@ function Workspace({
                   </span>
                 </div>
               )}
-            </ReactFlow>
+            </BoardFlow>
           </BoardActions.Provider>
         ) : (
           <div className="board-canvas-empty">
@@ -900,43 +1147,6 @@ function Workspace({
             openSource={() => actionContext.openSource(selectedNode.id)}
           />
         )}
-        {edge && board && (
-          <aside className="board-edge-editor" aria-label="Свойства стрелки">
-            <label>
-              Подпись стрелки
-              <input
-                maxLength={500}
-                value={edge.label ?? ""}
-                readOnly={!editable}
-                onChange={(e) =>
-                  change({
-                    ...board.document,
-                    edges: board.document.edges.map((item) =>
-                      item.id === edge.id
-                        ? { ...item, label: e.target.value }
-                        : item,
-                    ),
-                  })
-                }
-              />
-            </label>
-            {editable && (
-              <button
-                onClick={() => {
-                  change({
-                    ...board.document,
-                    edges: board.document.edges.filter(
-                      (item) => item.id !== edge.id,
-                    ),
-                  });
-                  setSelectedEdge(null);
-                }}
-              >
-                Удалить стрелку
-              </button>
-            )}
-          </aside>
-        )}
       </div>
       <footer className="board-footer">
         <span>
@@ -957,7 +1167,15 @@ function Workspace({
       >
         <Dialog.Portal>
           <Dialog.Overlay className="board-dialog-overlay" />
-          <Dialog.Content className="board-dialog">
+          <Dialog.Content
+            className="board-dialog"
+            onCloseAutoFocus={(event) => {
+              if (dialogTrigger.current?.isConnected) {
+                event.preventDefault();
+                dialogTrigger.current.focus();
+              }
+            }}
+          >
             <Dialog.Title>
               {dialog === "delete"
                 ? "Удалить доску?"
@@ -992,9 +1210,25 @@ function Workspace({
                 </label>
               )}
               {dialogError && (
-                <p className="board-error" role="alert">
-                  {dialogError}
-                </p>
+                <ErrorBox
+                  error={dialogError}
+                  title={
+                    dialog === "delete"
+                      ? "Не удалось удалить доску."
+                      : dialog === "rename"
+                        ? "Не удалось переименовать доску."
+                        : dialog === "copy"
+                          ? "Не удалось сохранить копию."
+                          : "Не удалось создать доску."
+                  }
+                  hint={
+                    dialogError.message === "Введите название доски."
+                      ? "Введите название и сохраните доску."
+                      : dialog === "delete"
+                        ? "Повторите удаление. Если доска изменилась, закройте диалог и загрузите актуальную версию."
+                        : "Проверьте название и повторите сохранение."
+                  }
+                />
               )}
               <div className="board-dialog-actions">
                 <button

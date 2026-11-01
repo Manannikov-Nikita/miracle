@@ -14,6 +14,7 @@ import {
   type DateBatchProgress,
 } from "../shared/date-batch.js";
 import type { QuerySource } from "../shared/types.js";
+import { queryErrorText as redacted } from "./connectionErrors.js";
 
 export interface DateBatchState {
   controller: AbortController;
@@ -69,13 +70,6 @@ export function interruptQueryRuns(db: Database) {
   });
 }
 
-function redacted(error: unknown, engine: EngineConnection) {
-  let text = String(
-    error instanceof Error ? error.message : error || "Ошибка запроса",
-  ).slice(0, 4000);
-  if (engine.password) text = text.replaceAll(engine.password, "[скрыто]");
-  return text;
-}
 function delay(milliseconds: number, signal: AbortSignal) {
   signal.throwIfAborted();
   return new Promise<void>((resolve, reject) => {

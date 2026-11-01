@@ -1,0 +1,190 @@
+.board-edge-label,
+.board-edge-input,
+.board-edge-toolbar-anchor {
+  position: absolute;
+  pointer-events: all;
+}
+.board-edge-draggable {
+  cursor: grab;
+  touch-action: none;
+}
+.board-edge-draggable:active,
+.board-workspace .react-flow button.board-edge-label:active {
+  cursor: grabbing;
+}
+.board-workspace .react-flow button.board-edge-label {
+  cursor: grab;
+  touch-action: none;
+}
+.board-workspace .react-flow button.board-edge-endpoint,
+button.board-edge-endpoint {
+  position: absolute;
+  z-index: 9;
+  pointer-events: all;
+  width: 14px;
+  height: 14px;
+  min-height: 0;
+  padding: 0;
+  border: 2px solid var(--board-accent);
+  border-radius: 50%;
+  background: var(--board-bg);
+  cursor: grab;
+  touch-action: none;
+}
+.board-edge-endpoint::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+}
+.board-workspace .react-flow button.board-edge-bend {
+  position: absolute;
+  z-index: 9;
+  pointer-events: all;
+  width: 13px;
+  height: 13px;
+  min-height: 0;
+  padding: 0;
+  border: 2px solid var(--board-accent);
+  border-radius: 3px;
+  background: var(--board-bg);
+  cursor: grab;
+  touch-action: none;
+}
+.board-edge-bend::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+.board-workspace .react-flow button.board-edge-bend:hover {
+  background: var(--board-accent);
+}
+.board-workspace .react-flow button.board-edge-bend:active {
+  cursor: grabbing;
+}
+.board-workspace .react-flow button.board-edge-endpoint:hover,
+.board-workspace .react-flow button.board-edge-endpoint-snapping,
+button.board-edge-endpoint:hover,
+button.board-edge-endpoint-snapping {
+  background: var(--board-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--board-accent) 20%, transparent);
+}
+.board-workspace .react-flow button.board-edge-endpoint:active {
+  cursor: grabbing;
+}
+.board-workspace .react-flow .board-edge-label {
+  z-index: 7;
+  min-height: 0;
+  max-width: 360px;
+  transform: translate(-50%, -50%);
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--board-bg);
+  color: var(--board-text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.board-workspace .react-flow .board-edge-label:hover {
+  background: var(--board-raised);
+}
+.board-workspace input.board-edge-input {
+  z-index: 9;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--board-accent);
+  background: var(--board-surface);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--board-accent) 15%, transparent);
+}
+.board-edge-toolbar-anchor {
+  z-index: 10;
+  transform-origin: top left;
+}
+.board-edge-toolbar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--board-border);
+  border-radius: 8px;
+  background: var(--board-surface);
+  color: var(--board-text);
+  box-shadow: 0 5px 18px #0003;
+}
+.board-workspace .react-flow .board-edge-toolbar button {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 4px;
+}
+.board-edge-toolbar-separator {
+  width: 1px;
+  height: 20px;
+  background: var(--board-border);
+  flex: none;
+}
+.board-workspace .board-edge-toolbar .board-edge-delete:hover {
+  color: var(--board-danger);
+}
+.board-edge-menu {
+  z-index: 110;
+  min-width: 180px;
+  max-height: var(--radix-dropdown-menu-content-available-height);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  box-shadow: 0 5px 18px #0003;
+}
+.board-edge-menu-title {
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.board-edge-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+.board-edge-menu-item[data-highlighted] {
+  background: var(--hover);
+}
+.board-edge-choice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+}
+.board-edge-menu-check {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--accent);
+}
+.board-edge-color {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}

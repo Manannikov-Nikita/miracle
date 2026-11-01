@@ -138,6 +138,7 @@ export default function DateBatchDialog({
   return (
     <Modal
       open={open}
+      dismissible={!busy}
       onOpenChange={(value) => {
         if (!submitting.current) onOpenChange(value);
       }}

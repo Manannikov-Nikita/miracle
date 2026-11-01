@@ -4,6 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import ResultView from "../src/client/board/ResultView";
 import type { ChartSpec, ResultSet } from "../src/shared/types";
+import { api, getResultRows } from "../src/client/api";
 
 const renderer = vi.hoisted(() => ({
   fail: "" as "" | "init" | "initAfterRegistration" | "setOption" | "resize",
@@ -162,6 +163,14 @@ describe("chart settings validation lifecycle", () => {
       expect(container.querySelector('[role="alert"]')?.textContent).toMatch(
         message,
       );
+      const details = container.querySelector<HTMLDetailsElement>("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(details?.querySelector("pre")?.textContent).toMatch(message);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "свойствах блока",
+      );
+      expect(container.querySelector('[role="alert"] button')).toBeNull();
       expect(container.querySelector("h1")?.textContent).toBe("Доска");
       expect(uncaught).toEqual([]);
     },
@@ -201,6 +210,14 @@ describe("chart settings validation lifecycle", () => {
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
         "Не удалось отобразить график.",
       );
+      const details = container.querySelector<HTMLDetailsElement>("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      await act(async () => details!.querySelector("summary")!.click());
+      expect(details?.open).toBe(true);
+      expect(details?.querySelector("pre")?.textContent).toBe(
+        `Renderer failed (${stage})`,
+      );
       expect(
         loggedErrors.some(
           (error) =>
@@ -215,6 +232,33 @@ describe("chart settings validation lifecycle", () => {
       );
       expect(retry).toBeDefined();
       await act(async () => retry!.click());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector('[role="img"]')).not.toBeNull();
+      expect(uncaught).toEqual([]);
+    },
+  );
+
+  it.each(["snapshot", "chart"])(
+    "explains a %s read failure, keeps its details collapsed and retries the read",
+    async (target) => {
+      const detail = `Internal storage error while reading ${target}`;
+      const failure = Object.assign(new Error("Не удалось получить данные"), {
+        details: detail,
+      });
+      if (target === "snapshot")
+        vi.mocked(getResultRows).mockRejectedValueOnce(failure);
+      else vi.mocked(api).mockRejectedValueOnce(failure);
+      await render(valid);
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain("Не удалось загрузить");
+      const details = alert?.querySelector<HTMLDetailsElement>("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(details?.querySelector("pre")?.textContent).toContain(detail);
+      const retry = [...alert!.querySelectorAll("button")].find((button) =>
+        /Повторить/.test(button.textContent ?? ""),
+      )!;
+      await act(async () => retry.click());
       expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(container.querySelector('[role="img"]')).not.toBeNull();
       expect(uncaught).toEqual([]);

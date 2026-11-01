@@ -1,4 +1,5 @@
-import { type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { describeError, type ErrorContext } from "../error-message";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   X,
@@ -35,6 +36,7 @@ export function Modal({
   description,
   children,
   wide = false,
+  dismissible = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -42,14 +44,26 @@ export function Modal({
   description?: string;
   children: ReactNode;
   wide?: boolean;
+  dismissible?: boolean;
 }) {
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(value) => {
+        if (value || dismissible) onOpenChange(value);
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop" />
         <Dialog.Content
           className={`modal ${wide ? "modal-wide" : ""}`}
           aria-describedby={description ? "modal-description" : undefined}
+          onEscapeKeyDown={(event) => {
+            if (!dismissible) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (!dismissible) event.preventDefault();
+          }}
         >
           <div className="modal-heading">
             <div>
@@ -61,7 +75,7 @@ export function Modal({
               )}
             </div>
             <Dialog.Close asChild>
-              <IconButton label="Закрыть">
+              <IconButton label="Закрыть" disabled={!dismissible}>
                 <X size={18} />
               </IconButton>
             </Dialog.Close>
@@ -75,11 +89,49 @@ export function Modal({
 export function Spinner() {
   return <CircleNotch size={16} className="spin" aria-label="Загрузка" />;
 }
-export function ErrorBox({ children }: { children: ReactNode }) {
+export function ErrorBox({
+  error,
+  children,
+  context,
+  engine,
+  title,
+  hint,
+  actions,
+  className = "",
+}: {
+  error?: unknown;
+  children?: ReactNode;
+  context?: ErrorContext;
+  engine?: "clickhouse" | "trino";
+  title?: string;
+  hint?: string;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  const diagnostic =
+    error !== undefined || typeof children === "string"
+      ? describeError(error ?? children, { context, engine })
+      : undefined;
   return (
-    <div className="error-box" role="alert">
-      <WarningCircle size={18} />
-      <span>{children}</span>
+    <div className={`error-box ${className}`} role="alert">
+      <WarningCircle size={18} aria-hidden="true" />
+      <div className="error-content">
+        {diagnostic ? (
+          <>
+            <strong className="error-title">{title ?? diagnostic.title}</strong>
+            <p className="error-hint">{hint ?? diagnostic.hint}</p>
+            {diagnostic.details && (
+              <details className="error-details" key={diagnostic.details}>
+                <summary>Полный текст ошибки</summary>
+                <pre>{diagnostic.details}</pre>
+              </details>
+            )}
+          </>
+        ) : (
+          children
+        )}
+        {actions && <div className="error-actions">{actions}</div>}
+      </div>
     </div>
   );
 }
@@ -124,26 +176,63 @@ export function Toasts({
   items: { id: number; message: string; tone: string }[];
   onDismiss: (id: number) => void;
 }) {
+  // Keep a snapshot so an expiring toast cannot remove diagnostics mid-read.
+  const [selectedError, setSelectedError] =
+    useState<ReturnType<typeof describeError>>();
   return (
-    <div className="toasts" aria-live="polite">
-      {items.map((t) => (
-        <div key={t.id} className={`toast toast-${t.tone}`}>
-          {t.tone === "error" ? (
-            <WarningCircle size={18} />
-          ) : t.tone === "success" ? (
-            <Check size={18} />
-          ) : (
-            <ArrowRight size={18} />
-          )}
-          <span>{t.message}</span>
-          <IconButton
-            label="Закрыть уведомление"
-            onClick={() => onDismiss(t.id)}
-          >
-            <X size={14} />
-          </IconButton>
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="toasts" aria-live="polite">
+        {items.map((t) => {
+          const diagnostic =
+            t.tone === "error" ? describeError(t.message) : undefined;
+          return (
+            <div key={t.id} className={`toast toast-${t.tone}`}>
+              {t.tone === "error" ? (
+                <WarningCircle size={18} />
+              ) : t.tone === "success" ? (
+                <Check size={18} />
+              ) : (
+                <ArrowRight size={18} />
+              )}
+              <span>
+                {diagnostic ? (
+                  <>
+                    <strong className="error-title">{diagnostic.title}</strong>
+                    <span className="error-hint">{diagnostic.hint}</span>
+                  </>
+                ) : (
+                  t.message
+                )}
+              </span>
+              {diagnostic && (
+                <button
+                  type="button"
+                  className="toast-details"
+                  onClick={() => setSelectedError(diagnostic)}
+                >
+                  Подробнее
+                </button>
+              )}
+              <IconButton
+                label="Закрыть уведомление"
+                onClick={() => onDismiss(t.id)}
+              >
+                <X size={14} />
+              </IconButton>
+            </div>
+          );
+        })}
+      </div>
+      <Modal
+        open={!!selectedError}
+        onOpenChange={(open) => {
+          if (!open) setSelectedError(undefined);
+        }}
+        title={selectedError?.title ?? "Ошибка"}
+        description={selectedError?.hint}
+      >
+        <pre className="error-full-text">{selectedError?.details}</pre>
+      </Modal>
+    </>
   );
 }

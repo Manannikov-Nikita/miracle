@@ -1,5 +1,13 @@
 import { clickhouseRequest } from "./clickhouseTransport.js";
 import { createTrinoTransport, type TrinoResponse } from "./trinoTransport.js";
+import {
+  CONNECTION_ERROR_MAX_BYTES,
+  CONNECTION_ERROR_TOO_LARGE,
+  ConnectionDiagnosticError,
+  connectionHttpError,
+  connectionTransportError,
+  trinoQueryError,
+} from "./connectionErrors.js";
 import { CLICKHOUSE_REQUEST_TIMEOUT_DEFAULT } from "../shared/clickhouse-options.js";
 import { normalizeTrinoSql } from "./sql.js";
 import { parse, isLosslessNumber } from "lossless-json";
@@ -55,7 +63,16 @@ export function validateNextUri(uri: string, base: string) {
   return u.href;
 }
 export function validateConnectionUrl(value: string) {
-  const u = new URL(value);
+  let u: URL;
+  try {
+    u = new URL(value);
+  } catch {
+    throw new ConnectionDiagnosticError(
+      "Некорректный адрес сервера. Укажите полный URL с http:// или https://.",
+      "VALIDATION_ERROR",
+      "url: Invalid URL",
+    );
+  }
   if (
     !["http:", "https:"].includes(u.protocol) ||
     u.username ||
@@ -63,13 +80,39 @@ export function validateConnectionUrl(value: string) {
     u.search ||
     u.hash
   )
-    throw new Error("URL должен быть http(s), без пароля и параметров");
+    throw new ConnectionDiagnosticError(
+      "URL должен быть http(s), без пароля и параметров. Укажите логин и пароль в отдельных полях.",
+      "VALIDATION_ERROR",
+      "url: URL должен быть http(s), без пароля и параметров",
+    );
   return u.href.replace(/\/$/, "");
 }
-async function checked(res: TrinoResponse) {
+async function checked(res: TrinoResponse, connection: EngineConnection) {
   if (!res.ok) {
-    const text = (await res.text()).slice(0, 2000);
-    throw new Error(`Engine HTTP ${res.status}: ${text}`);
+    const reader = res.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    let text = "";
+    try {
+      if (reader) {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > CONNECTION_ERROR_MAX_BYTES) break;
+          chunks.push(chunk.value);
+        }
+      }
+      text =
+        bytes > CONNECTION_ERROR_MAX_BYTES
+          ? CONNECTION_ERROR_TOO_LARGE
+          : Buffer.concat(chunks).toString("utf8");
+    } catch {
+      text = "не удалось прочитать сообщение движка";
+    } finally {
+      await reader?.cancel().catch(() => {});
+    }
+    throw connectionHttpError(connection, res.status, text);
   }
   return res;
 }
@@ -210,7 +253,8 @@ async function clickhouse(
     if (pending.trim()) line(pending);
   } catch (e) {
     if (requestSignal.aborted)
-      throw new Error("Запрос ClickHouse отменён или истёк таймаут");
+      throw connectionTransportError("ClickHouse", e, requestSignal);
+    if (e instanceof ConnectionDiagnosticError) throw e;
     if (
       e instanceof Error &&
       /^(Превышен лимит|Слишком больш|ClickHouse HTTP|Не удалось подключиться|Неподдерживаемое сжатие)/.test(
@@ -275,6 +319,7 @@ async function trino(
           headers,
           signal: AbortSignal.timeout(5000),
         }),
+        c,
       );
       await response.body?.cancel();
     } finally {
@@ -290,6 +335,7 @@ async function trino(
         body: normalizeTrinoSql(s.sql),
         signal,
       }),
+      c,
     );
     let columns: Column[] = [];
     const result = collector(l);
@@ -298,8 +344,7 @@ async function trino(
         await readLimited(response, l.maxBytes + 1024 * 1024),
       );
       if (page.nextUri) uri = validateNextUri(page.nextUri, c.url);
-      if (page.error)
-        throw new Error(String(page.error.message || "Trino query failed"));
+      if (page.error) throw trinoQueryError(c, page.error);
       if (page.columns)
         columns = page.columns.map((x: any, i: number) => ({
           id: String(i),
@@ -310,6 +355,7 @@ async function trino(
       if (!page.nextUri) break;
       response = await checked(
         await transport.request(uri!, { headers, signal }),
+        c,
       );
     }
     return { columns, rows: result.rows, byteCount: result.byteCount };

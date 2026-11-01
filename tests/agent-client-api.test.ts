@@ -5,6 +5,32 @@ const response = (body: unknown, status = 200) =>
 describe("client instance-bound local session", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.unstubAllGlobals());
+  it("preserves complete server diagnostics without replaying a connection failure", async () => {
+    const details =
+      "ClickHouse HTTP 401: AUTHENTICATION_FAILED\n" +
+      "diagnostic\n".repeat(300);
+    const fetch = vi.fn().mockResolvedValue(
+      response(
+        {
+          error: "Сервер отклонил вход.",
+          code: "CONNECTION_AUTH",
+          details,
+        },
+        400,
+      ),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("../src/client/api");
+    await expect(
+      api("/api/connections/test", { method: "POST", body: "{}" }),
+    ).rejects.toMatchObject({
+      message: "Сервер отклонил вход.",
+      code: "CONNECTION_AUTH",
+      details,
+      status: 400,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it("binds JSON requests and fetch-SSE to the opened workspace and server instance", async () => {
     const fetch = vi
       .fn()

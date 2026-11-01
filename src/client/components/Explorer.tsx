@@ -7,7 +7,6 @@ import {
 } from "react";
 import {
   ArrowClockwise,
-  CaretRight,
   ClockCounterClockwise,
   Code,
   Database,
@@ -22,7 +21,7 @@ import type {
   QuerySource,
 } from "../../shared/types";
 import { api } from "../api";
-import { IconButton } from "./UI";
+import { ErrorBox, IconButton } from "./UI";
 import type { MetadataStore } from "../metadata-store";
 import SourceSchemaTree, { type ExplorerSourceView } from "./SourceSchemaTree";
 export type { ExplorerSourceView } from "./SourceSchemaTree";
@@ -54,7 +53,15 @@ export default function Explorer({
   onNotify: (m: string, t?: "error" | "success" | "info") => void;
   onClose?: () => void;
 }) {
-  const [filter, setFilter] = useState("");
+  const [filters, setFilters] = useState<Record<ExplorerKind, string>>({
+    sources: "",
+    queries: "",
+    history: "",
+  });
+  const filter = filters[kind];
+  const setFilter = (value: string) =>
+    setFilters((current) => ({ ...current, [kind]: value }));
+  const searchInput = useRef<HTMLInputElement>(null);
   const [queries, setQueries] = useState<QueryDocument[]>([]);
   const [history, setHistory] = useState<QueryRun[]>([]);
   const localViews = useRef(new Map<string, ExplorerSourceView>());
@@ -69,7 +76,7 @@ export default function Explorer({
   );
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Error | null>(null);
   const source = connections.find((c) => c.id === activeConnectionId);
   async function reload() {
     if (kind === "sources") {
@@ -77,14 +84,14 @@ export default function Explorer({
       return;
     }
     setLoading(true);
-    setError("");
+    setError(null);
     try {
       if (kind === "queries")
         setQueries(await api<QueryDocument[]>("/api/queries"));
       if (kind === "history")
         setHistory(await api<QueryRun[]>("/api/query-runs?limit=30"));
     } catch (e) {
-      setError((e as Error).message);
+      setError(e instanceof Error ? e : new Error(String(e)));
     } finally {
       setLoading(false);
     }
@@ -96,7 +103,7 @@ export default function Explorer({
     if (kind === "sources") return;
     let valid = true;
     setLoading(true);
-    setError("");
+    setError(null);
     const request =
       kind === "queries"
         ? api<QueryDocument[]>("/api/queries").then((items) => {
@@ -107,7 +114,7 @@ export default function Explorer({
           });
     void request
       .catch((e: Error) => {
-        if (valid) setError(e.message);
+        if (valid) setError(e);
       })
       .finally(() => {
         if (valid) setLoading(false);
@@ -122,6 +129,13 @@ export default function Explorer({
       : kind === "queries"
         ? "SQL-файлы"
         : "История запросов";
+  const search = filter.trim().toLowerCase();
+  const visibleQueries = queries.filter((q) =>
+    q.name.toLowerCase().includes(search),
+  );
+  const visibleHistory = history.filter((r) =>
+    r.source.sql.toLowerCase().includes(search),
+  );
   return (
     <aside className={`explorer ${onClose ? "explorer-drawer" : ""}`}>
       <div className="explorer-heading">
@@ -158,20 +172,40 @@ export default function Explorer({
       <div className="explorer-search">
         <MagnifyingGlass size={14} />
         <input
+          ref={searchInput}
           aria-label={`Поиск: ${title}`}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Поиск…"
         />
+        {filter && (
+          <IconButton
+            label="Очистить поиск"
+            onClick={() => {
+              setFilter("");
+              searchInput.current?.focus();
+            }}
+          >
+            <X size={14} />
+          </IconButton>
+        )}
       </div>
       <div className="explorer-body">
         {kind !== "sources" && error && (
-          <div className="explorer-error" role="alert">
-            {error}
-            <button className="text-button" onClick={reload}>
-              Повторить
-            </button>
-          </div>
+          <ErrorBox
+            className="explorer-error"
+            error={error}
+            title={
+              kind === "queries"
+                ? "Не удалось загрузить SQL-файлы."
+                : "Не удалось загрузить историю запросов."
+            }
+            actions={
+              <button type="button" className="text-button" onClick={reload}>
+                Повторить
+              </button>
+            }
+          />
         )}
         {kind === "sources" && (
           <>
@@ -182,13 +216,12 @@ export default function Explorer({
               <button
                 key={c.id}
                 className={`connection-tree-item ${c.id === activeConnectionId ? "active" : ""}`}
+                aria-pressed={c.id === activeConnectionId}
+                title={`${c.name} · ${c.engine === "clickhouse" ? "ClickHouse" : "Trino"}`}
                 onClick={() => onConnectionChange(c.id)}
               >
-                <CaretRight size={12} />
-                <span className={`source-symbol ${c.engine}`}>
-                  {c.engine === "clickhouse" ? "▥" : "T"}
-                </span>
-                <span>{c.name}</span>
+                <Database size={16} aria-hidden="true" />
+                <span className="connection-tree-name">{c.name}</span>
                 {c.id === activeConnectionId && <span className="status-dot" />}
               </button>
             ))}
@@ -221,23 +254,25 @@ export default function Explorer({
             <div className="explorer-section-label">
               SQL-ФАЙЛЫ <span>{queries.length}</span>
             </div>
-            {queries
-              .filter((q) =>
-                q.name.toLowerCase().includes(filter.toLowerCase()),
-              )
-              .map((q) => (
-                <button
-                  key={q.id}
-                  className="saved-query-item"
-                  onClick={() => onOpenQuery(q)}
-                >
-                  <Code size={15} />
-                  <span>
-                    {q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
-                  </span>
-                </button>
-              ))}
-            {!queries.length && (
+            {visibleQueries.map((q) => (
+              <button
+                key={q.id}
+                className="saved-query-item"
+                title={q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
+                onClick={() => onOpenQuery(q)}
+              >
+                <Code size={15} />
+                <span>
+                  {q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
+                </span>
+              </button>
+            ))}
+            {!loading && !error && search && !visibleQueries.length && (
+              <p className="explorer-empty-search" role="status">
+                Файлы не найдены
+              </p>
+            )}
+            {!loading && !error && !search && !queries.length && (
               <div className="explorer-placeholder">
                 <Code size={24} />
                 <p>
@@ -251,48 +286,49 @@ export default function Explorer({
         {kind === "history" && (
           <>
             <div className="explorer-section-label">ПОСЛЕДНИЕ ЗАПУСКИ</div>
-            {history
-              .filter((r) =>
-                r.source.sql.toLowerCase().includes(filter.toLowerCase()),
-              )
-              .map((r) => (
-                <button
-                  key={r.id}
-                  className="history-item"
-                  onClick={() => onOpenSource(r.source)}
-                >
-                  <span className={`history-dot ${r.status}`} />
-                  <div>
-                    <code>
-                      {r.source.sql
-                        .replace(/--[^\n]*/g, "")
-                        .trim()
-                        .slice(0, 90)}
-                    </code>
-                    <small>
-                      {new Date(r.startedAt).toLocaleString("ru-RU", {
-                        day: "2-digit",
-                        month: "2-digit",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}{" "}
-                      ·{" "}
-                      {r.status === "completed"
-                        ? "Выполнен"
-                        : r.status === "failed"
-                          ? "Ошибка"
-                          : r.status === "cancelled"
-                            ? "Отменён"
-                            : r.status === "running"
-                              ? "Выполняется"
-                              : r.status === "cancelling"
-                                ? "Отмена"
-                                : "Прерван"}
-                    </small>
-                  </div>
-                </button>
-              ))}
-            {!history.length && (
+            {visibleHistory.map((r) => (
+              <button
+                key={r.id}
+                className="history-item"
+                onClick={() => onOpenSource(r.source)}
+              >
+                <span className={`history-dot ${r.status}`} />
+                <div>
+                  <code>
+                    {r.source.sql
+                      .replace(/--[^\n]*/g, "")
+                      .trim()
+                      .slice(0, 90)}
+                  </code>
+                  <small>
+                    {new Date(r.startedAt).toLocaleString("ru-RU", {
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}{" "}
+                    ·{" "}
+                    {r.status === "completed"
+                      ? "Выполнен"
+                      : r.status === "failed"
+                        ? "Ошибка"
+                        : r.status === "cancelled"
+                          ? "Отменён"
+                          : r.status === "running"
+                            ? "Выполняется"
+                            : r.status === "cancelling"
+                              ? "Отмена"
+                              : "Прерван"}
+                  </small>
+                </div>
+              </button>
+            ))}
+            {!loading && !error && search && !visibleHistory.length && (
+              <p className="explorer-empty-search" role="status">
+                Запуски не найдены
+              </p>
+            )}
+            {!loading && !error && !search && !history.length && (
               <div className="explorer-placeholder">
                 <ClockCounterClockwise size={24} />
                 <p>
@@ -302,6 +338,11 @@ export default function Explorer({
               </div>
             )}
           </>
+        )}
+        {kind !== "sources" && loading && (
+          <p className="explorer-empty-search" role="status">
+            Загрузка…
+          </p>
         )}
       </div>
       <div className="explorer-footer">

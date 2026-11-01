@@ -82,7 +82,6 @@ describe("table snapshot rendering", () => {
     result: ResultSet,
     initialRows: Cell[][],
     spec: TableSpec,
-    onChange?: (spec: TableSpec) => void,
   ) {
     await act(async () => {
       root.render(
@@ -90,7 +89,7 @@ describe("table snapshot rendering", () => {
           "main",
           null,
           createElement("h1", null, "Доска"),
-          createElement(TableView, { result, initialRows, spec, onChange }),
+          createElement(TableView, { result, initialRows, spec }),
         ),
       );
     });
@@ -98,6 +97,67 @@ describe("table snapshot rendering", () => {
   function bodyRows() {
     return [...container.querySelectorAll("tbody .table-view-row")];
   }
+  async function sortBy(label: string) {
+    const header = [
+      ...container.querySelectorAll<HTMLButtonElement>("thead button"),
+    ].find((button) => button.textContent?.includes(label))!;
+    await act(async () => header.click());
+  }
+  function names() {
+    return bodyRows().map((row) => row.querySelector("td")?.textContent);
+  }
+
+  it("omits pagination for a single page while keeping its row range", async () => {
+    const result = resultSet();
+    await render(
+      result,
+      [
+        ["A", "1"],
+        ["B", "2"],
+      ],
+      createTableSpec(result.columns),
+    );
+    expect(container.textContent).toContain("1–2 из 2");
+    expect(
+      container.querySelector('[aria-label="Предыдущая страница"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Следующая страница"]'),
+    ).toBeNull();
+  });
+
+  it("returns to the first page when a filter reduces a later page to one row", async () => {
+    const result = resultSet(205);
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
+      `row-${i + 1}`,
+      String(i + 1),
+    ]);
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    const spec: TableSpec = {
+      ...createTableSpec(result.columns),
+      sort: { column: "value", direction: "asc" },
+    };
+    await render(result, rows.slice(0, 200), spec);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Следующая страница"]')!
+        .click(),
+    );
+    expect(container.textContent).toContain("201–205 из 205");
+    await render(result, rows.slice(0, 200), {
+      ...spec,
+      filters: [{ column: "name", op: "eq", value: "row-1" }],
+    });
+    expect(bodyRows()).toHaveLength(1);
+    expect(bodyRows()[0].textContent).toContain("row-1");
+    expect(container.textContent).toContain("1–1 из 1");
+    expect(
+      container.querySelector('[aria-label="Предыдущая страница"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Следующая страница"]'),
+    ).toBeNull();
+  });
 
   it("paginates a full snapshot and keeps summaries over all 205 rows", async () => {
     const result = resultSet(205);
@@ -179,15 +239,14 @@ describe("table snapshot rendering", () => {
     expect(container.textContent).toContain("NEW-LOADED");
   });
 
-  it("formats locally, preserves raw titles, and changes sorting without executing SQL", async () => {
+  it("formats locally and preserves raw titles without executing SQL", async () => {
     const result = resultSet();
     const rows: Cell[][] = [
       ["Альфа", "12.3456"],
       ["Бета", null],
     ];
-    const onChange = vi.fn();
     const plain = createTableSpec(result.columns);
-    await render(result, rows, plain, onChange);
+    await render(result, rows, plain);
     const formatted: TableSpec = {
       ...plain,
       columns: {
@@ -201,22 +260,240 @@ describe("table snapshot rendering", () => {
         },
       },
     };
-    await render(result, rows, formatted, onChange);
+    await render(result, rows, formatted);
     const cell = container.querySelector('tbody td[title="12.3456"]');
     expect(cell?.textContent).toContain("≈12.35 ед.");
     expect(container.querySelector("thead")?.textContent).toContain("Сумма");
     expect(container.querySelector("tbody")?.textContent).toContain("нет");
-    const header = [
-      ...container.querySelectorAll<HTMLButtonElement>("thead button"),
-    ].find((button) => button.textContent?.includes("Сумма"))!;
-    await act(async () => header.click());
-    expect(onChange).toHaveBeenCalledWith({
-      ...formatted,
-      sort: { column: "value", direction: "asc" },
-    });
     expect(api).not.toHaveBeenCalled();
     expect(getResultRows).not.toHaveBeenCalled();
     expect(uncaught).toEqual([]);
+  });
+
+  it("sorts the full snapshot locally and cycles back to its original order", async () => {
+    const result = resultSet(205);
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
+      `row-${205 - i}`,
+      String(205 - i),
+    ]);
+    const initialRows = rows.slice(0, 200);
+    const spec = createTableSpec(result.columns);
+    const original = JSON.stringify(spec);
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, initialRows, spec);
+    expect(names()[0]).toBe("row-205");
+    await sortBy("Значение");
+    expect(names()[0]).toBe("row-1");
+    expect(names().at(-1)).toBe("row-200");
+    expect(container.querySelectorAll("th")[1].getAttribute("aria-sort")).toBe(
+      "ascending",
+    );
+    await sortBy("Значение");
+    expect(names()[0]).toBe("row-205");
+    expect(container.querySelectorAll("th")[1].getAttribute("aria-sort")).toBe(
+      "descending",
+    );
+    await sortBy("Значение");
+    expect(names()[0]).toBe("row-205");
+    expect(container.querySelectorAll("th")[1].getAttribute("aria-sort")).toBe(
+      "none",
+    );
+    expect(JSON.stringify(spec)).toBe(original);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(api).toHaveBeenCalledWith(`/api/result-sets/${result.id}/table`, {
+      signal: expect.any(AbortSignal),
+    });
+    expect(getResultRows).not.toHaveBeenCalled();
+  });
+
+  it("keeps local sorting, pagination and scroll when equivalent saved settings echo back", async () => {
+    const result = resultSet(205);
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
+      `row-${205 - i}`,
+      String(205 - i),
+    ]);
+    const initialRows = rows.slice(0, 200);
+    const spec: TableSpec = {
+      ...createTableSpec(result.columns),
+      sort: { column: "value", direction: "desc" },
+    };
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, initialRows, spec);
+    await sortBy("Название");
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "ascending",
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Следующая страница"]')!
+        .click(),
+    );
+    const pageNames = names();
+    expect(container.textContent).toContain("201–205 из 205");
+    const scroll = container.querySelector<HTMLDivElement>(
+      ".board-table-scroll",
+    )!;
+    await act(async () => {
+      scroll.scrollTop = 84;
+      scroll.dispatchEvent(new Event("scroll"));
+    });
+    vi.mocked(scroll.scrollTo).mockClear();
+    await render({ ...result }, initialRows, {
+      sort: { direction: "desc", column: "value" },
+      sourceSchema: spec.sourceSchema,
+      version: 1,
+    });
+    expect(names()).toEqual(pageNames);
+    expect(container.textContent).toContain("201–205 из 205");
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "ascending",
+    );
+    expect(scroll.scrollTo).not.toHaveBeenCalled();
+    expect(scroll.scrollTop).toBe(84);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(getResultRows).not.toHaveBeenCalled();
+  });
+
+  it("adopts changed saved sorting and preserves other remote settings", async () => {
+    const result = resultSet(3);
+    const rows: Cell[][] = [
+      ["C", "2"],
+      ["A", "3"],
+      ["B", "1"],
+    ];
+    const spec: TableSpec = {
+      ...createTableSpec(result.columns),
+      sort: { column: "value", direction: "asc" },
+    };
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, rows, spec);
+    expect(names()).toEqual(["B", "C", "A"]);
+    await sortBy("Название");
+    expect(names()).toEqual(["A", "B", "C"]);
+    const relabeled: TableSpec = {
+      ...spec,
+      columns: { value: { label: "Сумма" } },
+    };
+    await render(result, rows, relabeled);
+    expect(names()).toEqual(["A", "B", "C"]);
+    expect(container.querySelector("thead")?.textContent).toContain("Сумма");
+    await render(result, rows, {
+      ...relabeled,
+      sort: { column: "value", direction: "desc" },
+    });
+    expect(names()).toEqual(["A", "C", "B"]);
+    expect(container.querySelectorAll("th")[1].getAttribute("aria-sort")).toBe(
+      "descending",
+    );
+    await render(result, rows, spec);
+    expect(names()).toEqual(["B", "C", "A"]);
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "none",
+    );
+  });
+
+  it("clears a local override for another snapshot and ignores the old pending read", async () => {
+    const old = resultSet(),
+      next = resultSet();
+    const pending = deferred<{ result: ResultSet; rows: Cell[][] }>();
+    const oldRows: Cell[][] = [
+      ["old-B", "2"],
+      ["old-A", "1"],
+    ];
+    const nextRows: Cell[][] = [
+      ["next-B", "4"],
+      ["next-A", "3"],
+    ];
+    const spec = createTableSpec(old.columns);
+    vi.mocked(api).mockReturnValue(pending.promise);
+    await render(old, oldRows, spec);
+    await sortBy("Название");
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(
+      /Загрузка/,
+    );
+    await render(next, nextRows, structuredClone(spec));
+    expect(names()).toEqual(["next-B", "next-A"]);
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "none",
+    );
+    await act(async () => pending.resolve({ result: old, rows: oldRows }));
+    expect(names()).toEqual(["next-B", "next-A"]);
+    await render(old, oldRows, structuredClone(spec));
+    expect(names()).toEqual(["old-B", "old-A"]);
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "none",
+    );
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(uncaught).toEqual([]);
+  });
+
+  it("discards an incompatible local sort when a remote update changes the pivot", async () => {
+    const result = resultSet(3);
+    result.columns.push({ id: "category", name: "Категория", type: "String" });
+    const rows: Cell[][] = [
+      ["C", "2", "West"],
+      ["A", "3", "East"],
+      ["B", "1", "West"],
+    ];
+    const spec = createTableSpec(result.columns);
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, rows, spec);
+    await sortBy("Значение");
+    expect(names()).toEqual(["B", "C", "A"]);
+    await render(result, rows, {
+      ...spec,
+      pivot: {
+        row: "name",
+        column: "category",
+        value: "value",
+        aggregate: "sum",
+      },
+    });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(names()).toEqual(["C", "A", "B"]);
+    expect(container.querySelectorAll("th")).toHaveLength(3);
+    await sortBy("West");
+    expect(container.querySelector('[aria-sort="ascending"]')).not.toBeNull();
+    await render(result, rows, spec);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(names()).toEqual(["C", "A", "B"]);
+    expect(container.querySelector('[aria-sort="ascending"]')).toBeNull();
+  });
+
+  it("paginates and scrolls an unsorted snapshot using reads only", async () => {
+    const result = resultSet(205);
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
+      `row-${i + 1}`,
+      String(i + 1),
+    ]);
+    const spec = createTableSpec(result.columns);
+    vi.mocked(getResultRows).mockResolvedValue({
+      result,
+      rows: rows.slice(200),
+      offset: 200,
+      total: 205,
+    });
+    await render(result, rows.slice(0, 200), spec);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Следующая страница"]')!
+        .click(),
+    );
+    expect(names()).toEqual([
+      "row-201",
+      "row-202",
+      "row-203",
+      "row-204",
+      "row-205",
+    ]);
+    await act(async () =>
+      container
+        .querySelector(".board-table-scroll")!
+        .dispatchEvent(new Event("scroll")),
+    );
+    expect(getResultRows).toHaveBeenCalledExactlyOnceWith(result.id, 200, 200);
+    expect(api).not.toHaveBeenCalled();
+    expect(spec.sort).toBeUndefined();
   });
 
   it("keeps schema mismatch errors inside the block and recovers with fresh settings", async () => {
@@ -227,6 +504,16 @@ describe("table snapshot rendering", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toMatch(
       /схема.*изменилась/i,
     );
+    const details = container.querySelector<HTMLDetailsElement>("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector("pre")?.textContent).toMatch(
+      /схема.*изменилась/i,
+    );
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "свойствах блока",
+    );
+    expect(container.querySelector('[role="alert"] button')).toBeNull();
     expect(container.querySelector("h1")?.textContent).toBe("Доска");
     expect(uncaught).toEqual([]);
     await render(result, rows, valid);
@@ -234,6 +521,36 @@ describe("table snapshot rendering", () => {
     expect(container.querySelector("tbody")?.textContent).toContain(
       "Целая доска",
     );
+  });
+
+  it("retries a failed full snapshot read without exposing the technical error by default", async () => {
+    const result = resultSet();
+    const rows: Cell[][] = [
+      ["A", "1"],
+      ["B", "2"],
+    ];
+    vi.mocked(api)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Не удалось загрузить снимок"), {
+          details: "SQLITE_CANTOPEN: snapshot storage unavailable",
+        }),
+      )
+      .mockResolvedValueOnce({ result, rows });
+    await render(result, rows, {
+      ...createTableSpec(result.columns),
+      sort: { column: "value", direction: "asc" },
+    });
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Не удалось загрузить таблицу");
+    const details = alert?.querySelector<HTMLDetailsElement>("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector("pre")?.textContent).toContain(
+      "SQLITE_CANTOPEN: snapshot storage unavailable",
+    );
+    await act(async () => alert!.querySelector("button")!.click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(names()).toEqual(["A", "B"]);
   });
   it("shows a row count without the measured column units or precision", async () => {
     const result = resultSet();

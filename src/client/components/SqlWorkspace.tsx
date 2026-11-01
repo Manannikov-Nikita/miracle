@@ -7,13 +7,15 @@ import "monaco-editor/editor/contrib/snippet/browser/snippetController2.js";
 import "monaco-editor/features/wordOperations/register.js";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
-  ArrowRight,
+  SquaresFour,
+  Rows,
   ArrowsOutSimple,
   CaretDown,
   Code,
   Database,
-  DotsSixVertical,
+  DotsThree,
   FloppyDisk,
   Minus,
   Plus,
@@ -40,6 +42,7 @@ import type {
   SqlFunctionCatalog,
 } from "../../shared/types";
 import { api, ApiRequestError, json } from "../api";
+import { describeError } from "../error-message";
 import type { EditorDocument } from "../../shared/agents";
 import {
   documentToTab,
@@ -88,25 +91,25 @@ monaco.editor.defineTheme("miracle-dark", {
   base: "vs-dark",
   inherit: true,
   rules: [
-    { token: "keyword", foreground: "C792EA" },
-    { token: "string", foreground: "C3D58B" },
-    { token: "number", foreground: "F3B77B" },
-    { token: "comment", foreground: "636E81", fontStyle: "italic" },
-    { token: "operator", foreground: "8BB8E8" },
+    { token: "keyword", foreground: "B9CBC1" },
+    { token: "string", foreground: "D1C49A" },
+    { token: "number", foreground: "DDBB9D" },
+    { token: "comment", foreground: "92969D", fontStyle: "italic" },
+    { token: "operator", foreground: "B1BEC9" },
   ],
   colors: {
-    "editor.background": "#1c1f25",
-    "editor.foreground": "#d9dfeb",
-    "editorLineNumber.foreground": "#505b6d",
-    "editorLineNumber.activeForeground": "#a6b3c8",
-    "editor.lineHighlightBackground": "#232832",
-    "editor.selectionBackground": "#36475f",
-    "editorCursor.foreground": "#91b4ee",
-    "editorWidget.background": "#242933",
-    "editorWidget.border": "#3b4352",
-    "editorSuggestWidget.background": "#252a34",
-    "editorSuggestWidget.selectedBackground": "#374253",
-    "editorIndentGuide.background1": "#292f39",
+    "editor.background": "#202225",
+    "editor.foreground": "#eeeff0",
+    "editorLineNumber.foreground": "#92969d",
+    "editorLineNumber.activeForeground": "#d4d7da",
+    "editor.lineHighlightBackground": "#27292d",
+    "editor.selectionBackground": "#40574b",
+    "editorCursor.foreground": "#b9d3c5",
+    "editorWidget.background": "#2b2d31",
+    "editorWidget.border": "#45484e",
+    "editorSuggestWidget.background": "#2b2d31",
+    "editorSuggestWidget.selectedBackground": "#3b3e43",
+    "editorIndentGuide.background1": "#303338",
   },
 });
 type Tab = EditorTab;
@@ -146,7 +149,7 @@ export default function SqlWorkspace(p: Props) {
     setError("");
     void loadEditorDocuments(p.workspaceId)
       .then(setDocuments)
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(describeError(e).details));
   };
   useEffect(load, [p.workspaceId]);
   if (!documents)
@@ -248,6 +251,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   );
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const restoreEditorFocus = useRef(false);
   useEffect(() => {
     const editor = editorRef.current,
       model = editor?.getModel();
@@ -440,7 +444,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           const paused = !retryable || failures >= 5;
           setTrackingErrors((current) => ({
             ...current,
-            [tabId]: { message: (error as Error).message, paused },
+            [tabId]: { message: describeError(error).details, paused },
           }));
           if (paused) return;
           delay = Math.min(5000, 600 * 2 ** (failures - 1));
@@ -449,7 +453,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       }
     } catch (error) {
       if ((error as Error).name !== "AbortError" && valid())
-        p.onNotify((error as Error).message, "error");
+        p.onNotify(describeError(error).details, "error");
     } finally {
       if (pollers.current.get(tabId) === controller)
         pollers.current.delete(tabId);
@@ -756,7 +760,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     try {
       await startRun(tab.id, source);
     } catch (error) {
-      p.onNotify((error as Error).message, "error");
+      p.onNotify(describeError(error).details, "error");
     }
   }
   runAction.current = () => {
@@ -883,7 +887,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       );
       setRuns((s) => ({ ...s, [active.id]: run }));
     } catch (e) {
-      p.onNotify((e as Error).message, "error");
+      p.onNotify(describeError(e).details, "error");
     }
   }
   async function save() {
@@ -929,7 +933,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       p.onQueriesChanged();
       p.onNotify("Запрос сохранён", "success");
     } catch (e) {
-      setSaveError((e as Error).message);
+      setSaveError(describeError(e).details);
     } finally {
       setSaving(false);
     }
@@ -952,7 +956,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     pollers.current.get(id)?.abort();
     void documentSync.sync
       .remove(id)
-      .catch((e) => p.onNotify(e.message, "error"));
+      .catch((e) => p.onNotify(describeError(e).details, "error"));
   }
   let layout: Record<string, number> | undefined;
   try {
@@ -1002,53 +1006,49 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           </button>
         </div>
       ))}
-      <div className="pane-heading">
-        <span>
-          <Code size={16} />
-          <strong>SQL-редактор</strong>
-        </span>
-        <div>
-          <IconButton label="Развернуть SQL" onClick={p.onMaximize}>
-            <ArrowsOutSimple size={14} />
-          </IconButton>
-          <IconButton label="Свернуть SQL" onClick={p.onCollapse}>
-            <Minus size={15} />
+      <div className="sql-tabs-bar">
+        <div className="query-tabs" role="tablist" aria-label="Запросы">
+          {tabs.map((t) => (
+            <div
+              key={t.id}
+              ref={t.id === active.id ? activeTabRef : undefined}
+              className={`query-tab ${t.id === active.id ? "active" : ""}`}
+            >
+              <button
+                role="tab"
+                aria-selected={t.id === active.id}
+                onClick={() => setActiveId(t.id)}
+              >
+                <Code size={13} />
+                <span>{t.name}</span>
+                {runs[t.id]?.status === "running" && <Spinner />}
+                {!t.queryId && (
+                  <i className="unsaved-dot" title="Личный черновик" />
+                )}
+              </button>
+              <IconButton
+                label={`Закрыть вкладку ${t.name}`}
+                disabled={["running", "cancelling"].includes(
+                  runs[t.id]?.status || "",
+                )}
+                onClick={() => closeTab(t.id)}
+              >
+                <X size={12} />
+              </IconButton>
+            </div>
+          ))}
+          <IconButton label="Новый SQL-файл" onClick={addTab}>
+            <Plus size={15} />
           </IconButton>
         </div>
-      </div>
-      <div className="query-tabs" role="tablist" aria-label="Запросы">
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            ref={t.id === active.id ? activeTabRef : undefined}
-            className={`query-tab ${t.id === active.id ? "active" : ""}`}
-          >
-            <button
-              role="tab"
-              aria-selected={t.id === active.id}
-              onClick={() => setActiveId(t.id)}
-            >
-              <Code size={13} />
-              <span>{t.name}</span>
-              {runs[t.id]?.status === "running" && <Spinner />}
-              {!t.queryId && (
-                <i className="unsaved-dot" title="Личный черновик" />
-              )}
-            </button>
-            <IconButton
-              label={`Закрыть вкладку ${t.name}`}
-              disabled={["running", "cancelling"].includes(
-                runs[t.id]?.status || "",
-              )}
-              onClick={() => closeTab(t.id)}
-            >
-              <X size={12} />
-            </IconButton>
-          </div>
-        ))}
-        <IconButton label="Новый SQL-файл" onClick={addTab}>
-          <Plus size={15} />
-        </IconButton>
+        <div className="sql-pane-controls">
+          <IconButton label="Развернуть SQL" onClick={p.onMaximize}>
+            <ArrowsOutSimple size={16} />
+          </IconButton>
+          <IconButton label="Свернуть SQL" onClick={p.onCollapse}>
+            <Minus size={16} />
+          </IconButton>
+        </div>
       </div>
       <div className="sql-toolbar">
         <div className="sql-connection">
@@ -1080,21 +1080,6 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             onChange={(e) => void importFiles(e.target.files)}
           />
           <IconButton
-            label="Открыть .sql файлы"
-            onClick={() => importInput.current?.click()}
-          >
-            <FolderOpen size={16} />
-          </IconButton>
-          <IconButton label="Скачать .sql файл" onClick={downloadFile}>
-            <DownloadSimple size={16} />
-          </IconButton>
-          <IconButton
-            label="Форматировать SQL (⌥⌘L / Ctrl+Alt+L)"
-            onClick={formatActive}
-          >
-            <TextAlignLeft size={16} />
-          </IconButton>
-          <IconButton
             label="Сохранить SQL-файл (⌘S / Ctrl+S)"
             onClick={() => {
               setSaveName(active.name);
@@ -1104,6 +1089,56 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           >
             <FloppyDisk size={16} />
           </IconButton>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <IconButton label="Действия SQL">
+                <DotsThree size={20} />
+              </IconButton>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                className="dropdown-menu"
+                align="end"
+                sideOffset={6}
+                collisionPadding={8}
+                onCloseAutoFocus={(event) => {
+                  if (!restoreEditorFocus.current) return;
+                  restoreEditorFocus.current = false;
+                  if (editorRef.current) {
+                    event.preventDefault();
+                    editorRef.current.focus();
+                  }
+                }}
+              >
+                <DropdownMenu.Item
+                  onSelect={() => importInput.current?.click()}
+                >
+                  <FolderOpen size={16} /> Открыть .sql файлы
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={downloadFile}>
+                  <DownloadSimple size={16} /> Скачать .sql файл
+                </DropdownMenu.Item>
+                <DropdownMenu.Separator />
+                <DropdownMenu.Item
+                  onSelect={() => {
+                    restoreEditorFocus.current = true;
+                    formatActive();
+                  }}
+                >
+                  <TextAlignLeft size={16} /> Форматировать SQL
+                  <span>⌥⌘L</span>
+                </DropdownMenu.Item>
+                <DropdownMenu.Separator />
+                <DropdownMenu.Item
+                  onSelect={() =>
+                    group.current?.setLayout({ editor: 55, results: 45 })
+                  }
+                >
+                  <Rows size={16} /> Восстановить размеры SQL и результата
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
           {running ? (
             <button
               className="button run-button stopping"
@@ -1288,14 +1323,17 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                 )}
                 {result && (
                   <>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      className="result-drag-handle"
+                    <IconButton
+                      label="Добавить результат на доску"
+                      className="add-to-board"
+                      disabled={Boolean(activeRun?.batch && running)}
                       draggable={!(activeRun?.batch && running)}
-                      aria-disabled={Boolean(activeRun?.batch && running)}
-                      aria-label="Перетащить результат на доску"
-                      title="Перетащить результат на доску"
+                      title={
+                        activeRun?.batch && running
+                          ? "Дождитесь завершения серии, чтобы закрепить снимок"
+                          : "Добавить на доску · можно перетащить в нужное место"
+                      }
+                      onClick={() => p.onResult(result)}
                       onDragStart={(e) => {
                         if (activeRun?.batch && running) {
                           e.preventDefault();
@@ -1307,29 +1345,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                         );
                         e.dataTransfer.effectAllowed = "copy";
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          if (!(activeRun?.batch && running))
-                            p.onResult(result);
-                        }
-                      }}
                     >
-                      <DotsSixVertical size={16} />
-                    </span>
-                    <button
-                      className="button small add-to-board"
-                      disabled={Boolean(activeRun?.batch && running)}
-                      title={
-                        activeRun?.batch && running
-                          ? "Дождитесь завершения серии, чтобы закрепить снимок"
-                          : undefined
-                      }
-                      onClick={() => p.onResult(result)}
-                    >
-                      На доску
-                      <ArrowRight size={13} />
-                    </button>
+                      <SquaresFour size={17} />
+                    </IconButton>
                   </>
                 )}
                 <IconButton
@@ -1345,7 +1363,11 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             {activeRun?.batch && <DateBatchProgress run={activeRun} />}
             {trackingErrors[active.id] && (
               <div className="query-error">
-                <ErrorBox>{trackingErrors[active.id].message}</ErrorBox>
+                <ErrorBox
+                  error={trackingErrors[active.id].message}
+                  title="Не удалось получить статус или результат запроса."
+                  hint="Нажмите «Обновить результат», чтобы проверить текущий запуск. Повторно выполнять SQL не требуется."
+                />
                 <small>
                   {trackingErrors[active.id].paused
                     ? "Не удалось обновить статус или результат. Выполнение на сервере продолжается независимо от этой вкладки."
@@ -1365,7 +1387,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             )}
             {runError && (
               <div className="query-error">
-                <ErrorBox>{runError}</ErrorBox>
+                <ErrorBox context="query">{runError}</ErrorBox>
               </div>
             )}
             {result && activeRun && result.id !== activeRun.resultSetId && (
@@ -1435,19 +1457,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           setBatchRequest(null);
         }}
       />
-      <div className="sql-bottom-bar">
-        <span>
-          <span className="status-dot" />
-          Черновик сохранён на устройстве
-        </span>
-        <button
-          onClick={() => group.current?.setLayout({ editor: 55, results: 45 })}
-        >
-          Вернуть панели
-        </button>
-      </div>
       <Modal
         open={saveOpen}
+        dismissible={!saving}
         onOpenChange={setSaveOpen}
         title="Сохранить SQL-файл"
         description="Запрос сохранится в вашей рабочей области."
@@ -1463,6 +1475,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             <input
               autoFocus
               required
+              disabled={saving}
               value={saveName}
               onChange={(e) => setSaveName(e.target.value)}
               placeholder="Выручка по месяцам"
@@ -1475,6 +1488,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
               type="button"
               className="button"
               onClick={() => setSaveOpen(false)}
+              disabled={saving}
             >
               Отмена
             </button>

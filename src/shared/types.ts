@@ -172,13 +172,31 @@ export interface BoardNode {
   height?: number;
 }
 export type BoardHandleSide = "top" | "right" | "bottom" | "left";
+export interface BoardEdgeAppearance {
+  path?: "smoothstep" | "straight" | "bezier";
+  line?: "solid" | "dashed" | "dotted";
+  color?: string;
+  width?: 1 | 2 | 3;
+  startArrow?: boolean;
+  endArrow?: boolean;
+}
+export interface BoardEdgePoint {
+  x: number;
+  y: number;
+}
 export interface BoardEdge {
   id: string;
-  source: string;
-  target: string;
+  source?: string;
+  target?: string;
+  sourcePoint?: BoardEdgePoint;
+  targetPoint?: BoardEdgePoint;
+  /** Manual bend offset from the endpoint midpoint; absent uses automatic routing. */
+  bend?: BoardEdgePoint;
   sourceHandle?: BoardHandleSide;
   targetHandle?: BoardHandleSide;
   label?: string;
+  labelPosition?: number;
+  appearance?: BoardEdgeAppearance;
 }
 export interface BoardDocument {
   schemaVersion: 1;
@@ -202,4 +220,5 @@ export interface BoardSummary {
 export interface ApiError {
   error: string;
   code?: string;
+  details?: string;
 }

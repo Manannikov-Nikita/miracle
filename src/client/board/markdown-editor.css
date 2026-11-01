@@ -2,7 +2,7 @@
   width: 100%;
   height: 100%;
   min-height: 0;
-  color: var(--board-text, #dfe3eb);
+  color: var(--board-text, #eeeff0);
   font-size: 14px;
   line-height: 1.65;
 }
@@ -21,22 +21,26 @@
 .board-markdown-editor .cm-content {
   padding: 14px 18px 28px;
   min-height: 100%;
-  caret-color: var(--board-text, #dfe3eb);
+  caret-color: var(--board-text, #eeeff0);
   overflow-wrap: anywhere;
 }
 .board-markdown-editor .cm-line {
   padding: 0;
 }
 .board-markdown-editor .cm-cursor {
-  border-left-color: var(--board-text, #dfe3eb);
+  border-left-color: var(--board-text, #eeeff0);
 }
 .board-markdown-editor .cm-selectionBackground,
 .board-markdown-editor.cm-focused .cm-selectionBackground {
-  background: rgba(130, 170, 255, 0.25) !important;
+  background: color-mix(
+    in srgb,
+    var(--board-accent, #a4c3b2) 25%,
+    transparent
+  ) !important;
 }
 .board-markdown-editor .cm-line::selection,
 .board-markdown-editor .cm-line *::selection {
-  background: rgba(130, 170, 255, 0.25);
+  background: color-mix(in srgb, var(--board-accent, #a4c3b2) 25%, transparent);
 }
 .board-markdown-editor .md-preview-h1 {
   font-size: 1.75em;
@@ -74,12 +78,12 @@
 .board-markdown-editor .md-preview-inline-code {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.9em;
-  background: rgba(128, 128, 150, 0.14);
+  background: var(--board-raised, #303338);
   border-radius: 4px;
   padding: 2px 4px;
 }
 .board-markdown-editor .md-preview-link {
-  color: var(--board-accent, #82aaff);
+  color: var(--board-accent, #a4c3b2);
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: text;
@@ -91,21 +95,21 @@
   display: inline-block;
   text-align: center;
   width: 1ch;
-  color: var(--board-muted, #8c95a7);
+  color: var(--board-muted, #a9adb1);
 }
 .board-markdown-editor .md-preview-task {
-  color: var(--board-muted, #8c95a7);
+  color: var(--board-muted, #a9adb1);
   font-size: 1.05em;
 }
 .board-markdown-editor .md-preview-quote-line {
-  border-left: 3px solid var(--board-border, #454351);
+  border-left: 3px solid var(--board-border, #3b3e43);
   padding-left: 12px;
-  color: var(--board-muted, #8c95a7);
+  color: var(--board-muted, #a9adb1);
 }
 .board-markdown-editor .md-preview-code-line {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.9em;
-  background: rgba(128, 128, 150, 0.1);
+  background: var(--board-raised, #303338);
   padding: 0 12px;
 }
 .board-markdown-editor .md-preview-code-edge {
@@ -124,7 +128,7 @@
   width: 100%;
   height: 1px;
   vertical-align: middle;
-  background: var(--board-border, #454351);
+  background: var(--board-border, #3b3e43);
 }
 .board-markdown-editor .md-preview-table {
   padding: 7px 0;
@@ -137,19 +141,19 @@
 }
 .board-markdown-editor .md-preview-table th,
 .board-markdown-editor .md-preview-table td {
-  border: 1px solid var(--board-border, #454351);
+  border: 1px solid var(--board-border, #3b3e43);
   padding: 7px 10px;
   text-align: left;
 }
 .board-markdown-editor .md-preview-table th {
   font-weight: 650;
-  background: rgba(128, 128, 150, 0.08);
+  background: var(--board-raised, #303338);
 }
 .board-markdown-editor .md-preview-table a {
-  color: var(--board-accent, #82aaff);
+  color: var(--board-accent, #a4c3b2);
 }
 .board-markdown-editor .cm-placeholder {
-  color: var(--board-muted, #8c95a7);
+  color: var(--board-muted, #a9adb1);
 }
 
 .board-markdown-editor .md-preview-image img {

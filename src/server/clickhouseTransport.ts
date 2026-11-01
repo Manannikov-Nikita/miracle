@@ -3,6 +3,12 @@ import { request as httpsRequest } from "node:https";
 import { createGunzip, gzipSync } from "node:zlib";
 import type { Readable } from "node:stream";
 import type { EngineConnection } from "./connectors.js";
+import {
+  CONNECTION_ERROR_MAX_BYTES,
+  CONNECTION_ERROR_TOO_LARGE,
+  connectionHttpError,
+  connectionTransportError,
+} from "./connectionErrors.js";
 
 /** A request-scoped TLS configuration: never changes process trust or pools credentials. */
 export async function clickhouseRequest(
@@ -50,14 +56,8 @@ export async function clickhouseRequest(
       },
       resolve,
     );
-    req.on("error", () =>
-      reject(
-        new Error(
-          signal.aborted
-            ? "Запрос ClickHouse отменён или истёк таймаут"
-            : "Не удалось подключиться к ClickHouse; проверьте адрес, TLS и учётные данные",
-        ),
-      ),
+    req.on("error", (error) =>
+      reject(connectionTransportError("ClickHouse", error, signal)),
     );
     req.end(body);
   });
@@ -82,13 +82,13 @@ export async function clickhouseRequest(
     let interrupted = false;
     try {
       for await (const chunk of decoded) {
-        const part = Buffer.from(chunk).subarray(0, 2048 - bytes);
-        parts.push(part);
+        const part = Buffer.from(chunk);
         bytes += part.byteLength;
-        if (bytes >= 2048) {
+        if (bytes > CONNECTION_ERROR_MAX_BYTES) {
           truncated = true;
           break;
         }
+        parts.push(part);
       }
     } catch {
       interrupted = true;
@@ -97,33 +97,23 @@ export async function clickhouseRequest(
       response.destroy();
     }
     if (interrupted)
-      throw new Error(
-        `ClickHouse HTTP ${response.statusCode}: не удалось прочитать сообщение движка`,
+      throw connectionHttpError(
+        c,
+        response.statusCode || 0,
+        "не удалось прочитать сообщение движка",
       );
     // A clipped response can contain only a prefix of a secret, which exact
     // redaction cannot recognize. Never expose any engine body in that case.
     if (truncated)
-      throw new Error(
-        `ClickHouse HTTP ${response.statusCode}: сообщение движка превышает допустимый размер`,
+      throw connectionHttpError(
+        c,
+        response.statusCode || 0,
+        CONNECTION_ERROR_TOO_LARGE,
       );
-    let message = Buffer.concat(parts).toString("utf8");
-    for (const secret of [
-      c.password,
-      tls?.caCert,
-      tls?.clientCert,
-      tls?.clientKey,
-      Buffer.from(c.username + ":" + c.password).toString("base64"),
-    ]) {
-      if (secret) message = message.split(secret).join("[скрыто]");
-    }
-    message = message
-      .replace(
-        /-----BEGIN [^-]+-----[\s\S]*?(?:-----END [^-]+-----|$)/g,
-        "[скрыто]",
-      )
-      .slice(0, 2000);
-    throw new Error(
-      `ClickHouse HTTP ${response.statusCode}${message ? ": " + message : "; проверьте адрес и учётные данные"}`,
+    throw connectionHttpError(
+      c,
+      response.statusCode || 0,
+      Buffer.concat(parts).toString("utf8"),
     );
   }
 

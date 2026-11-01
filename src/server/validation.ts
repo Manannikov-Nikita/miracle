@@ -59,6 +59,20 @@ const chart = z.object({
     .optional(),
   sort: z.enum(["none", "asc", "desc"]).optional(),
 });
+export const boardEdgeAppearanceSchema = z
+  .object({
+    path: z.enum(["smoothstep", "straight", "bezier"]).optional(),
+    line: z.enum(["solid", "dashed", "dotted"]).optional(),
+    color: z
+      .string()
+      .regex(/^#[0-9a-f]{6}$/i)
+      .optional(),
+    width: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+    startArrow: z.boolean().optional(),
+    endArrow: z.boolean().optional(),
+  })
+  .strict();
+export const boardEdgePointSchema = z.object({ x: finite, y: finite }).strict();
 export const boardDocumentSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -90,14 +104,32 @@ export const boardDocumentSchema = z
       .max(200),
     edges: z
       .array(
-        z.object({
-          id: identifier,
-          source: identifier,
-          target: identifier,
-          sourceHandle: z.enum(["top", "right", "bottom", "left"]).optional(),
-          targetHandle: z.enum(["top", "right", "bottom", "left"]).optional(),
-          label: z.string().max(500).optional(),
-        }),
+        z
+          .object({
+            id: identifier,
+            source: identifier.optional(),
+            target: identifier.optional(),
+            sourcePoint: boardEdgePointSchema.optional(),
+            targetPoint: boardEdgePointSchema.optional(),
+            bend: boardEdgePointSchema.optional(),
+            sourceHandle: z.enum(["top", "right", "bottom", "left"]).optional(),
+            targetHandle: z.enum(["top", "right", "bottom", "left"]).optional(),
+            label: z.string().max(500).optional(),
+            labelPosition: z.number().finite().min(0).max(1).optional(),
+            appearance: boardEdgeAppearanceSchema.optional(),
+          })
+          .superRefine((edge, context) => {
+            for (const end of ["source", "target"] as const) {
+              const point = end === "source" ? "sourcePoint" : "targetPoint";
+              if ((edge[end] !== undefined) === (edge[point] !== undefined))
+                context.addIssue({
+                  code: "custom",
+                  path: [end],
+                  message:
+                    "Для каждого конца стрелки нужен либо блок, либо координаты",
+                });
+            }
+          }),
       )
       .max(500),
     viewport: z
@@ -111,7 +143,10 @@ export const boardDocumentSchema = z
     if (new Set(d.edges.map((e) => e.id)).size !== d.edges.length)
       ctx.addIssue({ code: "custom", message: "Повторяющийся id связи" });
     for (const e of d.edges)
-      if (!ids.has(e.source) || !ids.has(e.target))
+      if (
+        (e.source !== undefined && !ids.has(e.source)) ||
+        (e.target !== undefined && !ids.has(e.target))
+      )
         ctx.addIssue({
           code: "custom",
           message: "Связь ссылается на отсутствующий блок",

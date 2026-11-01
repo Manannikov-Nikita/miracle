@@ -5,7 +5,7 @@ import {
   Code,
   Database,
   FileCode,
-  GearSix,
+  PlugsConnected,
   Question,
   SquaresFour,
 } from "@phosphor-icons/react";
@@ -160,7 +160,7 @@ export default function WorkspaceRail({
           title={`Подключения · ${connectionCount}`}
           onClick={onConnections}
         >
-          <GearSix size={20} />
+          <PlugsConnected size={20} />
         </IconButton>
         <IconButton label="Сочетания клавиш" onClick={onHelp}>
           <Question size={20} />

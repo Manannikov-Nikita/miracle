@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Cell, ChartSpec, ResultSet, TableSpec } from "../../shared/types";
 import { api, getResultRows } from "../api";
 import { Select } from "../components/Select";
+import { ErrorBox } from "../components/UI";
 import { chartSeries, defaultChart, isNumericColumn } from "./model";
 import { chartOptions } from "./chartOptions";
 import ChartCanvas from "./ChartCanvas";
@@ -10,12 +11,12 @@ import ChartTypePicker from "./ChartTypePicker";
 
 function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   const [rows, setRows] = useState<Cell[][] | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Error | null>(null);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     let live = true;
     setRows(null);
-    setError("");
+    setError(null);
     api<{ result: ResultSet; rows: Cell[][] }>(
       `/api/result-sets/${result.id}/chart`,
     )
@@ -23,7 +24,7 @@ function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
         if (live) setRows(data.rows);
       })
       .catch((e) => {
-        if (live) setError(e.message);
+        if (live) setError(e instanceof Error ? e : new Error(String(e)));
       });
     return () => {
       live = false;
@@ -40,12 +41,27 @@ function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   }, [result, rows, spec]);
   if (error || prepared?.error)
     return (
-      <div className="board-error" role="alert">
-        {error || prepared?.error}
-        {error && (
-          <button onClick={() => setRetry((n) => n + 1)}>Повторить</button>
-        )}
-      </div>
+      <ErrorBox
+        className="board-error nowheel"
+        error={error || prepared?.error}
+        title={
+          error
+            ? "Не удалось загрузить данные графика."
+            : "Не удалось построить график."
+        }
+        hint={
+          error
+            ? "Повторите загрузку сохранённого снимка."
+            : "Проверьте выбранные столбцы и тип графика в свойствах блока."
+        }
+        actions={
+          error ? (
+            <button type="button" onClick={() => setRetry((n) => n + 1)}>
+              Повторить загрузку
+            </button>
+          ) : undefined
+        }
+      />
     );
   if (!rows)
     return (
@@ -157,24 +173,6 @@ export function ChartSettings({
         </label>
       )}
       <label>
-        Числа
-        <Select
-          aria-label="Числа"
-          disabled={disabled}
-          value={spec.numberFormat ?? "auto"}
-          onValueChange={(value) =>
-            set({ numberFormat: value as ChartSpec["numberFormat"] })
-          }
-          options={[
-            { value: "auto", label: "Авто" },
-            { value: "compact", label: "Компактно · 34.1k" },
-            { value: "integer", label: "Целые" },
-            { value: "decimal", label: "2 знака" },
-            { value: "percent", label: "Проценты" },
-          ]}
-        />
-      </label>
-      <label>
         {sortLabel}
         <Select
           aria-label={sortLabel}
@@ -188,57 +186,86 @@ export function ChartSettings({
           ]}
         />
       </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={spec.legend}
-          onChange={(e) => set({ legend: e.target.checked })}
-        />
-        Легенда
-      </label>
-      {spec.legend && (
-        <>
+      <details className="board-chart-appearance">
+        <summary>Оформление</summary>
+        <div className="board-chart-appearance-fields">
           <label>
-            Положение легенды
+            Числа
             <Select
-              aria-label="Положение легенды"
+              aria-label="Числа"
               disabled={disabled}
-              value={spec.legendPosition ?? "top"}
+              value={spec.numberFormat ?? "auto"}
               onValueChange={(value) =>
-                set({ legendPosition: value as ChartSpec["legendPosition"] })
+                set({ numberFormat: value as ChartSpec["numberFormat"] })
               }
               options={[
-                { value: "top", label: "Сверху" },
-                { value: "bottom", label: "Снизу" },
-                { value: "left", label: "Слева" },
-                { value: "right", label: "Справа" },
+                { value: "auto", label: "Авто" },
+                { value: "compact", label: "Компактно · 34.1k" },
+                { value: "integer", label: "Целые" },
+                { value: "decimal", label: "2 знака" },
+                { value: "percent", label: "Проценты" },
               ]}
             />
           </label>
           <label>
-            Выравнивание легенды
-            <Select
-              aria-label="Выравнивание легенды"
-              disabled={disabled}
-              value={spec.legendAlign ?? "center"}
-              onValueChange={(value) =>
-                set({ legendAlign: value as ChartSpec["legendAlign"] })
-              }
-              options={[
-                {
-                  value: "start",
-                  label: verticalLegend ? "По верхнему краю" : "По левому краю",
-                },
-                { value: "center", label: "По центру" },
-                {
-                  value: "end",
-                  label: verticalLegend ? "По нижнему краю" : "По правому краю",
-                },
-              ]}
+            <input
+              type="checkbox"
+              checked={spec.legend}
+              onChange={(e) => set({ legend: e.target.checked })}
             />
+            Легенда
           </label>
-        </>
-      )}
+          {spec.legend && (
+            <>
+              <label>
+                Положение легенды
+                <Select
+                  aria-label="Положение легенды"
+                  disabled={disabled}
+                  value={spec.legendPosition ?? "top"}
+                  onValueChange={(value) =>
+                    set({
+                      legendPosition: value as ChartSpec["legendPosition"],
+                    })
+                  }
+                  options={[
+                    { value: "top", label: "Сверху" },
+                    { value: "bottom", label: "Снизу" },
+                    { value: "left", label: "Слева" },
+                    { value: "right", label: "Справа" },
+                  ]}
+                />
+              </label>
+              <label>
+                Выравнивание легенды
+                <Select
+                  aria-label="Выравнивание легенды"
+                  disabled={disabled}
+                  value={spec.legendAlign ?? "center"}
+                  onValueChange={(value) =>
+                    set({ legendAlign: value as ChartSpec["legendAlign"] })
+                  }
+                  options={[
+                    {
+                      value: "start",
+                      label: verticalLegend
+                        ? "По верхнему краю"
+                        : "По левому краю",
+                    },
+                    { value: "center", label: "По центру" },
+                    {
+                      value: "end",
+                      label: verticalLegend
+                        ? "По нижнему краю"
+                        : "По правому краю",
+                    },
+                  ]}
+                />
+              </label>
+            </>
+          )}
+        </div>
+      </details>
       <p>До 5 000 точек. Агрегация и округление задаются в SQL.</p>
     </fieldset>
   );
@@ -249,7 +276,6 @@ export default function ResultView({
   chart,
   visibleColumns,
   table,
-  onTableChange,
   onMetadata,
 }: {
   id: string;
@@ -257,12 +283,11 @@ export default function ResultView({
   chart?: ChartSpec;
   visibleColumns?: string[];
   table?: TableSpec;
-  onTableChange?: (spec: TableSpec) => void;
   onMetadata?: (result: ResultSet) => void;
 }) {
   const [result, setResult] = useState<ResultSet | null>(null);
   const [rows, setRows] = useState<Cell[][]>([]);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Error | null>(null);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     setRows([]);
@@ -270,7 +295,7 @@ export default function ResultView({
   }, [id]);
   useEffect(() => {
     let live = true;
-    setError("");
+    setError(null);
     getResultRows(id, 0, 200)
       .then((page) => {
         if (!live) return;
@@ -279,7 +304,7 @@ export default function ResultView({
         onMetadata?.(page.result);
       })
       .catch((e) => {
-        if (live) setError(e.message);
+        if (live) setError(e instanceof Error ? e : new Error(String(e)));
       });
     return () => {
       live = false;
@@ -287,10 +312,17 @@ export default function ResultView({
   }, [id, retry]);
   if (error)
     return (
-      <div className="board-error" role="alert">
-        {error}
-        <button onClick={() => setRetry((n) => n + 1)}>Повторить</button>
-      </div>
+      <ErrorBox
+        className="board-error nowheel"
+        error={error}
+        title="Не удалось загрузить снимок."
+        hint="Повторите загрузку данных этого блока."
+        actions={
+          <button type="button" onClick={() => setRetry((n) => n + 1)}>
+            Повторить загрузку
+          </button>
+        }
+      />
     );
   if (!result || result.id !== id)
     return (
@@ -309,7 +341,6 @@ export default function ResultView({
       initialRows={rows}
       spec={table}
       visibleColumns={visibleColumns}
-      onChange={onTableChange}
     />
   );
 }

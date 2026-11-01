@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
 import type { chartOptions } from "./chartOptions";
+import { ErrorBox } from "../components/UI";
 
 type ChartOption = ReturnType<typeof chartOptions>;
 
@@ -15,7 +16,8 @@ export default function ChartCanvas({
   const latestOption = useRef(option);
   latestOption.current = option;
   const session = useRef<{ update: (next: ChartOption) => void } | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const failed = error !== null;
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -44,14 +46,16 @@ export default function ChartCanvas({
       stopped = true;
       console.error(`Не удалось отобразить график ECharts (${stage}):`, error);
       dispose();
-      setFailed(true);
+      setError(
+        error instanceof Error ? error.message || error.name : String(error),
+      );
     };
     const update = (next: ChartOption) => {
       if (stopped) {
         // A new setting can recover a failed renderer without fetching rows again.
         if (next !== attempted) {
           attempted = next;
-          setFailed(false);
+          setError(null);
           setRetry((value) => value + 1);
         }
         return;
@@ -105,17 +109,23 @@ export default function ChartCanvas({
         aria-label={failed ? undefined : label}
       />
       {failed && (
-        <div className="board-error" role="alert">
-          Не удалось отобразить график.
-          <button
-            onClick={() => {
-              setFailed(false);
-              setRetry((value) => value + 1);
-            }}
-          >
-            Повторить
-          </button>
-        </div>
+        <ErrorBox
+          className="board-error nowheel"
+          error={error}
+          title="Не удалось отобразить график."
+          hint="Повторите отображение. Если ошибка повторится, измените настройки графика в свойствах блока."
+          actions={
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setRetry((value) => value + 1);
+              }}
+            >
+              Повторить
+            </button>
+          }
+        />
       )}
     </div>
   );

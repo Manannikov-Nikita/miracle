@@ -1,5 +1,6 @@
 import { createHttpTransport, type HttpResponse } from "./http-transport.js";
 import type { EngineConnection } from "./connectors.js";
+import { connectionTransportError } from "./connectionErrors.js";
 
 export type TrinoResponse = HttpResponse;
 interface TrinoRequestOptions {
@@ -14,47 +15,7 @@ export function trinoConnectionError(
   error: unknown,
   signal?: AbortSignal | null,
 ) {
-  if (signal?.aborted)
-    return new Error("Запрос Trino отменён или истёк таймаут");
-  const codes = new Set<string>();
-  const seen = new Set<unknown>();
-  let current = error;
-  while (current && typeof current === "object" && !seen.has(current)) {
-    seen.add(current);
-    const detail = current as { code?: unknown; cause?: unknown };
-    if (typeof detail.code === "string") codes.add(detail.code);
-    current = detail.cause;
-  }
-  if (codes.has("ERR_TLS_CERT_ALTNAME_INVALID"))
-    return new Error(
-      "Имя сервера Trino не совпадает с сертификатом TLS. Проверьте HTTPS-адрес подключения.",
-    );
-  if (codes.has("CERT_HAS_EXPIRED") || codes.has("CERT_NOT_YET_VALID"))
-    return new Error(
-      "Сертификат TLS сервера Trino просрочен или ещё не действует. Проверьте сертификат и дату на компьютере.",
-    );
-  if (
-    [
-      "DEPTH_ZERO_SELF_SIGNED_CERT",
-      "SELF_SIGNED_CERT_IN_CHAIN",
-      "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
-      "UNABLE_TO_GET_ISSUER_CERT",
-      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-      "CERT_UNTRUSTED",
-      "INVALID_CA",
-      "CERT_SIGNATURE_FAILURE",
-    ].some((code) => codes.has(code))
-  )
-    return new Error(
-      "Не удалось проверить сертификат TLS сервера Trino. Загрузите доверенный CA или его цепочку в формате PEM в настройках подключения.",
-    );
-  if (codes.has("ENOTFOUND") || codes.has("EAI_AGAIN"))
-    return new Error(
-      "Не удалось найти сервер Trino. Проверьте имя сервера, сеть и подключение к VPN.",
-    );
-  return new Error(
-    "Не удалось подключиться к Trino; проверьте адрес, доступность сети и настройки TLS.",
-  );
+  return connectionTransportError("Trino", error, signal);
 }
 
 /** A dispatcher belongs to one operation; CA trust never crosses connections. */

@@ -16,6 +16,16 @@ import {
   type NodeProps,
   type Node,
 } from "@xyflow/react";
+import {
+  ArrowClockwise,
+  ChartLine,
+  Code,
+  FileMd,
+  Note,
+  SlidersHorizontal,
+  Table,
+  Trash,
+} from "@phosphor-icons/react";
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
 import MarkdownEditor from "./MarkdownEditor";
@@ -121,7 +131,17 @@ export default function ArtifactNode({
       ))}
       <header className="board-node-header">
         <span className="board-node-kind" aria-hidden="true">
-          {data.kind === "result" ? "▤" : data.kind === "markdown" ? "M↓" : "▧"}
+          {data.kind === "result" ? (
+            data.view === "chart" ? (
+              <ChartLine size={16} />
+            ) : (
+              <Table size={16} />
+            )
+          ) : data.kind === "markdown" ? (
+            <FileMd size={16} />
+          ) : (
+            <Note size={16} />
+          )}
         </span>
         <strong title={data.title}>{data.title}</strong>
         <span className="board-node-toolbar nodrag nopan">
@@ -130,7 +150,7 @@ export default function ArtifactNode({
             aria-label={`Свойства: ${data.title}`}
             onClick={() => actions.inspect(id)}
           >
-            ⋯
+            <SlidersHorizontal size={16} aria-hidden="true" />
           </button>
           {data.source && (
             <button
@@ -138,17 +158,24 @@ export default function ArtifactNode({
               aria-label="Открыть исходный SQL"
               onClick={() => actions.openSource(id)}
             >
-              SQL
+              <Code size={16} aria-hidden="true" />
             </button>
           )}
           {actions.editable && data.kind === "result" && (
             <button
               title="Обновить по закреплённому SQL"
               disabled={actions.busy[id]}
-              aria-label="Обновить снимок"
+              aria-label={
+                actions.busy[id] ? "Обновление снимка" : "Обновить снимок"
+              }
+              aria-busy={actions.busy[id] || undefined}
               onClick={() => actions.refresh(id)}
             >
-              {actions.busy[id] ? "…" : "↻"}
+              <ArrowClockwise
+                size={15}
+                className={actions.busy[id] ? "board-refreshing" : undefined}
+                aria-hidden="true"
+              />
             </button>
           )}
           {actions.editable && (
@@ -157,12 +184,14 @@ export default function ArtifactNode({
               aria-label="Удалить блок"
               onClick={() => actions.remove(id)}
             >
-              ×
+              <Trash size={16} aria-hidden="true" />
             </button>
           )}
         </span>
       </header>
-      <div className="board-node-body nodrag nopan nowheel">
+      <div
+        className={`board-node-body nodrag nopan${data.kind === "result" && data.view === "chart" ? "" : " nowheel"}`}
+      >
         {data.kind === "result" && data.resultSetId && (
           <ResultView
             id={data.resultSetId}
@@ -170,11 +199,6 @@ export default function ArtifactNode({
             chart={data.chart}
             visibleColumns={data.visibleColumns}
             table={data.table}
-            onTableChange={
-              actions.editable
-                ? (table) => actions.update(id, { table })
-                : undefined
-            }
             onMetadata={actions.metadata}
           />
         )}

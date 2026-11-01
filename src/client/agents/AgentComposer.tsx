@@ -1,7 +1,7 @@
 import { useState } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import {
-  Plus,
+  DotsThree,
   ArrowUp,
   Stop,
   CaretDown,
@@ -105,7 +105,7 @@ export default function AgentComposer({
                 aria-label="Действия чата"
                 title="Действия чата"
               >
-                <Plus size={21} />
+                <DotsThree size={21} />
               </button>
             </Menu.Trigger>
             <Menu.Portal container={document.getElementById("agent-panel")}>
@@ -128,11 +128,6 @@ export default function AgentComposer({
                 >
                   <ClockCounterClockwise size={17} />
                   История чатов
-                </Menu.Item>
-                <Menu.Separator />
-                <Menu.Item onSelect={onSettings}>
-                  <Gear size={17} />
-                  Настройки агента
                 </Menu.Item>
               </Menu.Content>
             </Menu.Portal>

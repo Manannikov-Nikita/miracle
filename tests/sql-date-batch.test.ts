@@ -266,8 +266,9 @@ async function render(sql = source.sql) {
   );
 }
 function button(label: string) {
-  return [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
-    b.textContent?.includes(label),
+  return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (b) =>
+      b.textContent?.includes(label) || b.getAttribute("aria-label") === label,
   )!;
 }
 async function input(label: string, value: string) {
@@ -470,7 +471,7 @@ describe("SQL batch execution", () => {
       batch: { ...currentRun.batch!, completed: 2, succeeded: 2 },
     };
     await act(async () => vi.advanceTimersByTimeAsync(650));
-    expect(button("На доску").disabled).toBe(false);
+    expect(button("Добавить результат на доску").disabled).toBe(false);
   });
   it("offers an explicit retry after a terminal result cannot be loaded", async () => {
     await render();
@@ -559,7 +560,7 @@ describe("SQL batch execution", () => {
         .querySelector('[role="progressbar"]')
         ?.getAttribute("aria-valuenow"),
     ).toBe("1");
-    expect(button("На доску").disabled).toBe(true);
+    expect(button("Добавить результат на доску").disabled).toBe(true);
     currentRun = {
       ...currentRun,
       status: "failed",
@@ -581,6 +582,6 @@ describe("SQL batch execution", () => {
     await act(async () => vi.advanceTimersByTimeAsync(650));
     expect(container.textContent).toContain("2026-10-01");
     expect(container.textContent).toContain("результаты успешных дат");
-    expect(button("На доску").disabled).toBe(false);
+    expect(button("Добавить результат на доску").disabled).toBe(false);
   });
 });

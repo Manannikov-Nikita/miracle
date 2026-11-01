@@ -118,6 +118,9 @@ export function chartOptions(
     tooltip: {
       trigger: spec.kind === "scatter" ? "item" : "axis",
       valueFormatter: tooltipValue,
+      backgroundColor: "#303338",
+      borderColor: "#3b3e43",
+      textStyle: { color: "#eeeff0" },
     },
     legend: {
       ...normalLayout.legend,
@@ -129,12 +132,12 @@ export function chartOptions(
       itemHeight: 10,
       pageIconSize: 10,
       pageButtonItemGap: 4,
-      pageTextStyle: { color: "#8c95a7" },
+      pageTextStyle: { color: "#a9adb1" },
       tooltip: { show: true },
       formatter: (name: string) => name.replace(/\s+/g, " "),
       textStyle: {
         ...normalLayout.legend.textStyle,
-        color: "#8c95a7",
+        color: "#a9adb1",
         overflow: "truncate",
       },
     },
@@ -152,16 +155,16 @@ export function chartOptions(
       nameMoveOverlap: true,
       nameTruncate: { maxWidth: 180 },
       axisLabel: {
-        color: "#8c95a7",
+        color: "#a9adb1",
         formatter:
           horizontalBar || spec.kind === "scatter" ? formatter : undefined,
         width: 90,
         overflow: "truncate",
         hideOverlap: true,
       },
-      axisLine: { lineStyle: { color: "#343944" } },
+      axisLine: { lineStyle: { color: "#3b3e43" } },
       splitLine: horizontalBar
-        ? { lineStyle: { color: "#343944" } }
+        ? { lineStyle: { color: "#3b3e43" } }
         : undefined,
     },
     yAxis: {
@@ -175,16 +178,16 @@ export function chartOptions(
       nameMoveOverlap: true,
       nameTruncate: { maxWidth: 150 },
       axisLabel: {
-        color: "#8c95a7",
+        color: "#a9adb1",
         formatter: horizontalBar ? undefined : formatter,
         ...(horizontalBar
           ? { width: 120, overflow: "truncate", hideOverlap: true }
           : {}),
       },
-      axisLine: horizontalBar ? { lineStyle: { color: "#343944" } } : undefined,
+      axisLine: horizontalBar ? { lineStyle: { color: "#3b3e43" } } : undefined,
       splitLine: horizontalBar
         ? undefined
-        : { lineStyle: { color: "#343944" } },
+        : { lineStyle: { color: "#3b3e43" } },
     },
     series: series.map(({ metricId, xCategories: _xCategories, ...item }) => ({
       ...item,

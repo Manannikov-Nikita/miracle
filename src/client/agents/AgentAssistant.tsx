@@ -12,6 +12,7 @@ export default function AgentAssistant() {
   const project = useProjectSync();
   const targetContext = useProjectTargetContext();
   const [settings, setSettings] = useState(false),
+    [settingsBusy, setSettingsBusy] = useState(false),
     [profileId, setProfileId] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<Record<string, string[]>>({});
@@ -21,7 +22,11 @@ export default function AgentAssistant() {
   const requestIds = useRef(new Map<string, { content: string; id: string }>());
   const draftKey = state.selected || "new",
     draft = drafts[draftKey] || "";
-  const selectedProfile = profileId || state.profiles[0]?.id || "";
+  const selectedProfile = state.profiles.some(
+    (profile) => profile.id === profileId,
+  )
+    ? profileId
+    : state.profiles[0]?.id || "";
   const selectionKey = (context: typeof targetContext, key = draftKey) =>
     JSON.stringify([
       key,
@@ -55,6 +60,7 @@ export default function AgentAssistant() {
     wasOpen.current = state.open;
   }, [state.open, state.loading]);
   const dismiss = () => {
+    if (settingsBusy) return;
     state.close();
     toggle.current?.focus();
   };
@@ -133,6 +139,7 @@ export default function AgentAssistant() {
         aria-expanded={state.open}
         aria-controls="agent-panel"
         onClick={state.toggle}
+        disabled={settingsBusy}
         title={state.open ? "Закрыть чат" : status}
       >
         {state.open ? (
@@ -217,13 +224,24 @@ export default function AgentAssistant() {
               onSettings={() => setSettings(true)}
             />
           )}
-          <Dialog.Root open={settings} onOpenChange={setSettings}>
+          <Dialog.Root
+            open={settings}
+            onOpenChange={(open) => {
+              if (!settingsBusy) setSettings(open);
+            }}
+          >
             <Dialog.Portal container={document.getElementById("agent-panel")}>
               <Dialog.Overlay className="agent-dialog-overlay" />
               <Dialog.Content
                 className="agent-dialog agent-settings-dialog"
                 aria-describedby={undefined}
-                onEscapeKeyDown={(event) => event.stopPropagation()}
+                onEscapeKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (settingsBusy) event.preventDefault();
+                }}
+                onPointerDownOutside={(event) => {
+                  if (settingsBusy) event.preventDefault();
+                }}
                 onCloseAutoFocus={(event) => {
                   event.preventDefault();
                   document.getElementById("agent-message")?.focus();
@@ -234,6 +252,7 @@ export default function AgentAssistant() {
                   <Dialog.Close
                     className="agent-icon-button"
                     aria-label="Закрыть настройки"
+                    disabled={settingsBusy}
                   >
                     <X size={18} />
                   </Dialog.Close>
@@ -244,7 +263,11 @@ export default function AgentAssistant() {
                   </p>
                   <AgentProfiles
                     profiles={state.profiles}
+                    initialProfileId={
+                      state.conversation?.chat.profileId || selectedProfile
+                    }
                     onChanged={state.refresh}
+                    onBusyChange={setSettingsBusy}
                   />
                 </div>
               </Dialog.Content>

@@ -4,6 +4,7 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Explorer from "../src/client/components/Explorer";
 import type { Connection } from "../src/shared/types";
+import { api } from "../src/client/api";
 import {
   createMetadataStore,
   type MetadataStore,
@@ -82,11 +83,11 @@ describe("schema explorer", () => {
   let realStore: MetadataStore | undefined;
   let activeConnectionId: string;
   let views: Map<string, unknown>;
-  async function render() {
+  async function render(kind: "sources" | "queries" | "history" = "sources") {
     await act(async () => {
       root.render(
         createElement(Explorer, {
-          kind: "sources",
+          kind,
           connections,
           activeConnectionId,
           onConnectionChange: (id: string) => {
@@ -142,6 +143,75 @@ describe("schema explorer", () => {
     vi.useRealTimers();
   });
 
+  it.each(["queries", "history"] as const)(
+    "shows a concise %s loading error with retained details and retry",
+    async (kind) => {
+      vi.mocked(api).mockRejectedValueOnce(
+        Object.assign(new Error("Не удалось загрузить список"), {
+          details: "SQLITE_IOERR: workspace metadata read failed",
+        }),
+      );
+      await render(kind);
+      const alert = container.querySelector('[role="alert"]')!;
+      const details = alert.querySelector<HTMLDetailsElement>("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(details?.querySelector("pre")?.textContent).toContain(
+        "SQLITE_IOERR: workspace metadata read failed",
+      );
+      expect(alert.querySelector(".error-title")?.textContent).toContain(
+        kind === "queries" ? "SQL-файлы" : "историю",
+      );
+      await act(async () => alert.querySelector("button")!.click());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.textContent).toContain(
+        kind === "queries" ? "Сохраните запрос" : "История начнётся",
+      );
+    },
+  );
+
+  it.each(["schemas", "tables"])(
+    "retains %s diagnostics behind a disclosure and recovers through the existing retry",
+    async (target) => {
+      vi.useFakeTimers();
+      let failing = true;
+      realStore = createMetadataStore(async <T>(path: string): Promise<T> => {
+        const url = new URL(path, "http://miracle.test");
+        if (url.pathname.endsWith(`/${target}`) && failing)
+          throw Object.assign(new Error("Не удалось загрузить метаданные"), {
+            details: "DB::Exception: ACCESS_DENIED for warehouse",
+          });
+        return {
+          items: url.pathname.endsWith("/schemas")
+            ? [{ schema: "warehouse" }]
+            : url.pathname.endsWith("/tables")
+              ? [{ schema: "warehouse", name: "orders" }]
+              : [],
+        } as T;
+      });
+      await render();
+      await act(async () => vi.runAllTimersAsync());
+      if (target === "tables") await click("Схема warehouse");
+      const details = container.querySelector<HTMLDetailsElement>("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(details?.querySelector("pre")?.textContent).toContain(
+        "DB::Exception: ACCESS_DENIED for warehouse",
+      );
+      expect(details?.closest('[role="alert"]')?.textContent).toContain(
+        "Проверьте права пользователя",
+      );
+      failing = false;
+      await act(async () =>
+        details!.closest('[role="alert"]')!.querySelector("button")!.click(),
+      );
+      await act(async () => vi.runAllTimersAsync());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      if (target === "schemas") await click("Схема warehouse");
+      expect(container.textContent).toContain("orders");
+    },
+  );
+
   it("keeps tables hidden until their schema is expanded", async () => {
     await render();
     expect(container.textContent).toContain("a_schema");
@@ -175,6 +245,18 @@ describe("schema explorer", () => {
     expect(container.textContent).toContain("hidden_column_0");
     await search("");
     expect(container.textContent).not.toContain("a_schema_table_0");
+  });
+
+  it("keeps search scoped to each explorer and clears it without losing keyboard focus", async () => {
+    await render();
+    await search("hidden_column_0");
+    await render("queries");
+    expect(container.querySelector("input")?.value).toBe("");
+    await render("sources");
+    expect(container.querySelector("input")?.value).toBe("hidden_column_0");
+    await click("Очистить поиск");
+    expect(container.querySelector("input")?.value).toBe("");
+    expect(document.activeElement).toBe(container.querySelector("input"));
   });
 
   it("limits a large schema until the user asks for more", async () => {
@@ -360,7 +442,10 @@ describe("schema explorer", () => {
       if (url.pathname.endsWith("/tables"))
         return { items: [{ schema: "warehouse", name: "orders" }] } as T;
       if (url.searchParams.get("cursor") === "tail") {
-        if (++tailCalls === 1) throw new Error("Column page unavailable");
+        if (++tailCalls === 1)
+          throw Object.assign(new Error("Column page unavailable"), {
+            details: "HTTP 503: column-page storage unavailable",
+          });
         return {
           items: [
             {
@@ -384,6 +469,14 @@ describe("schema explorer", () => {
     await click("Таблица warehouse.orders");
     expect(container.textContent).toContain("order_id");
     expect(container.textContent).toContain("Column page unavailable");
+    const details = container.querySelector<HTMLDetailsElement>(
+      ".column-error details",
+    );
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector("pre")?.textContent).toContain(
+      "HTTP 503: column-page storage unavailable",
+    );
     expect(container.textContent).not.toContain("customer_email");
     await click("Повторить");
     expect(container.textContent).toContain("order_id");

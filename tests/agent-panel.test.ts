@@ -285,4 +285,103 @@ describe("local agent panel", () => {
       ),
     ).toHaveLength(1);
   });
+  it.each(["close", "escape", "outside", "chat"])(
+    "keeps a pending profile save mounted when dismissed through %s",
+    async (dismissal) => {
+      const original = vi.mocked(api).getMockImplementation()!;
+      let rejectSave!: (error: Error) => void;
+      vi.mocked(api).mockImplementation((path, options) =>
+        path === "/api/agent-profiles/profile" && options?.method === "PATCH"
+          ? (new Promise((_resolve, reject) => {
+              rejectSave = reject;
+            }) as never)
+          : original(path, options),
+      );
+      await act(async () => root.render(createElement(AgentAssistant)));
+      const toggle = host.querySelector<HTMLButtonElement>(
+        'button[aria-controls="agent-panel"]',
+      )!;
+      await act(async () => toggle.click());
+      const openSettings = async () => {
+        await act(async () =>
+          host
+            .querySelector('button[aria-label="Выбрать профиль агента"]')!
+            .dispatchEvent(
+              new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+            ),
+        );
+        await act(async () =>
+          [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+            .find((item) => item.textContent?.includes("Настроить агента"))!
+            .click(),
+        );
+      };
+      await openSettings();
+      const dialog = host.querySelector<HTMLElement>(".agent-settings-dialog")!;
+      expect(dialog).not.toBeNull();
+      await act(async () =>
+        [...dialog.querySelectorAll<HTMLButtonElement>("button")]
+          .find((button) => button.textContent === "Сохранить и проверить")!
+          .click(),
+      );
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+      await act(async () => {
+        if (dismissal === "close")
+          dialog
+            .querySelector<HTMLButtonElement>(
+              'button[aria-label="Закрыть настройки"]',
+            )!
+            .click();
+        else if (dismissal === "escape")
+          dialog.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Escape",
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        else if (dismissal === "outside")
+          document.body.dispatchEvent(
+            new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+          );
+        else toggle.click();
+      });
+      expect(host.querySelector(".agent-settings-dialog")).toBe(dialog);
+      expect(dialog.querySelector("input")!.matches(":disabled")).toBe(true);
+      expect(
+        vi
+          .mocked(api)
+          .mock.calls.filter(
+            ([path, options]) =>
+              path === "/api/agent-profiles/profile" &&
+              options?.method === "PATCH",
+          ),
+      ).toHaveLength(1);
+      await act(async () => rejectSave(new Error("Profile save failed")));
+      expect(dialog.textContent).toContain("Profile save failed");
+      expect(dialog.querySelector("input")!.matches(":disabled")).toBe(false);
+      await act(async () =>
+        dialog
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label="Закрыть настройки"]',
+          )!
+          .click(),
+      );
+      expect(host.querySelector(".agent-settings-dialog")).toBeNull();
+      await openSettings();
+      expect(
+        host.querySelector<HTMLInputElement>(".agent-settings-dialog input")!
+          .value,
+      ).toBe("Local Codex");
+      expect(
+        vi
+          .mocked(api)
+          .mock.calls.filter(
+            ([path, options]) =>
+              path === "/api/agent-profiles/profile" &&
+              options?.method === "PATCH",
+          ),
+      ).toHaveLength(1);
+    },
+  );
 });

@@ -132,6 +132,53 @@ describe("connection form", () => {
       (node) => node.textContent?.trim() === label,
     )!;
   const body = () => JSON.parse(fetchMock.mock.calls.at(-1)![1].body);
+  it("shows the fixed engine while editing and only offers engine choices for a new connection", async () => {
+    expect(document.querySelector(".engine-picker")).toBeNull();
+    expect(document.querySelector(".connection-engine")?.textContent).toContain(
+      "ClickHouse",
+    );
+    await act(async () => button("Назад").click());
+    expect(
+      document.querySelector('[aria-label="Проверить Warehouse"]'),
+    ).not.toBeNull();
+    await act(async () => button("Новое подключение").click());
+    const choices = [...document.querySelectorAll(".engine-option")];
+    expect(choices).toHaveLength(2);
+    expect(choices[0].getAttribute("aria-pressed")).toBe("true");
+    await act(async () => (choices[1] as HTMLButtonElement).click());
+    expect(choices[1].getAttribute("aria-pressed")).toBe("true");
+    expect(choices[0].getAttribute("aria-pressed")).toBe("false");
+  });
+  it("locks the tested draft and back navigation until its request completes", async () => {
+    let finish!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await act(async () => button("Проверить").click());
+    expect(
+      document.querySelector('input[type="url"]')?.matches(":disabled"),
+    ).toBe(true);
+    expect(
+      document.querySelector('input[type="password"]')?.matches(":disabled"),
+    ).toBe(true);
+    expect(button("Назад").disabled).toBe(true);
+    await act(async () =>
+      finish(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    expect(
+      document.querySelector('input[type="url"]')?.matches(":disabled"),
+    ).toBe(false);
+    expect(button("Назад").disabled).toBe(false);
+    expect(document.body.textContent).toContain("Доступно");
+  });
   it("round-trips public options without converting presence flags to secrets, tests unsaved edits and clears stale results", async () => {
     expect(
       document
@@ -159,7 +206,7 @@ describe("connection form", () => {
     expect(document.body.textContent).toContain("Доступно · 25.1");
     await input('input[type="url"]', "https://another.test:8443");
     expect(document.body.textContent).not.toContain("Доступно · 25.1");
-    await act(async () => button("Сохранить подключение").click());
+    await act(async () => button("Сохранить").click());
     expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/connections/ch");
     expect(body().clickhouse.tls).toEqual({ certificateAuth: false });
     expect(body().password).toBeUndefined();

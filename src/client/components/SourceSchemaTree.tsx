@@ -15,7 +15,7 @@ import {
   type MetadataStore,
   type SchemaMetadata,
 } from "../metadata-store";
-import { Spinner } from "./UI";
+import { ErrorBox, Spinner } from "./UI";
 
 export interface ExplorerSourceView {
   expandedSchemas: Set<string>;
@@ -128,15 +128,22 @@ export default function SourceSchemaTree({
         </div>
       )}
       {snapshot.error && (
-        <div className="explorer-error" role="alert">
-          {snapshot.error}
-          <button
-            className="text-button"
-            onClick={() => metadata.refresh(source.id)}
-          >
-            Повторить
-          </button>
-        </div>
+        <ErrorBox
+          className="explorer-error"
+          error={snapshot.error}
+          context="connection"
+          engine={source.engine}
+          title="Не удалось загрузить схемы."
+          actions={
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => metadata.refresh(source.id)}
+            >
+              Повторить
+            </button>
+          }
+        />
       )}
       {snapshot.background && (
         <div className="metadata-progress" role="status">
@@ -216,34 +223,48 @@ export default function SourceSchemaTree({
                   </div>
                 )}
                 {scope.error && (
-                  <div className="explorer-error" role="alert">
-                    {scope.error}
-                    <button
-                      className="text-button"
-                      onClick={() =>
-                        void metadata
-                          .retrySchema(source.id, scope)
-                          .catch(() => {})
-                      }
-                    >
-                      Повторить
-                    </button>
-                  </div>
+                  <ErrorBox
+                    className="explorer-error"
+                    error={scope.error}
+                    context="connection"
+                    engine={source.engine}
+                    title="Не удалось загрузить таблицы схемы."
+                    actions={
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() =>
+                          void metadata
+                            .retrySchema(source.id, scope)
+                            .catch(() => {})
+                        }
+                      >
+                        Повторить
+                      </button>
+                    }
+                  />
                 )}
                 {scope.columnsError && (
-                  <div className="explorer-error" role="alert">
-                    Не все столбцы доступны для поиска: {scope.columnsError}
-                    <button
-                      className="text-button"
-                      onClick={() =>
-                        void metadata
-                          .retrySchema(source.id, scope)
-                          .catch(() => {})
-                      }
-                    >
-                      Повторить загрузку
-                    </button>
-                  </div>
+                  <ErrorBox
+                    className="explorer-error"
+                    error={scope.columnsError}
+                    context="connection"
+                    engine={source.engine}
+                    title="Не все столбцы доступны для поиска."
+                    actions={
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() =>
+                          void metadata
+                            .retrySchema(source.id, scope)
+                            .catch(() => {})
+                        }
+                      >
+                        Повторить загрузку
+                      </button>
+                    }
+                  />
                 )}
                 {visible.map((table) => {
                   const tableKey = metadataTableKey(table);
@@ -313,19 +334,26 @@ export default function SourceSchemaTree({
                             </div>
                           ) : null}
                           {columnError && (
-                            <div className="column-error" role="alert">
-                              <span>{columnError}</span>
-                              <button
-                                className="text-button"
-                                onClick={() =>
-                                  void metadata
-                                    .loadColumns(source.id, table)
-                                    .catch(() => {})
-                                }
-                              >
-                                Повторить
-                              </button>
-                            </div>
+                            <ErrorBox
+                              className="column-error"
+                              error={columnError}
+                              context="connection"
+                              engine={source.engine}
+                              title="Не удалось загрузить все столбцы."
+                              actions={
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() =>
+                                    void metadata
+                                      .loadColumns(source.id, table)
+                                      .catch(() => {})
+                                  }
+                                >
+                                  Повторить
+                                </button>
+                              }
+                            />
                           )}
                           {columns?.length === 0 && !columnError && (
                             <div>Нет доступных столбцов</div>

@@ -126,7 +126,7 @@ describe("Trino connection CA", () => {
     expect(document.body.textContent).toContain("Доступно · 478");
     await input('input[type="url"]', "https://next.test/trino");
     expect(document.body.textContent).not.toContain("Доступно · 478");
-    await act(async () => button("Сохранить подключение").click());
+    await act(async () => button("Сохранить").click());
     expect(fetchMock.mock.calls.at(-1)![0]).toBe("/api/connections/trino");
     expect(requestBody().password).toBeUndefined();
     expect(JSON.stringify(requestBody())).not.toContain("caCert");
@@ -138,7 +138,7 @@ describe("Trino connection CA", () => {
     expect(document.body.textContent).not.toContain("PRIVATE TEST CA");
     await act(async () => button("Проверить").click());
     expect(requestBody().trino).toEqual({ tls: { caCert: pem } });
-    await act(async () => button("Сохранить подключение").click());
+    await act(async () => button("Сохранить").click());
     expect(requestBody().trino).toEqual({ tls: { caCert: pem } });
     await click('[aria-label="Настроить Corporate warehouse"]');
     expect(document.body.textContent).toContain("Сохранён");
@@ -157,7 +157,7 @@ describe("Trino connection CA", () => {
     await click('[aria-label="Удалить: Корневой сертификат CA"]');
     await act(async () => button("Проверить").click());
     expect(requestBody().trino).toEqual({ tls: { caCert: null } });
-    await act(async () => button("Сохранить подключение").click());
+    await act(async () => button("Сохранить").click());
     expect(requestBody().trino).toEqual({ tls: { caCert: null } });
   });
 
@@ -205,7 +205,7 @@ describe("Trino connection CA", () => {
     });
     await upload(pending);
     expect(button("Проверить").disabled).toBe(true);
-    expect(button("Сохранить подключение").disabled).toBe(true);
+    expect(button("Сохранить").disabled).toBe(true);
     await act(async () => button("Назад").click());
     await click('[aria-label="Настроить Corporate warehouse"]');
     await act(async () => finish(new TextEncoder().encode(pem).buffer));

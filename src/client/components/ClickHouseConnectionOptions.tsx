@@ -186,9 +186,8 @@ export default function ClickHouseConnectionOptions({
             Использовать HTTPS
           </label>
           <p className="muted connection-option-hint">
-            HTTPS обычно использует порт 8443. Сертификат сервера всегда
-            проверяется: стандартным набором доверенных CA или вашим CA. Для
-            публичного сертификата файл CA не нужен.
+            HTTPS обычно использует порт 8443. Сертификат сервера проверяется
+            всегда. Для публичного сертификата файл CA не нужен.
           </p>
           <fieldset
             className="connection-certificates"
@@ -303,6 +302,7 @@ export default function ClickHouseConnectionOptions({
           <label>
             Таймаут HTTP-запроса, секунд
             <input
+              className="connection-timeout"
               type="number"
               min={1}
               max={600}

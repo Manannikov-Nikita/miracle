@@ -6,7 +6,12 @@ import {
   type CSSProperties,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CaretDown, CaretUp } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  CaretLeft,
+  CaretRight,
+  CaretUp,
+} from "@phosphor-icons/react";
 import type { Cell, ResultSet } from "../../shared/types";
 import type {
   TableColor,
@@ -14,6 +19,7 @@ import type {
   TableViewColumn,
 } from "../../shared/tableTypes";
 import { getResultRows } from "../api";
+import { ErrorBox } from "../components/UI";
 import { cellText, isNumericColumn } from "./model";
 import {
   buildTable,
@@ -41,23 +47,56 @@ const summaryNames = {
   none: "",
 };
 
+function contentKey(value: unknown) {
+  return JSON.stringify(value, (_key, part) =>
+    part && typeof part === "object" && !Array.isArray(part)
+      ? Object.fromEntries(
+          Object.keys(part)
+            .sort()
+            .map((key) => [key, part[key]]),
+        )
+      : part,
+  );
+}
+
 export default function TableView({
   result,
   initialRows,
   spec: savedSpec,
   visibleColumns,
-  onChange,
 }: {
   result: ResultSet;
   initialRows: Cell[][];
   spec?: TableSpec;
   visibleColumns?: string[];
-  onChange?: (spec: TableSpec) => void;
 }) {
-  const spec = useMemo(
+  const authoredSpec = useMemo(
     () => savedSpec ?? createTableSpec(result.columns, visibleColumns),
     [savedSpec, result.columns, visibleColumns],
   );
+  const sortScope = contentKey([
+    result.id,
+    authoredSpec.sort?.column,
+    authoredSpec.sort?.direction,
+    authoredSpec.sourceSchema,
+    authoredSpec.pivot,
+  ]);
+  const [localSort, setLocalSort] = useState<{
+    scope: string;
+    sort: TableSpec["sort"];
+  } | null>(null);
+  const spec = useMemo(
+    () =>
+      localSort?.scope === sortScope
+        ? { ...authoredSpec, sort: localSort.sort }
+        : authoredSpec,
+    [authoredSpec, localSort, sortScope],
+  );
+  useEffect(() => {
+    setLocalSort(null);
+  }, [sortScope]);
+  // Identical server echoes must not reset the reader's page or scroll.
+  const pageKey = contentKey([result.id, spec]);
   const full = Boolean(
     spec.pivot ||
     spec.sort ||
@@ -69,7 +108,7 @@ export default function TableView({
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<Cell[][]>(initialRows);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Error | null>(null);
   const [retry, setRetry] = useState(0);
   const [visible, setVisible] = useState(false);
   const [loadedFull, setLoadedFull] = useState(false);
@@ -94,10 +133,10 @@ export default function TableView({
   useEffect(() => {
     setOffset(0);
     scroll.current?.scrollTo(0, 0);
-  }, [spec]);
+  }, [pageKey]);
   useEffect(() => {
     let live = true;
-    setError("");
+    setError(null);
     if (full && !visible) {
       setLoadedFull(false);
       setRows([]);
@@ -119,7 +158,7 @@ export default function TableView({
         setLoadedId(result.id);
       })
       .catch((e) => {
-        if (live) setError(e.message);
+        if (live) setError(e instanceof Error ? e : new Error(String(e)));
       })
       .finally(() => {
         if (live) setBusy(false);
@@ -202,11 +241,10 @@ export default function TableView({
       : {}),
   });
   const sort = (column: TableViewColumn) => {
-    if (!onChange) return;
     const previous =
       spec.sort?.column === column.id ? spec.sort.direction : undefined;
-    onChange({
-      ...spec,
+    setLocalSort({
+      scope: sortScope,
       sort:
         previous === "desc"
           ? undefined
@@ -224,12 +262,27 @@ export default function TableView({
       style={{ "--table-row-height": `${rowHeight}px` } as CSSProperties}
     >
       {failure ? (
-        <div className="board-error" role="alert">
-          {failure}
-          {error && (
-            <button onClick={() => setRetry((n) => n + 1)}>Повторить</button>
-          )}
-        </div>
+        <ErrorBox
+          className="board-error"
+          error={failure}
+          title={
+            error
+              ? "Не удалось загрузить таблицу."
+              : "Не удалось подготовить таблицу."
+          }
+          hint={
+            error
+              ? "Повторите загрузку сохранённого снимка."
+              : "Проверьте настройки таблицы в свойствах блока. Если изменились столбцы, сбросьте настройки таблицы."
+          }
+          actions={
+            error ? (
+              <button type="button" onClick={() => setRetry((n) => n + 1)}>
+                Повторить загрузку
+              </button>
+            ) : undefined
+          }
+        />
       ) : !data ? (
         <div className="board-loading" role="status">
           {full ? "Загрузка полного снимка…" : "Загрузка страницы…"}
@@ -275,8 +328,7 @@ export default function TableView({
                     >
                       <button
                         className="table-header-sort"
-                        title={onChange ? "Сортировать весь снимок" : undefined}
-                        disabled={!onChange}
+                        title="Сортировать для просмотра"
                         onClick={() => sort(column)}
                       >
                         <span>{column.options.label || column.name}</span>
@@ -420,26 +472,32 @@ export default function TableView({
                 : ""}
               {busy ? " · загрузка" : ""}
             </span>
-            <button
-              disabled={safeOffset === 0 || busy}
-              aria-label="Предыдущая страница"
-              onClick={() => {
-                setOffset(Math.max(0, safeOffset - pageSize));
-                scroll.current?.scrollTo(0, 0);
-              }}
-            >
-              ‹
-            </button>
-            <button
-              disabled={safeOffset + pageSize >= total || busy}
-              aria-label="Следующая страница"
-              onClick={() => {
-                setOffset(safeOffset + pageSize);
-                scroll.current?.scrollTo(0, 0);
-              }}
-            >
-              ›
-            </button>
+            {(total > pageSize || safeOffset > 0) && (
+              <>
+                <button
+                  disabled={safeOffset === 0 || busy}
+                  aria-label="Предыдущая страница"
+                  title="Предыдущая страница"
+                  onClick={() => {
+                    setOffset(Math.max(0, safeOffset - pageSize));
+                    scroll.current?.scrollTo(0, 0);
+                  }}
+                >
+                  <CaretLeft size={16} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={safeOffset + pageSize >= total || busy}
+                  aria-label="Следующая страница"
+                  title="Следующая страница"
+                  onClick={() => {
+                    setOffset(safeOffset + pageSize);
+                    scroll.current?.scrollTo(0, 0);
+                  }}
+                >
+                  <CaretRight size={16} aria-hidden="true" />
+                </button>
+              </>
+            )}
           </div>
         </>
       )}
