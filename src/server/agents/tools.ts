@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { customChartGuide } from "../custom-chart-guide.js";
 import { sourceSchema } from "../validation.js";
 import { problem } from "../project-store.js";
 import type { AgentManager, ActiveAgent } from "./manager.js";
@@ -219,7 +220,7 @@ export const miracleTools = [
   ),
   tool(
     "board_patch",
-    "Apply atomic board operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Data patches may set title,text,source,resultSetId,view (table|chart),chart/table settings. Positions are canvas coordinates. Unchanged fields remain intact.",
+    "Apply atomic board operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Data patches may set title,text,source,resultSetId,view (table|chart|custom),chart/table settings or customChart. Read custom_chart_guide before creating custom source; it defines runtime, limits and bounded diagnostic retries. Positions are canvas coordinates. Unchanged fields remain intact.",
     {
       id,
       ...mutation,
@@ -228,6 +229,21 @@ export const miracleTools = [
     },
     ["id", "baseRevision", "mutationId", "operations"],
     false,
+  ),
+  tool(
+    "custom_chart_guide",
+    "Read the exact custom chart v1 runtime, data binding, SVG example, resize/events/cleanup, limits and diagnostic workflow. Use before creating or editing programmable chart source.",
+  ),
+  tool(
+    "read_custom_chart_status",
+    "Read current browser diagnostics. Aggregate status covers all fresh observations; reports are paged (default10/max20). Follow nextOffset until null and inspect total. not_observed means no browser confirmation; rendered means initialization completed, not visual correctness.",
+    {
+      id,
+      nodeId: string,
+      offset: integer,
+      limit: { type: "integer", minimum: 1, maximum: 20 },
+    },
+    ["id", "nodeId"],
   ),
   tool(
     "refresh_node",
@@ -370,6 +386,41 @@ export async function callMiracleTool(
     case "board_patch":
       result = ops.patchBoard(key(), args);
       break;
+    case "custom_chart_guide":
+      result = customChartGuide;
+      break;
+    case "read_custom_chart_status": {
+      const status = ops.customChartStatus(
+        key(),
+        z.string().min(1).max(200).parse(args.nodeId),
+      );
+      const offset = z
+        .number()
+        .int()
+        .min(0)
+        .max(1000000000)
+        .default(0)
+        .parse(args.offset);
+      const limit = z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .default(10)
+        .parse(args.limit);
+      const reports = status.reports.slice(offset, offset + limit);
+      result = {
+        status: status.status,
+        reports,
+        offset,
+        total: status.reports.length,
+        nextOffset:
+          offset + reports.length < status.reports.length
+            ? offset + reports.length
+            : null,
+      };
+      break;
+    }
     case "refresh_node": {
       const board = ops.board(key()),
         node = board.document.nodes.find(

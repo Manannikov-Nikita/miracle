@@ -1,3 +1,7 @@
+import {
+  checkCustomChartMetadata,
+  customChartData,
+} from "./custom-chart-data.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
@@ -955,6 +959,14 @@ export async function buildApp(
         rows: result.rowCount ? await rows(id, 0, result.rowCount) : [],
       };
     });
+    app.get("/api/result-sets/:id/custom-chart", async (req) => {
+      need(req);
+      const id = uuid(req);
+      const result = await getResult(id);
+      checkCustomChartMetadata(result.rowCount, result.columns.length);
+      const data = result.rowCount ? await rows(id, 0, result.rowCount) : [];
+      return customChartData(result.columns, data, result.rowCount);
+    });
     app.get("/api/result-sets/:id/table", async (req) => {
       need(req);
       const id = uuid(req);
@@ -998,6 +1010,30 @@ export async function buildApp(
       need(req);
       return operations.deleteBoard(uuid(req), req.body);
     });
+    app.get(
+      "/api/boards/:id/nodes/:nodeId/custom-chart-status",
+      async (req) => {
+        need(req);
+        const nodeId = z
+          .string()
+          .min(1)
+          .max(200)
+          .parse((req.params as any).nodeId);
+        return operations.customChartStatus(uuid(req), nodeId);
+      },
+    );
+    app.post(
+      "/api/boards/:id/nodes/:nodeId/custom-chart-status",
+      async (req) => {
+        need(req);
+        const nodeId = z
+          .string()
+          .min(1)
+          .max(200)
+          .parse((req.params as any).nodeId);
+        return operations.reportCustomChartStatus(uuid(req), nodeId, req.body);
+      },
+    );
     app.post("/api/boards/:id/nodes/:nodeId/refresh", async (req, reply) => {
       need(req);
       const id = uuid(req);

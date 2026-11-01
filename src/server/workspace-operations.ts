@@ -6,7 +6,14 @@ import {
   boardEdgePointSchema,
   sourceSchema,
 } from "./validation.js";
-import { ProjectStore, problem } from "./project-store.js";
+import { ProjectStore, problem, hash } from "./project-store.js";
+import {
+  CUSTOM_CHART_LIMITS,
+  serializeCustomChart,
+} from "../shared/custom-charts.js";
+import { customChartSchema } from "./custom-chart-schema.js";
+import { CustomChartStatusStore } from "./custom-chart-status.js";
+import { checkCustomChartMetadata } from "./custom-chart-data.js";
 import type {
   Board,
   BoardDocument,
@@ -29,7 +36,21 @@ const queryDto = (r: any): QueryDocument => ({
   ...r.source,
   updatedAt: new Date(r.updated_at).toISOString(),
 });
+function checkCustomBoardSize(document: BoardDocument) {
+  if (
+    document.nodes.some((node) => node.data.customChart !== undefined) &&
+    Buffer.byteLength(JSON.stringify(document), "utf8") >
+      CUSTOM_CHART_LIMITS.boardBytes
+  )
+    throw problem(
+      413,
+      "Доска превышает 1.5 MiB. Сократите исходники кастомных графиков или разделите доску",
+      "BOARD_TOO_LARGE",
+    );
+}
+
 export class WorkspaceOperations {
+  private readonly chartStatuses = new CustomChartStatusStore();
   constructor(
     readonly store: ProjectStore,
     private checkConnection: (id: string) => Promise<unknown>,
@@ -116,10 +137,7 @@ export class WorkspaceOperations {
       )
         continue;
       const currentSource = sourceSchema.safeParse(editor);
-      if (
-        !currentSource.success ||
-        sourceKey(currentSource.data) !== before
-      )
+      if (!currentSource.success || sourceKey(currentSource.data) !== before)
         continue;
       // Linked clean documents follow their saved query atomically. Divergent
       // drafts keep both their contents and the query revision they were based on.
@@ -177,6 +195,35 @@ export class WorkspaceOperations {
     if (!row) throw problem(404, "Доска не найдена");
     return boardDto(row);
   }
+  private customChartIdentity(boardId: string, nodeId: string) {
+    const node = this.board(boardId).document.nodes.find(
+      (node) => node.id === nodeId,
+    );
+    if (!node) throw problem(404, "Блок не найден");
+    if (!node.data.customChart || !node.data.resultSetId)
+      throw problem(400, "У блока нет кастомного графика или снимка");
+    const spec = customChartSchema.parse(node.data.customChart);
+    return {
+      resultSetId: node.data.resultSetId,
+      specHash: hash(serializeCustomChart(spec)),
+    };
+  }
+  customChartStatus(boardId: string, nodeId: string) {
+    return this.chartStatuses.read(
+      boardId,
+      nodeId,
+      this.customChartIdentity(boardId, nodeId),
+    );
+  }
+  reportCustomChartStatus(boardId: string, nodeId: string, input: unknown) {
+    this.chartStatuses.report(
+      boardId,
+      nodeId,
+      this.customChartIdentity(boardId, nodeId),
+      input,
+    );
+    return { ok: true as const };
+  }
   private refs(id: string, document: BoardDocument) {
     this.db.query("DELETE FROM board_result_refs WHERE board_id=?1", [id]);
     const ids = [
@@ -188,7 +235,7 @@ export class WorkspaceOperations {
     ];
     for (const resultId of ids) {
       const r = this.db.query(
-        "SELECT id,row_count FROM result_sets WHERE id=?1",
+        "SELECT id,row_count,columns FROM result_sets WHERE id=?1",
         [resultId],
       ).rows[0];
       if (!r) throw problem(400, "Результат блока не найден");
@@ -209,6 +256,14 @@ export class WorkspaceOperations {
         r.row_count > 5000
       )
         throw problem(422, "График превышает лимит 5000 точек");
+      if (
+        document.nodes.some(
+          (node) =>
+            node.data.resultSetId === resultId &&
+            node.data.customChart !== undefined,
+        )
+      )
+        checkCustomChartMetadata(r.row_count, r.columns.length);
       this.db.query(
         "INSERT INTO board_result_refs(board_id,result_set_id) VALUES(?1,?2)",
         [id, resultId],
@@ -228,6 +283,7 @@ export class WorkspaceOperations {
       })
       .parse(input);
     return this.store.once("board:new", b.mutationId || randomUUID(), b, () => {
+      checkCustomBoardSize(b.document);
       const id = randomUUID();
       const row = this.db.query(
         "INSERT INTO boards(id,name,document) VALUES(?1,?2,?3) RETURNING *",
@@ -274,6 +330,7 @@ export class WorkspaceOperations {
               : node;
           }),
         };
+        checkCustomBoardSize(document);
         const row = this.db.query(
           "UPDATE boards SET name=COALESCE(?2,name),document=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
           [id, b.name, document, b.baseRevision],
