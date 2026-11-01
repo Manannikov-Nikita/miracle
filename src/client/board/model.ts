@@ -67,7 +67,7 @@ export function applyRefresh(
   return {
     ...document,
     nodes: document.nodes.map((node) =>
-      node.id === nodeId && node.data.sourceRevision === sourceRevision
+      node.id === nodeId && (node.data.sourceRevision ?? 0) === sourceRevision
         ? { ...node, data: { ...node.data, resultSetId } }
         : node,
     ),

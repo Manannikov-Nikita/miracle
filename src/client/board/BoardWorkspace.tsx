@@ -365,7 +365,7 @@ function Workspace({
       const current = store.current.current;
       const node = current?.document.nodes.find((n) => n.id === id);
       if (!current || !node || !editable || busy[id] || store.conflict) return;
-      const sourceRevision = node.data.sourceRevision ?? 1;
+      const sourceRevision = node.data.sourceRevision ?? 0;
       const boardId = current.id;
       const controller = new AbortController();
       controllers.current.add(controller);
@@ -373,11 +373,12 @@ function Workspace({
       try {
         await store.save();
         const live = store.current.current;
+        const liveNode = live?.document.nodes.find((n) => n.id === id);
         if (
           !live ||
           live.id !== boardId ||
-          live.document.nodes.find((n) => n.id === id)?.data.sourceRevision !==
-            node.data.sourceRevision
+          !liveNode ||
+          (liveNode.data.sourceRevision ?? 0) !== sourceRevision
         )
           throw new Error("Источник изменился. Повторите обновление.");
         const run = await api<QueryRun>(
@@ -395,10 +396,11 @@ function Workspace({
               "Обновление не завершено. Предыдущий снимок сохранён.",
           );
         const latest = store.current.current;
+        const latestNode = latest?.document.nodes.find((n) => n.id === id);
         if (
           latest?.id === boardId &&
-          latest.document.nodes.find((n) => n.id === id)?.data
-            .sourceRevision === sourceRevision
+          latestNode &&
+          (latestNode.data.sourceRevision ?? 0) === sourceRevision
         ) {
           change(
             applyRefresh(latest.document, id, sourceRevision, done.resultSetId),

@@ -156,6 +156,115 @@ describe("board navigation is local view state", () => {
   const status = () => host.querySelector('[role="status"]')?.textContent;
   const arrowData = () => flow.props.edges![0].data as BoardEdgeViewData;
 
+  function customResultWithoutRevision() {
+    const spec = {
+      version: 1 as const,
+      description: "Custom refresh",
+      html: "<svg></svg>",
+      css: "",
+      javascript: "api.root.title = 'chart'",
+    };
+    boards[0].document.nodes[0].data = {
+      title: "Custom",
+      kind: "result",
+      view: "custom",
+      resultSetId: "old-result",
+      source: { connectionId: "connection", sql: "select 1" },
+      customChart: spec,
+    };
+    return spec;
+  }
+
+  it("refreshes an omitted-revision custom node using the server's zero baseline and preserves its code", async () => {
+    const spec = customResultWithoutRevision();
+    let refreshPayload: unknown;
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (path: string, options: RequestInit = {}) => {
+      if (path === "/api/boards/first/nodes/note/refresh") {
+        refreshPayload = JSON.parse(options.body as string);
+        return Promise.resolve(
+          response({ id: "refresh-run", status: "running" }),
+        );
+      }
+      if (path === "/api/query-runs/refresh-run")
+        return Promise.resolve(
+          response({
+            id: "refresh-run",
+            status: "completed",
+            resultSetId: "fresh-result",
+          }),
+        );
+      return originalFetch(path, options);
+    });
+    await open();
+    await act(async () => flow.actions!.refresh("note"));
+    expect(refreshPayload).toEqual({ sourceRevision: 0 });
+    expect(flow.props.nodes![0].data).toMatchObject({
+      resultSetId: "fresh-result",
+      view: "custom",
+      customChart: spec,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700);
+      await project.prepare();
+    });
+    expect(boards[0].document.nodes[0].data).toMatchObject({
+      resultSetId: "fresh-result",
+      customChart: spec,
+    });
+  });
+
+  it.each(["source change", "node removal"])(
+    "rejects a late omitted-revision refresh after %s",
+    async (change) => {
+      notify.mockClear();
+      const spec = customResultWithoutRevision();
+      let finish!: (value: Response) => void;
+      const originalFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", (path: string, options: RequestInit = {}) => {
+        if (path === "/api/boards/first/nodes/note/refresh")
+          return Promise.resolve(
+            response({ id: "refresh-run", status: "running" }),
+          );
+        if (path === "/api/query-runs/refresh-run")
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        return originalFetch(path, options);
+      });
+      await open();
+      await act(async () => flow.actions!.refresh("note"));
+      await act(async () => {
+        if (change === "source change")
+          flow.actions!.update("note", {
+            source: { connectionId: "connection", sql: "select 2" },
+          });
+        else flow.actions!.remove("note");
+      });
+      await act(async () =>
+        finish(
+          response({
+            id: "refresh-run",
+            status: "completed",
+            resultSetId: "obsolete-result",
+          }),
+        ),
+      );
+      if (change === "source change")
+        expect(flow.props.nodes![0].data).toMatchObject({
+          resultSetId: "old-result",
+          sourceRevision: 1,
+          source: { sql: "select 2" },
+          customChart: spec,
+        });
+      else expect(flow.props.nodes).toEqual([]);
+      expect(notify).toHaveBeenCalledWith(
+        "Источник изменился; поздний результат не применён.",
+        "info",
+      );
+    },
+  );
+
   it("keeps a board creation error in its dialog with collapsed details and a retry", async () => {
     await open();
     const originalFetch = globalThis.fetch;

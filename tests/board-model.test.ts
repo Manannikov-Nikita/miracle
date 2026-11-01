@@ -21,6 +21,41 @@ const result: ResultSet = {
   source: { connectionId: "c1", sql: "select 1" },
 };
 describe("board snapshots", () => {
+  it("refreshes a custom snapshot with omitted source revision and retains its source", () => {
+    const node = createResultNode(result);
+    delete node.data.sourceRevision;
+    node.data.view = "custom";
+    const spec = {
+      version: 1 as const,
+      description: "Example",
+      html: "<svg></svg>",
+      css: "",
+      javascript: "api.root.title = 'chart'",
+    };
+    node.data.customChart = spec;
+    const document = { schemaVersion: 1 as const, nodes: [node], edges: [] };
+    const refreshed = applyRefresh(document, node.id, 0, "fresh-result");
+    expect(refreshed.nodes[0].data.resultSetId).toBe("fresh-result");
+    expect(refreshed.nodes[0].data.customChart).toEqual(spec);
+    expect(refreshed.nodes[0].data.source).toEqual(result.source);
+    expect(document.nodes[0].data.resultSetId).toBe("r1");
+  });
+
+  it("rejects late refresh after rebinding a source whose revision was omitted", () => {
+    const node = createResultNode(result);
+    delete node.data.sourceRevision;
+    const rebound = rebindResult(node, {
+      ...result,
+      id: "rebound-result",
+      source: { ...result.source, sql: "select 2" },
+    });
+    const document = { schemaVersion: 1 as const, nodes: [rebound], edges: [] };
+    expect(rebound.data.sourceRevision).toBe(1);
+    expect(
+      applyRefresh(document, node.id, 0, "obsolete").nodes[0].data.resultSetId,
+    ).toBe("rebound-result");
+  });
+
   it("keeps frozen source and blocks late refresh after explicit rebind", () => {
     const first = createResultNode(result);
     const rebound = rebindResult(first, {
