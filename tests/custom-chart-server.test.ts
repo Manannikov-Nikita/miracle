@@ -219,6 +219,7 @@ it("validates current source and snapshot for reports without mutating the board
   const report = {
     browserId: randomUUID(),
     sequence: 1,
+    sentAt: Date.now(),
     resultSetId: board.document.nodes[0].data.resultSetId,
     specHash: createHash("sha256")
       .update(serializeCustomChart(spec))
@@ -334,6 +335,7 @@ it("uses browser auth and CSRF protection for diagnostics GET/POST", async () =>
   const payload = {
     browserId: randomUUID(),
     sequence: 1,
+    sentAt: Date.now(),
     resultSetId: board.document.nodes[0].data.resultSetId,
     specHash: createHash("sha256")
       .update(serializeCustomChart(spec))

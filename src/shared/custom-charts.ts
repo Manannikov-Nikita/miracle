@@ -33,6 +33,8 @@ export type CustomChartRenderState = "rendering" | "rendered" | "error";
 export interface CustomChartReportInput {
   browserId: string;
   sequence: number;
+  /** Parent-created Unix milliseconds; retained unchanged across request retries. */
+  sentAt: number;
   resultSetId: string;
   specHash: string;
   status: CustomChartRenderState;

@@ -167,7 +167,11 @@ function sandboxBootstrap() {
 }
 
 export function customChartShell(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-miracle-custom-runtime' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"><style>html,body,#chart-root{width:100%;height:100%;margin:0}body{overflow:auto}</style></head><body><div id="chart-root"></div><script nonce="miracle-custom-runtime">(${sandboxBootstrap.toString()})();</script></body></html>`;
+  // A nonce also authorizes external scripts bearing that nonce. This sandbox
+  // deliberately permits inline code/eval only, with no nonce/hash/URL source
+  // and no strict-dynamic delegation, so generated code cannot enable a CDN.
+  // Inline event attributes remain disabled; use addEventListener in the API.
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; script-src-attr 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><meta name="referrer" content="no-referrer"><style>html,body,#chart-root{width:100%;height:100%;margin:0}body{overflow:auto}</style></head><body><div id="chart-root"></div><script>(${sandboxBootstrap.toString()})();</script></body></html>`;
 }
 
 /** Owns one opaque frame. Destroying it is the authority for ending a run. */

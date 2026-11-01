@@ -43,6 +43,7 @@ export function startCustomChartRun(options: {
     const body: CustomChartReportInput = {
       browserId: (browserId ??= crypto.randomUUID()),
       sequence: reportSequence,
+      sentAt: Date.now(),
       resultSetId: options.resultSetId,
       specHash: hash,
       ...current,

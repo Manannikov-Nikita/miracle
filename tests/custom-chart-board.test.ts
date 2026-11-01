@@ -5,20 +5,24 @@ import { createRoot, type Root } from "react-dom/client";
 import ResultView from "../src/client/board/ResultView";
 import type { CustomChartSpec } from "../src/shared/custom-charts";
 
+const failure = vi.hoisted(() => ({ rows: false }));
 vi.mock("../src/client/api", () => ({
-  getResultRows: async (id: string) => ({
-    result: {
-      id,
-      columns: [{ id: "value", name: "value", type: "UInt64" }],
-      rowCount: 1,
-      byteCount: 10,
-      createdAt: "2026-11-01",
-      source: { connectionId: "c", sql: "SELECT 12" },
-    },
-    rows: [[12]],
-    offset: 0,
-    total: 1,
-  }),
+  getResultRows: async (id: string) => {
+    if (failure.rows) throw new Error("Preview unavailable");
+    return {
+      result: {
+        id,
+        columns: [{ id: "value", name: "value", type: "UInt64" }],
+        rowCount: 1,
+        byteCount: 10,
+        createdAt: "2026-11-01",
+        source: { connectionId: "c", sql: "SELECT 12" },
+      },
+      rows: [[12]],
+      offset: 0,
+      total: 1,
+    };
+  },
   api: async () => ({
     columns: [{ id: "value", name: "value", type: "UInt64" }],
     rows: [[12]],
@@ -34,6 +38,7 @@ const spec: CustomChartSpec = {
 let root: Root;
 let host: HTMLDivElement;
 beforeEach(() => {
+  failure.rows = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -84,4 +89,21 @@ it("reports missing custom source instead of silently showing a table", async ()
     ),
   );
   expect(host.textContent).toContain("Не удалось открыть кастомный график");
+});
+
+it("starts the diagnostic renderer even when the separate table preview request fails", async () => {
+  failure.rows = true;
+  await act(async () =>
+    root.render(
+      createElement(ResultView, {
+        id: "snapshot",
+        view: "custom",
+        customChart: spec,
+        boardId: "board",
+        nodeId: "node",
+      }),
+    ),
+  );
+  expect(host.querySelector(".custom-chart")).not.toBeNull();
+  expect(host.textContent).not.toContain("Preview unavailable");
 });

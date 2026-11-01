@@ -320,30 +320,6 @@ export default function ResultView({
       live = false;
     };
   }, [id, retry]);
-  if (error)
-    return (
-      <ErrorBox
-        className="board-error nowheel"
-        error={error}
-        title="Не удалось загрузить снимок."
-        hint="Повторите загрузку данных этого блока."
-        actions={
-          <button type="button" onClick={() => setRetry((n) => n + 1)}>
-            Повторить загрузку
-          </button>
-        }
-      />
-    );
-  if (!result || result.id !== id)
-    return (
-      <div className="board-loading" role="status">
-        Загрузка снимка…
-      </div>
-    );
-  if (view === "chart")
-    return (
-      <Chart result={result} spec={chart ?? defaultChart(result.columns)} />
-    );
   if (view === "custom" && !showCustomTable) {
     if (!customChart || !boardId || !nodeId)
       return (
@@ -369,6 +345,30 @@ export default function ResultView({
       />
     );
   }
+  if (error)
+    return (
+      <ErrorBox
+        className="board-error nowheel"
+        error={error}
+        title="Не удалось загрузить снимок."
+        hint="Повторите загрузку данных этого блока."
+        actions={
+          <button type="button" onClick={() => setRetry((n) => n + 1)}>
+            Повторить загрузку
+          </button>
+        }
+      />
+    );
+  if (!result || result.id !== id)
+    return (
+      <div className="board-loading" role="status">
+        Загрузка снимка…
+      </div>
+    );
+  if (view === "chart")
+    return (
+      <Chart result={result} spec={chart ?? defaultChart(result.columns)} />
+    );
   if (view === "custom")
     return (
       <div className="board-custom-table-preview">

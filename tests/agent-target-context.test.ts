@@ -258,6 +258,7 @@ it("summarizes the selected custom chart without embedding source and exposes it
     operations.reportCustomChartStatus(selected.id, "custom", {
       browserId: randomUUID(),
       sequence: 1,
+      sentAt: Date.now(),
       resultSetId: resultId,
       specHash: createHash("sha256")
         .update(serializeCustomChart(customChart))

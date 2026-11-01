@@ -3,9 +3,14 @@ import { expect, it } from "vitest";
 import { CustomChartStatusStore } from "../src/server/custom-chart-status";
 
 const current = { resultSetId: randomUUID(), specHash: "a".repeat(64) };
-const report = (browserId = randomUUID(), sequence = 1) => ({
+const report = (
+  browserId = randomUUID(),
+  sequence = 1,
+  sentAt = Date.now(),
+) => ({
   browserId,
   sequence,
+  sentAt,
   ...current,
   status: "rendered" as const,
 });
@@ -51,7 +56,7 @@ it("does not allow delayed requests or duplicate sequences to replace a newer er
 it("expires reports at 60 seconds and invalidates code and snapshot identity", () => {
   let now = 1000;
   const store = new CustomChartStatusStore(() => now);
-  store.report("board", "node", current, report());
+  store.report("board", "node", current, report(undefined, 1, now));
   now = 60999;
   expect(store.read("board", "node", current).status).toBe("rendered");
   expect(
@@ -76,6 +81,12 @@ it("rejects stale identities and malformed or oversized diagnostics", () => {
   for (const patch of [
     { sequence: -1 },
     { sequence: 1.1 },
+    { sentAt: undefined },
+    { sentAt: NaN },
+    { sentAt: Infinity },
+    { sentAt: Number.MAX_SAFE_INTEGER + 1 },
+    { sentAt: 1.1 },
+    { sentAt: -1 },
     { browserId: "" },
     { status: "not_observed" },
     { message: "x".repeat(4001) },
@@ -89,10 +100,80 @@ it("rejects stale identities and malformed or oversized diagnostics", () => {
   expect(store.read("b", "n", current).status).toBe("not_observed");
 });
 
-it("bounds memory to the latest 1000 browser observations across boards and nodes", () => {
-  const store = new CustomChartStatusStore();
-  for (let i = 0; i < 1001; i++) store.report(`b${i}`, "n", current, report());
-  expect(store.read("b0", "n", current).status).toBe("not_observed");
-  expect(store.read("b1", "n", current).status).toBe("rendered");
-  expect(store.read("b1000", "n", current).status).toBe("rendered");
+it("rejects new keys at capacity and retains live errors and sequence history", () => {
+  let now = 100000;
+  const store = new CustomChartStatusStore(() => now);
+  const first = report(undefined, 1, now);
+  store.report("b0", "n", current, { ...first, sequence: 5, status: "error" });
+  for (let i = 1; i < 1000; i++)
+    store.report(`b${i}`, "n", current, report(undefined, 1, now));
+  expect(() =>
+    store.report("overflow", "n", current, report(undefined, 1, now)),
+  ).toThrow(
+    expect.objectContaining({
+      statusCode: 429,
+      code: "CUSTOM_CHART_REPORT_CAPACITY",
+    }),
+  );
+  store.report("b0", "n", current, { ...first, sequence: 4 });
+  expect(store.read("b0", "n", current).status).toBe("error");
+  store.report("b0", "n", current, { ...first, sequence: 6 });
+  expect(store.read("b0", "n", current).status).toBe("rendered");
+  now = 160000;
+  store.report("overflow", "n", current, report(undefined, 1, now));
+  expect(store.read("overflow", "n", current).status).toBe("rendered");
+});
+
+it.each([4, 5])(
+  "cannot resurrect an expired newer error from delayed sequence %i",
+  (sequence) => {
+    let now = 100000;
+    const store = new CustomChartStatusStore(() => now);
+    const browser = randomUUID();
+    const delayed = report(browser, sequence, now);
+    store.report("board", "node", current, {
+      ...report(browser, 5, now),
+      status: "error",
+    });
+    now = 160001;
+    expect(store.read("board", "node", current).status).toBe("not_observed");
+    expect(() => store.report("board", "node", current, delayed)).toThrow(
+      expect.objectContaining({ code: "CUSTOM_CHART_REPORT_STALE" }),
+    );
+    expect(store.read("board", "node", current).status).toBe("not_observed");
+  },
+);
+
+it("retains a fast-clock sequence watermark beyond visible expiry without extending observation TTL", () => {
+  let now = 100000;
+  const store = new CustomChartStatusStore(() => now);
+  const browser = randomUUID();
+  const delayed = report(browser, 4, 103999);
+  store.report("board", "node", current, {
+    ...report(browser, 5, 104000),
+    status: "error",
+  });
+  now = 160001;
+  expect(store.read("board", "node", current).status).toBe("not_observed");
+  store.report("board", "node", current, delayed);
+  expect(store.read("board", "node", current).status).toBe("not_observed");
+  now = 164000;
+  expect(() => store.report("board", "node", current, delayed)).toThrow(
+    expect.objectContaining({ code: "CUSTOM_CHART_REPORT_STALE" }),
+  );
+  expect(store.read("board", "node", current).status).toBe("not_observed");
+});
+
+it("accepts only fresh safe timestamp bounds and at most five seconds of future skew", () => {
+  const now = 100000;
+  const store = new CustomChartStatusStore(() => now);
+  expect(() =>
+    store.report("board", "node", current, report(undefined, 1, now - 60000)),
+  ).toThrow(expect.objectContaining({ code: "CUSTOM_CHART_REPORT_STALE" }));
+  expect(() =>
+    store.report("board", "node", current, report(undefined, 1, now + 5001)),
+  ).toThrow(expect.objectContaining({ code: "CUSTOM_CHART_REPORT_TIME" }));
+  store.report("board", "node", current, report(undefined, 1, now - 59999));
+  store.report("board", "node", current, report(undefined, 1, now + 5000));
+  expect(store.read("board", "node", current).reports).toHaveLength(2);
 });

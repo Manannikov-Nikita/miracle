@@ -203,3 +203,27 @@ it("calls cleanup before acknowledging disposal, and ignores later messages", ()
   expect(reports).toHaveLength(count);
   dom.window.close();
 });
+
+it("never grants an external script source through a nonce, hash or URL policy exception", () => {
+  // Policy invariant: jsdom does not enforce CSP. The production browser smoke
+  // additionally attempts an external script with the old reusable nonce.
+  const dom = new JSDOM(customChartShell());
+  const policy = dom.window.document.querySelector<HTMLMetaElement>(
+    'meta[http-equiv="Content-Security-Policy"]',
+  )!.content;
+  const directives = new Map(
+    policy.split(";").map((directive) => {
+      const [name, ...sources] = directive.trim().split(/\s+/);
+      return [name, sources];
+    }),
+  );
+  const scriptElements =
+    directives.get("script-src-elem") ??
+    directives.get("script-src") ??
+    directives.get("default-src")!;
+  expect(scriptElements.length).toBeGreaterThan(0);
+  for (const source of scriptElements)
+    expect(["'none'", "'unsafe-inline'", "'unsafe-eval'"]).toContain(source);
+  expect(directives.get("script-src-attr")).toEqual(["'none'"]);
+  dom.window.close();
+});

@@ -211,3 +211,44 @@ it("ignores late diagnostic responses from a previous upload", async () => {
   expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true);
   stop();
 });
+
+it("captures sentAt when creating a payload and preserves it across session retries", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  vi.setSystemTime(100000);
+  const reports: any[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((path: string, init: RequestInit) => {
+      if (path.endsWith("/custom-chart"))
+        return new Promise<Response>(() => {});
+      if (path === "/api/session")
+        return Promise.resolve(
+          Response.json({
+            workspaceId: "sent-at-test",
+            instanceId: "sent-at-test",
+            csrfToken: "refreshed",
+          }),
+        );
+      reports.push(JSON.parse(init.body as string));
+      if (reports.length === 1) {
+        vi.setSystemTime(104000);
+        return Promise.resolve(
+          Response.json({ error: "Expired" }, { status: 401 }),
+        );
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    }),
+  );
+  const opts = options(host());
+  const stop = startCustomChartRun(opts);
+  await settle();
+  expect(reports).toHaveLength(2);
+  expect(reports.map((report) => report.sentAt)).toEqual([100000, 100000]);
+  expect(reports[1].sequence).toBe(reports[0].sequence);
+  await vi.advanceTimersByTimeAsync(20000);
+  expect(reports).toHaveLength(3);
+  expect(reports[2].sentAt).toBe(124000);
+  expect(reports[2].sequence).toBeGreaterThan(reports[1].sequence);
+  expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true);
+  stop();
+});
