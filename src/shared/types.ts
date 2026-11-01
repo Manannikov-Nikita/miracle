@@ -6,6 +6,7 @@ export type {
   DateBatchProgress,
 } from "./date-batch.js";
 import type { TableSpec } from "./tableTypes.js";
+import type { CustomChartSpec } from "./custom-charts.js";
 export type { TableSpec, TableColumnOptions } from "./tableTypes.js";
 export type Engine = "clickhouse" | "trino";
 export interface ClickHouseOptions {
@@ -157,8 +158,9 @@ export interface BoardNodeData {
   resultSetId?: string;
   source?: QuerySource;
   sourceRevision?: number;
-  view?: "table" | "chart";
+  view?: "table" | "chart" | "custom";
   chart?: ChartSpec;
+  customChart?: CustomChartSpec;
   visibleColumns?: string[];
   table?: TableSpec;
   [key: string]: unknown;

@@ -3,6 +3,7 @@ import { clickhouseOptionsSchema } from "./clickhouseOptions.js";
 import { trinoOptionsSchema } from "./trinoOptions.js";
 import { tableSpecSchema } from "./tableValidation.js";
 import { dateRangeDates } from "../shared/date-batch.js";
+import { customChartSchema } from "./custom-chart-schema.js";
 export const dateRangeSchema = z
   .object({
     startDate: z.string(),
@@ -93,8 +94,9 @@ export const boardDocumentSchema = z
               resultSetId: z.uuid().optional(),
               source: sourceSchema.optional(),
               sourceRevision: z.number().int().nonnegative().optional(),
-              view: z.enum(["table", "chart"]).optional(),
+              view: z.enum(["table", "chart", "custom"]).optional(),
               chart: chart.optional(),
+              customChart: customChartSchema.optional(),
               visibleColumns: z.array(z.string().max(200)).max(2000).optional(),
               table: tableSpecSchema.optional(),
             })
@@ -151,10 +153,24 @@ export const boardDocumentSchema = z
           code: "custom",
           message: "Связь ссылается на отсутствующий блок",
         });
-    for (const n of d.nodes)
+    for (const n of d.nodes) {
+      if (
+        (n.data.view === "custom" || n.data.customChart !== undefined) &&
+        n.data.kind !== "result"
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "Кастомному графику нужен блок результата SQL",
+        });
+      if (n.data.view === "custom" && !n.data.customChart)
+        ctx.addIssue({
+          code: "custom",
+          message: "Для кастомного графика нужны исходники версии 1",
+        });
       if (n.data.kind === "result" && (!n.data.resultSetId || !n.data.source))
         ctx.addIssue({
           code: "custom",
           message: "Результату нужны snapshot и SQL",
         });
+    }
   });
