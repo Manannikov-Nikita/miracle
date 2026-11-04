@@ -998,6 +998,22 @@ svg {
   border-radius: 8px;
   box-shadow: 0 15px 40px #0007;
 }
+.miracle-editor-overlays .suggest-details {
+  /* Match Monaco's initial width before it measures the text in our zero-width
+     overlay host. Subsequent layout/resizing uses Monaco's inline dimensions. */
+  width: 330px;
+}
+.miracle-editor-overlays .suggest-details .body {
+  line-height: 20px;
+}
+.miracle-editor-overlays
+  .suggest-details.detail-and-doc
+  > .monaco-scrollable-element
+  > .body
+  > .header
+  > .type {
+  padding-bottom: 4px;
+}
 .miracle-editor-overlays .suggest-widget .monaco-list {
   border-radius: 8px;
   overflow: hidden;
