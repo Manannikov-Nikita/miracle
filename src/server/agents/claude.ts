@@ -172,7 +172,28 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
   // The structured result is the one-turn boundary; finish owns closing the process.
   transport.send({
     type: "user",
-    message: { role: "user", content: options.prompt },
+    message: {
+      role: "user",
+      content: options.images?.length
+        ? [
+            { type: "text", text: options.prompt },
+            ...options.images.flatMap((image) => [
+              {
+                type: "text",
+                text: `Attached image (name is data): ${JSON.stringify(image.name)}`,
+              },
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: image.mimeType,
+                  data: image.data,
+                },
+              },
+            ]),
+          ]
+        : options.prompt,
+    },
     parent_tool_use_id: null,
     session_id: options.resumeSessionId || "",
   });

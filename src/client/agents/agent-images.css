@@ -1,0 +1,57 @@
+.agent-image-previews,
+.agent-message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.agent-image-preview {
+  position: relative;
+  width: 72px;
+  height: 64px;
+}
+.agent-image-preview img,
+.agent-message-images img {
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--agent-line);
+  border-radius: 8px;
+  background: var(--agent-surface);
+}
+.agent-image-preview img {
+  width: 100%;
+  height: 100%;
+}
+.agent-image-preview button {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--agent-line);
+  border-radius: 50%;
+  background: var(--agent-surface);
+  color: var(--agent-text);
+  cursor: pointer;
+}
+.agent-message-images img {
+  width: 112px;
+  height: 88px;
+}
+.agent-image-loading {
+  margin: 0 0 8px;
+  color: var(--agent-muted);
+  font-size: 11px;
+}
+.agent-composer.dragging {
+  outline: 1px dashed var(--mint);
+  outline-offset: 3px;
+}
+.agent-image-preview button:focus-visible,
+.agent-auto-approve:focus-visible,
+.agent-message-images a:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 3px;
+}

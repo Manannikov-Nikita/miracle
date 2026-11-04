@@ -241,7 +241,7 @@ export class WorkspaceOperations {
       if (!r) throw problem(400, "Результат блока не найден");
       if (
         this.db.query(
-          "SELECT id FROM query_runs WHERE result_set_id=?1 AND status IN ('running','cancelling')",
+          "SELECT id FROM query_runs WHERE result_set_id=?1 AND status IN ('running','cancelling','paused')",
           [resultId],
         ).rowCount
       )

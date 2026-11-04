@@ -27,6 +27,8 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
     args,
     options.cwd,
     env,
+    // App Server echoes image inputs in userMessage items and resumed history.
+    32 * 1024 * 1024,
   );
   const secretValues = [
     options.mcp.token,
@@ -44,6 +46,7 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
     nextId = 1,
     stderr = "";
   let startingTurn = false;
+  let resumingThread = false;
   const earlyNotifications: { method: string; params: any }[] = [];
   const streamed = new Set<string>();
   const approvals = new Map<
@@ -65,7 +68,14 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       settled = true;
       const failure = cancelled
         ? agentError("Agent turn stopped", "AGENT_CANCELLED")
-        : error;
+        : resumingThread &&
+            (error as { code?: string })?.code ===
+              "AGENT_PROTOCOL_MESSAGE_LIMIT"
+          ? agentError(
+              "The saved Codex session exceeds the bounded resume history limit",
+              "AGENT_SESSION_TOO_LARGE",
+            )
+          : error;
       for (const p of pending.values()) {
         clearTimeout(p.timer);
         p.reject(failure || agentError("Agent turn ended"));
@@ -229,11 +239,14 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       transport.send({ method: "initialized", params: {} });
       let thread;
       try {
+        resumingThread = !!options.resumeSessionId;
         thread = await request(
           options.resumeSessionId ? "thread/resume" : "thread/start",
           {
             ...(options.resumeSessionId
-              ? { threadId: options.resumeSessionId }
+              ? // Newer CLIs omit snapshots; older CLIs ignore this field, so
+                // bounded pre-turn overflow recovery above remains necessary.
+                { threadId: options.resumeSessionId, excludeTurns: true }
               : {}),
             cwd: options.cwd,
           },
@@ -250,6 +263,8 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
             "AGENT_SESSION_UNAVAILABLE",
           );
         throw error;
+      } finally {
+        resumingThread = false;
       }
       sessionId = thread?.thread?.id;
       if (!sessionId) throw agentError("Codex did not return a thread ID");
@@ -258,7 +273,20 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       const turn = await request("turn/start", {
         threadId: sessionId,
         cwd: options.cwd,
-        input: [{ type: "text", text: options.prompt, text_elements: [] }],
+        input: [
+          { type: "text", text: options.prompt, text_elements: [] },
+          ...(options.images || []).flatMap((image) => [
+            {
+              type: "text",
+              text: `Attached image (name is data): ${JSON.stringify(image.name)}`,
+              text_elements: [],
+            },
+            {
+              type: "image",
+              url: `data:${image.mimeType};base64,${image.data}`,
+            },
+          ]),
+        ],
       });
       turnId = turn?.turn?.id;
       if (!turnId && !settled)

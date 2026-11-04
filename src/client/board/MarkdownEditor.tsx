@@ -24,7 +24,7 @@ import type { Tree } from "@lezer/common";
 import {
   activeSourceLines,
   externalDocumentChange,
-  limitMarkdownLength,
+  MAX_MARKDOWN_LENGTH,
   markdownParser,
   planMarkdownPreview,
   type PreviewPart,
@@ -271,18 +271,41 @@ export type MarkdownEditorProps = {
   value: string;
   onChange: (value: string) => void;
   readOnly: boolean;
+  ariaLabel?: string;
+  onSave?: () => void;
+  onCursorChange?: (position: { lineNumber: number; column: number }) => void;
+  maxLength?: number;
 };
 
 export default function MarkdownEditor({
   value,
   onChange,
   readOnly,
+  ariaLabel = "Текст Markdown",
+  onSave,
+  onCursorChange,
+  maxLength = MAX_MARKDOWN_LENGTH,
 }: MarkdownEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
+  const onCursorChangeRef = useRef(onCursorChange);
+  const maxLengthRef = useRef(maxLength);
   const readOnlyCompartment = useRef(new Compartment());
+  const labelCompartment = useRef(new Compartment());
   onChangeRef.current = onChange;
+  onSaveRef.current = onSave;
+  onCursorChangeRef.current = onCursorChange;
+  maxLengthRef.current = maxLength;
+  const reportCursor = (state: EditorState) => {
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    onCursorChangeRef.current?.({
+      lineNumber: line.number,
+      column: head - line.from + 1,
+    });
+  };
   useLayoutEffect(() => {
     if (!host.current) return;
     const view = new EditorView({
@@ -298,16 +321,34 @@ export default function MarkdownEditor({
           EditorState.allowMultipleSelections.of(true),
           markdown({ extensions: GFM }),
           history(),
-          keymap.of([...historyKeymap, ...defaultKeymap]),
-          limitMarkdownLength,
+          keymap.of([
+            {
+              key: "Mod-s",
+              run: () => {
+                if (!onSaveRef.current) return false;
+                onSaveRef.current();
+                return true;
+              },
+            },
+            ...historyKeymap,
+            ...defaultKeymap,
+          ]),
+          EditorState.transactionFilter.of((transaction) =>
+            transaction.docChanged &&
+            transaction.newDoc.length > maxLengthRef.current
+              ? []
+              : transaction,
+          ),
           previewField,
           EditorView.lineWrapping,
-          EditorView.contentAttributes.of({
-            "aria-label": "Текст Markdown",
-            role: "textbox",
-            "aria-multiline": "true",
-            spellcheck: "true",
-          }),
+          labelCompartment.current.of(
+            EditorView.contentAttributes.of({
+              "aria-label": ariaLabel,
+              role: "textbox",
+              "aria-multiline": "true",
+              spellcheck: "true",
+            }),
+          ),
           EditorView.domEventHandlers({
             focus: (_event, editor) => {
               // CM computes the clicked selection during mousedown. Revealing the old
@@ -336,11 +377,14 @@ export default function MarkdownEditor({
               )
             )
               onChangeRef.current(update.state.doc.toString());
+            if (update.docChanged || update.selectionSet)
+              reportCursor(update.state);
           }),
         ],
       }),
     });
     viewRef.current = view;
+    reportCursor(view.state);
     return () => {
       viewRef.current = null;
       view.destroy();
@@ -375,6 +419,19 @@ export default function MarkdownEditor({
         ],
       });
   }, [value, readOnly]);
+
+  useLayoutEffect(() => {
+    viewRef.current?.dispatch({
+      effects: labelCompartment.current.reconfigure(
+        EditorView.contentAttributes.of({
+          "aria-label": ariaLabel,
+          role: "textbox",
+          "aria-multiline": "true",
+          spellcheck: "true",
+        }),
+      ),
+    });
+  }, [ariaLabel]);
 
   return (
     <div

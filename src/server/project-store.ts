@@ -361,6 +361,7 @@ export class ProjectStore {
       title: r.title,
       profileId: r.profile_id,
       provider: r.provider,
+      autoApprove: Boolean(r.auto_approve),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -375,18 +376,32 @@ export class ProjectStore {
       .object({
         profileId: z.uuid(),
         title: z.string().trim().min(1).max(200).optional(),
+        autoApprove: z.boolean().default(false),
       })
       .parse(input);
     const p = this.profile(b.profileId);
     const id = randomUUID(),
       time = now();
     this.db.query(
-      "INSERT INTO agent_chats(id,title,profile_id,provider,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)",
-      [id, b.title || "Новый чат", p.id, p.provider, time],
+      "INSERT INTO agent_chats(id,title,profile_id,provider,created_at,updated_at,auto_approve) VALUES(?1,?2,?3,?4,?5,?5,?6)",
+      [id, b.title || "Новый чат", p.id, p.provider, time, b.autoApprove],
     );
     const chat = this.chat(id);
     this.publish("chat.updated", id, chat);
     return chat;
+  }
+  updateChat(id: string, input: unknown): AgentChat {
+    const b = z.object({ autoApprove: z.boolean() }).parse(input);
+    this.chat(id);
+    return this.atomic(() => {
+      this.db.query(
+        "UPDATE agent_chats SET auto_approve=?2,updated_at=?3 WHERE id=?1",
+        [id, b.autoApprove, now()],
+      );
+      const chat = this.chat(id);
+      this.publish("chat.updated", id, chat);
+      return chat;
+    });
   }
   turn(id: string): AgentTurn {
     const r = this.db.query("SELECT * FROM agent_turns WHERE id=?1", [id])

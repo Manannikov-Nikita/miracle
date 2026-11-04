@@ -2179,6 +2179,52 @@ kbd {
   background: var(--mint);
   transition: width 150ms ease;
 }
+.batch-pause {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.batch-pause-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.batch-pause p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.batch-pause .batch-pause-error {
+  color: var(--danger);
+  max-height: 96px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.batch-pause-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 2;
+  grid-row: 1;
+}
+.batch-pause-actions .button {
+  white-space: nowrap;
+}
+.batch-pause > .batch-pause-error {
+  grid-column: 1 / -1;
+}
+.batch-pause-diagnostic summary {
+  margin-top: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.history-dot.paused {
+  background: var(--muted);
+}
 .batch-failures {
   color: var(--danger);
   font-size: 12px;

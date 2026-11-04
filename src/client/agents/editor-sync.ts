@@ -44,6 +44,7 @@ export function tabFields(tab: EditorTab) {
           startDate: tab.dateRange.startDate,
           endDate: tab.dateRange.endDate,
           granularity: tab.dateRange.granularity,
+          weekStartsOn: tab.dateRange.weekStartsOn,
           retries: tab.dateRange.retries,
         }
       : undefined,

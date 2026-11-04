@@ -6,6 +6,7 @@ import type {
   Column,
   ResultSet,
 } from "../../shared/types";
+import { chartSeriesColorKey } from "../../shared/chart-appearance";
 
 export const emptyDocument = (): BoardDocument => ({
   schemaVersion: 1,
@@ -142,6 +143,7 @@ export function chartSeries(
     string,
     {
       metricId?: string;
+      colorKey?: string;
       xCategories?: string[];
       name: string;
       data: [string | number | null, number | null][];
@@ -187,6 +189,7 @@ export function chartSeries(
       if (!groups.has(key))
         groups.set(key, {
           metricId: columns[yi].id,
+          colorKey: chartSeriesColorKey(columns[yi].id, spec.series, rawGroup),
           name: `${columns[yi].name}${group ? ` · ${group}` : ""}`,
           data: [],
         });

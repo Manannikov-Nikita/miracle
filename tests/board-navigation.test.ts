@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { ReactFlowProps, Viewport } from "@xyflow/react";
+import type { ReactFlowProps, ResizeParams, Viewport } from "@xyflow/react";
 import type { Board } from "../src/shared/types";
 import BoardWorkspace from "../src/client/board/BoardWorkspace";
 import { BoardActions } from "../src/client/board/ArtifactNode";
@@ -156,6 +156,194 @@ describe("board navigation is local view state", () => {
   const status = () => host.querySelector('[role="status"]')?.textContent;
   const arrowData = () => flow.props.edges![0].data as BoardEdgeViewData;
 
+  const resizeStart = { x: 100, y: 200, width: 400, height: 300 };
+  function resizeFixture(
+    view: "chart" | "custom" | "table" | "note" = "chart",
+  ) {
+    const node = boards[0].document.nodes[0];
+    node.position = { x: resizeStart.x, y: resizeStart.y };
+    node.width = resizeStart.width;
+    node.height = resizeStart.height;
+    node.data =
+      view === "note"
+        ? { kind: "note", title: "Note" }
+        : {
+            kind: "result",
+            title: "Chart",
+            view,
+            resultSetId: "result",
+            source: { connectionId: "connection", sql: "select 1" },
+          };
+    return node;
+  }
+  async function resizeMove(
+    raw: ResizeParams,
+    shiftKey: boolean,
+    altKey = false,
+  ) {
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mousemove", { shiftKey, altKey }));
+      // XYFlow adds this non-geometric array to onResize, but not onResizeEnd.
+      const movingRaw: ResizeParams & { direction: [number, number] } = {
+        ...raw,
+        direction: [1, 1],
+      };
+      flow.actions!.resize("note", movingRaw, true);
+      flow.props.onNodesChange?.([
+        { type: "position", id: "note", position: { x: raw.x, y: raw.y } },
+        {
+          type: "dimensions",
+          id: "note",
+          dimensions: { width: raw.width, height: raw.height },
+          resizing: true,
+          setAttributes: true,
+        },
+      ]);
+    });
+  }
+  async function resizeEnd(raw: ResizeParams) {
+    await act(async () => {
+      // Mouseup may arrive after Shift was released. Keep the last displayed
+      // rectangle instead of applying the now-unconstrained raw dimensions.
+      window.dispatchEvent(new MouseEvent("mouseup"));
+      flow.actions!.resize("note", raw, false);
+      flow.props.onNodesChange?.([
+        {
+          type: "dimensions",
+          id: "note",
+          dimensions: { width: raw.width, height: raw.height },
+          resizing: false,
+        },
+      ]);
+    });
+  }
+
+  it.each(["chart", "custom"] as const)(
+    "preserves %s corner ratio through release, save and one undo step",
+    async (view) => {
+      const original = structuredClone(resizeFixture(view));
+      // This nearby target would otherwise independently snap the width to600.
+      boards[0].document.nodes.push({
+        id: "target",
+        type: "artifact",
+        position: { x: 700, y: 900 },
+        width: 400,
+        height: 300,
+        data: { kind: "note", title: "Target" },
+      });
+      await open();
+      await act(async () =>
+        flow.actions!.resizeStart(
+          "note",
+          { right: true, bottom: true },
+          resizeStart,
+        ),
+      );
+      await resizeMove({ ...resizeStart, width: 500, height: 330 }, true);
+      expect(flow.props.nodes![0]).toMatchObject({ width: 500, height: 375 });
+      const end = { ...resizeStart, width: 596, height: 330 };
+      await resizeMove(end, true);
+      expect(flow.props.nodes![0]).toMatchObject({
+        width: 596,
+        height: 447,
+        position: original.position,
+      });
+      expect(host.querySelector(".board-alignment-guides")).toBeNull();
+      await resizeEnd(end);
+      await act(async () => project.prepare());
+      expect(boards[0].document.nodes[0]).toMatchObject({
+        width: 596,
+        height: 447,
+      });
+      await act(async () =>
+        host
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Отменить изменение"]',
+          )!
+          .click(),
+      );
+      expect(flow.props.nodes![0]).toMatchObject(original);
+      expect(
+        host.querySelector<HTMLButtonElement>(
+          '[aria-label="Отменить изменение"]',
+        )!.disabled,
+      ).toBe(true);
+      await act(async () =>
+        host
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Повторить изменение"]',
+          )!
+          .click(),
+      );
+      expect(flow.props.nodes![0]).toMatchObject({ width: 596, height: 447 });
+      await act(async () => project.prepare());
+      expect(boards[0].document.nodes[0]).toMatchObject({
+        width: 596,
+        height: 447,
+      });
+    },
+  );
+
+  it("tracks Shift during corner movement and combines it with Alt without creating a copy", async () => {
+    resizeFixture();
+    await open();
+    await act(async () =>
+      flow.actions!.resizeStart("note", { left: true, top: true }, resizeStart),
+    );
+    await resizeMove({ x: 0, y: 170, width: 500, height: 330 }, false);
+    expect(flow.props.nodes![0]).toMatchObject({
+      position: { x: 0, y: 170 },
+      width: 500,
+      height: 330,
+    });
+    await resizeMove({ x: 0, y: 170, width: 500, height: 330 }, true, true);
+    expect(flow.props.nodes![0]).toMatchObject({
+      position: { x: 0, y: 125 },
+      width: 500,
+      height: 375,
+    });
+    await resizeMove({ x: -20, y: 150, width: 520, height: 350 }, false);
+    expect(flow.props.nodes![0]).toMatchObject({
+      position: { x: -20, y: 150 },
+      width: 520,
+      height: 350,
+    });
+    expect(flow.props.nodes).toHaveLength(1);
+    await resizeEnd({ x: -20, y: 150, width: 520, height: 350 });
+    expect(flow.props.nodes![0]).toMatchObject({ width: 520, height: 350 });
+  });
+
+  it.each(["table", "note"] as const)(
+    "keeps Shift corner resizing of %s free",
+    async (view) => {
+      resizeFixture(view);
+      await open();
+      await act(async () =>
+        flow.actions!.resizeStart(
+          "note",
+          { right: true, bottom: true },
+          resizeStart,
+        ),
+      );
+      const raw = { ...resizeStart, width: 500, height: 330 };
+      await resizeMove(raw, true);
+      await resizeEnd(raw);
+      expect(flow.props.nodes![0]).toMatchObject({ width: 500, height: 330 });
+    },
+  );
+
+  it("keeps chart edge resizing free while Shift is held", async () => {
+    resizeFixture();
+    await open();
+    await act(async () =>
+      flow.actions!.resizeStart("note", { right: true }, resizeStart),
+    );
+    const raw = { ...resizeStart, width: 500 };
+    await resizeMove(raw, true);
+    await resizeEnd(raw);
+    expect(flow.props.nodes![0]).toMatchObject({ width: 500, height: 300 });
+  });
+
   function customResultWithoutRevision() {
     const spec = {
       version: 1 as const,
@@ -264,6 +452,134 @@ describe("board navigation is local view state", () => {
       );
     },
   );
+
+  function pausedRefreshFixture() {
+    const spec = customResultWithoutRevision();
+    const source = {
+      connectionId: "connection",
+      sql: "select {{date}}",
+      dateRange: {
+        startDate: "2026-01-01",
+        endDate: "2026-01-03",
+        granularity: "day",
+        retries: 2,
+      },
+    };
+    boards[0].document.nodes[0].data.source = source as any;
+    let status = "paused";
+    const calls = { starts: 0, resumes: 0, cancels: 0 };
+    const run = () => ({
+      id: "paused-run",
+      status,
+      source,
+      resultSetId: status === "completed" ? "fresh-result" : "partial-result",
+      batch: {
+        total: 3,
+        completed: 1,
+        succeeded: 1,
+        failed: 1,
+        attempt: 3,
+        currentDate: "2026-01-02",
+        items: [
+          { date: "2026-01-01", status: "completed", attempts: 1 },
+          {
+            date: "2026-01-02",
+            status: "failed",
+            attempts: 3,
+            error: "Temporary failure",
+          },
+          { date: "2026-01-03", status: "pending", attempts: 0 },
+        ],
+      },
+    });
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (path: string, options: RequestInit = {}) => {
+      if (path === "/api/boards/first/nodes/note/refresh") {
+        calls.starts++;
+        return Promise.resolve(response({ ...run(), status: "running" }));
+      }
+      if (path === "/api/query-runs/paused-run")
+        return Promise.resolve(response(run()));
+      if (path === "/api/query-runs/paused-run/resume") {
+        calls.resumes++;
+        status = "completed";
+        return Promise.resolve(response({ ...run(), status: "running" }));
+      }
+      if (path === "/api/query-runs/paused-run/cancel") {
+        calls.cancels++;
+        status = "cancelled";
+        return Promise.resolve(response(run()));
+      }
+      return originalFetch(path, options);
+    });
+    return { calls, spec };
+  }
+  const pauseAction = (name: string) =>
+    [...host.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === name,
+    )!;
+
+  it("restores a paused board refresh after remount and resumes the same run once without replacing its previous snapshot early", async () => {
+    const fixture = pausedRefreshFixture();
+    await open();
+    await act(async () => flow.actions!.refresh("note"));
+    expect(host.textContent).toContain("Серия приостановлена");
+    expect(flow.props.nodes![0].data.resultSetId).toBe("old-result");
+    expect(flow.actions!.busy.note).toBe(true);
+    await open();
+    expect(host.textContent).toContain("Temporary failure");
+    expect(fixture.calls.starts).toBe(1);
+    await act(async () => {
+      const button = pauseAction("Продолжить");
+      button.click();
+      button.click();
+    });
+    expect(fixture.calls.resumes).toBe(1);
+    expect(fixture.calls.starts).toBe(1);
+    expect(flow.props.nodes![0].data).toMatchObject({
+      resultSetId: "fresh-result",
+      customChart: fixture.spec,
+    });
+    expect(host.textContent).not.toContain("Серия приостановлена");
+    expect(
+      JSON.parse(localStorage.getItem("miracle:board-refreshes:workspace-a")!),
+    ).toEqual([]);
+  });
+
+  it("keeps a newer node source when a paused refresh is resumed", async () => {
+    notify.mockClear();
+    pausedRefreshFixture();
+    await open();
+    await act(async () => flow.actions!.refresh("note"));
+    await act(async () =>
+      flow.actions!.update("note", {
+        source: { connectionId: "connection", sql: "select 42" },
+      }),
+    );
+    await act(async () => pauseAction("Продолжить").click());
+    expect(flow.props.nodes![0].data).toMatchObject({
+      resultSetId: "old-result",
+      sourceRevision: 1,
+      source: { sql: "select 42" },
+    });
+    expect(notify).toHaveBeenCalledWith(
+      "Источник изменился; поздний результат не применён.",
+      "info",
+    );
+  });
+
+  it("stops a paused board refresh without resuming it or changing the previous snapshot", async () => {
+    const fixture = pausedRefreshFixture();
+    await open();
+    await act(async () => flow.actions!.refresh("note"));
+    await act(async () => pauseAction("Остановить").click());
+    expect(fixture.calls).toEqual({ starts: 1, resumes: 0, cancels: 1 });
+    expect(flow.props.nodes![0].data.resultSetId).toBe("old-result");
+    expect(host.textContent).not.toContain("Серия приостановлена");
+    expect(
+      JSON.parse(localStorage.getItem("miracle:board-refreshes:workspace-a")!),
+    ).toEqual([]);
+  });
 
   it("keeps a board creation error in its dialog with collapsed details and a retry", async () => {
     await open();

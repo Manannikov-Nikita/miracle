@@ -1,6 +1,27 @@
 import type { DateRangeOptions } from "./date-batch.js";
 
 export type AgentProvider = "codex" | "claude";
+export const AGENT_IMAGE_MAX_COUNT = 4;
+export const AGENT_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+export const AGENT_IMAGE_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const;
+export type AgentImageMimeType = (typeof AGENT_IMAGE_MIME_TYPES)[number];
+export interface AgentImageInput {
+  name: string;
+  mimeType: AgentImageMimeType;
+  dataUrl: string;
+}
+export interface AgentImageAttachment {
+  id: string;
+  name: string;
+  mimeType: AgentImageMimeType;
+  size: number;
+  url: string;
+}
 export interface ProjectContext {
   workspaceId: string;
   instanceId: string;
@@ -20,6 +41,7 @@ export interface AgentChat {
   title: string;
   profileId: string;
   provider: AgentProvider;
+  autoApprove?: boolean;
   createdAt: string;
   updatedAt: string;
 }

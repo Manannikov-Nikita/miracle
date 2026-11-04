@@ -476,10 +476,19 @@
 .agent-composer-toolbar {
   display: flex;
   align-items: center;
+  gap: 12px;
+}
+.agent-composer-tools,
+.agent-composer-model {
+  display: flex;
+  align-items: center;
   gap: 4px;
 }
-.agent-composer-spacer {
-  flex: 1;
+.agent-composer-tools {
+  flex: none;
+}
+.agent-composer-model {
+  margin-left: auto;
   min-width: 0;
 }
 .agent-icon-button {
@@ -552,6 +561,56 @@
   opacity: 1;
   color: #a0a5ad;
   background: #ffffff0d;
+}
+.agent-composer-toolbar .agent-composer-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--agent-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    color 160ms,
+    background 160ms;
+}
+.agent-composer-toolbar .agent-profile-button {
+  flex: 0 1 auto;
+  min-width: 0;
+  width: auto;
+  max-width: 180px;
+  padding: 0 8px;
+  gap: 6px;
+}
+.agent-composer-toolbar .agent-composer-control:hover:not(:disabled),
+.agent-composer-toolbar .agent-profile-button[data-state="open"] {
+  color: var(--agent-text);
+  background: var(--agent-hover);
+}
+.agent-composer-toolbar .agent-composer-control:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}
+.agent-composer-toolbar .agent-composer-control:disabled {
+  color: var(--agent-muted);
+  background: transparent;
+  opacity: 0.5;
+  cursor: default;
+}
+.agent-composer-toolbar .agent-send:not(:disabled) {
+  color: var(--agent-text);
+  background: var(--agent-hover);
+}
+.agent-composer-toolbar .agent-auto-approve[aria-checked="true"] {
+  color: var(--mint);
+  background: color-mix(in srgb, var(--mint) 12%, transparent);
 }
 .agent-composer-caption {
   color: var(--agent-muted);
@@ -824,7 +883,7 @@
   color: var(--agent-muted);
 }
 .agent-activity-summary {
-  height: 32px;
+  min-height: 28px;
   display: flex;
   align-items: center;
   margin: 0 0 12px;
@@ -835,7 +894,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
+  min-height: 28px;
   border: 0;
   padding: 0;
   background: transparent;
@@ -921,20 +980,81 @@
   border-left: 2px solid #ffffff25;
 }
 .agent-message.approval {
-  padding: 14px;
-  border: 1px solid #e3c48b40;
-  background: #e3c48b08;
-  border-radius: 12px;
-  font-size: 13px;
-}
-.agent-approval-heading {
-  color: #e3c48b;
+  margin: 0 0 4px;
+  color: var(--agent-muted);
   font-size: 12px;
-  font-weight: 500;
-  margin-bottom: 10px;
+}
+.agent-approval-row {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   align-items: center;
+}
+.agent-approval-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: 28px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-approval-trigger:hover {
+  color: var(--agent-soft);
+}
+.agent-approval-trigger > svg,
+.agent-approval-label {
+  flex: none;
+}
+.agent-approval-preview {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-approval-caret {
+  margin-left: auto;
+}
+.agent-approval-trigger[aria-expanded="true"] .agent-approval-caret {
+  transform: rotate(90deg);
+}
+.agent-approval-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+.agent-approval-actions button {
+  min-height: 28px;
+  border: 1px solid var(--agent-line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--agent-soft);
+  font: inherit;
+}
+.agent-approval-actions button:hover:not(:disabled) {
+  background: var(--agent-hover);
+  color: var(--agent-text);
+}
+.agent-approval-actions button:disabled {
+  opacity: 0.55;
+}
+.agent-approval-trigger:focus-visible,
+.agent-approval-actions button:focus-visible,
+.agent-activity-trigger:focus-visible {
+  outline: 2px solid var(--agent-muted);
+  outline-offset: 3px;
+}
+.agent-approval-content {
+  margin: 8px 0 12px;
+  padding-left: 20px;
+  border-left: 1px solid var(--agent-line);
 }
 .agent-approval-details {
   color: var(--agent-muted);
@@ -943,11 +1063,6 @@
 .agent-approval-details summary {
   cursor: pointer;
   padding: 6px 0;
-}
-.agent-approval-resolved {
-  font-size: 12px;
-  color: var(--agent-muted);
-  margin: 12px 0;
 }
 .agent-panel .sr-only {
   position: absolute;
@@ -988,10 +1103,6 @@
   .agent-composer-zone {
     padding: 8px 12px 10px;
   }
-  .agent-profile-button {
-    max-width: 150px;
-    padding: 0 6px;
-  }
   .agent-toggle {
     right: 16px;
     bottom: 16px;
@@ -1001,11 +1112,6 @@
   }
   .agent-empty {
     padding: 20px 0 32px;
-  }
-  .agent-icon-button,
-  .agent-send {
-    width: 36px;
-    height: 40px;
   }
   .agent-send {
     height: 36px;

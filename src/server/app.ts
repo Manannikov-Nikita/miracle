@@ -809,7 +809,7 @@ export async function buildApp(
         ? performDateBatch({ db, id, engine, source, state, batch, limits })
             .catch((error) => app.log.error(error))
             .finally(() => {
-              live.delete(id);
+              if (live.get(id) === state) live.delete(id);
             })
         : performRun(id, engine, source, state);
       return runDto(created);
@@ -947,7 +947,25 @@ export async function buildApp(
       return runDto(row);
     }
     function cancelRun(id: string) {
-      queryStatus(id);
+      const run = queryStatus(id);
+      if (run.status === "paused" && run.batch) {
+        for (const item of run.batch.items)
+          if (["pending", "running", "retrying"].includes(item.status))
+            item.status = "cancelled";
+        delete run.batch.currentDate;
+        run.batch.attempt = 0;
+        db.transaction(() => {
+          db.query(
+            "UPDATE result_sets SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
+            [run.resultSetId],
+          );
+          db.query(
+            "UPDATE query_runs SET status='cancelled',batch=?2,error='Пакет остановлен. Успешные результаты сохранены.',finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND status='paused'",
+            [id, run.batch],
+          );
+        });
+        return queryStatus(id);
+      }
       const state = live.get(id);
       if (state) {
         db.query(
@@ -962,6 +980,103 @@ export async function buildApp(
     app.post("/api/query-runs/:id/cancel", async (req) => {
       need(req);
       return cancelRun(uuid(req));
+    });
+    app.post("/api/query-runs/:id/resume", async (req, reply) => {
+      need(req);
+      const id = uuid(req);
+      const previous = queryStatus(id);
+      if (
+        previous.status !== "paused" ||
+        !previous.batch ||
+        !previous.source.dateRange
+      )
+        throw err(
+          409,
+          "Продолжить можно только приостановленный запуск по датам",
+        );
+      const engine = await connection(previous.source.connectionId);
+      try {
+        prepareDateBatch(previous.source, engine);
+      } catch (error) {
+        throw err(400, (error as Error).message);
+      }
+      const resumed = db.transaction(() => {
+        // Recheck after resolving the connection: another request may have
+        // resumed or cancelled this run while this request was suspended.
+        const current = queryStatus(id);
+        if (current.status !== "paused" || !current.batch)
+          throw err(409, "Запуск уже продолжен или остановлен");
+        if (
+          db.query(
+            "SELECT id FROM query_runs WHERE status IN ('running','cancelling')",
+          ).rowCount >= limits.maxGlobalRuns
+        )
+          throw err(429, "Достигнут лимит одновременных запросов");
+        const used = Number(
+          db.query("SELECT COALESCE(sum(byte_count),0) size FROM result_sets")
+            .rows[0].size,
+        );
+        if (used >= limits.quotaBytes)
+          throw err(409, "Квота хранения результатов исчерпана");
+        if (
+          current.batch.succeeded > 0 &&
+          (!current.resultSetId ||
+            !db.query("SELECT id FROM result_sets WHERE id=?1", [
+              current.resultSetId,
+            ]).rowCount)
+        )
+          throw err(
+            409,
+            "Сохранённый результат недоступен. Запустите диапазон заново",
+          );
+        const batch = current.batch;
+        const index = batch.items.findIndex(
+          (item) => item.date === batch.currentDate,
+        );
+        if (
+          index < 0 ||
+          batch.items[index]!.status !== "failed" ||
+          batch.items
+            .slice(0, index)
+            .some((item) => item.status !== "completed") ||
+          batch.items.slice(index + 1).some((item) => item.status !== "pending")
+        )
+          throw err(409, "Состояние запуска не позволяет продолжить диапазон");
+        const item = batch.items[index]!;
+        item.status = "pending";
+        item.attempts = 0;
+        delete item.error;
+        batch.failed = 0;
+        batch.completed = batch.succeeded;
+        batch.attempt = 0;
+        db.query(
+          "UPDATE query_runs SET status='running',batch=?2,error=NULL,finished_at=NULL WHERE id=?1 AND status='paused'",
+          [id, batch],
+        );
+        return queryStatus(id);
+      });
+      const state: {
+        controller: AbortController;
+        cancel?: () => Promise<void>;
+        promise?: Promise<void>;
+      } = { controller: new AbortController() };
+      live.set(id, state);
+      state.promise = performDateBatch({
+        db,
+        id,
+        engine,
+        source: resumed.source,
+        state,
+        batch: resumed.batch!,
+        limits,
+        elapsedMs: resumed.elapsedMs,
+      })
+        .catch((error) => app.log.error(error))
+        .finally(() => {
+          if (live.get(id) === state) live.delete(id);
+        });
+      reply.code(202);
+      return resumed;
     });
     async function getResult(id: string) {
       const r = db.query("SELECT * FROM result_sets WHERE id=?1", [id]).rows[0];

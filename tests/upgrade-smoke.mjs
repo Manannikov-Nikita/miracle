@@ -458,7 +458,7 @@ try {
       });
       await run("stop", ...storageArgs);
       const after = await sqliteSnapshot(newNode);
-      assert.equal(after.schema, 4);
+      assert.equal(after.schema, 5);
       assert.equal(
         after.connection.password_encrypted,
         before.connection.password_encrypted,

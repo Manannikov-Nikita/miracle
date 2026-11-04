@@ -10,9 +10,9 @@ export default function AgentChatView(props: ComposerProps) {
   const previousChat = useRef(state.selected);
   const previousText = useRef("");
   const [below, setBelow] = useState(false);
-  // Tool traffic changes the activity summary, never the reader's position.
+  // Tool and approval traffic changes captions, never the reader's position.
   const text = (state.conversation?.messages || [])
-    .filter((m) => m.role !== "action")
+    .filter((m) => m.role !== "action" && m.role !== "approval")
     .map((m) => `${m.id}:${m.content}`)
     .join("\n");
   useLayoutEffect(() => {

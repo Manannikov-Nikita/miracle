@@ -56,6 +56,30 @@ function button(text: string) {
     b.textContent?.includes(text),
   )!;
 }
+function rangeInput(label: string) {
+  return document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+}
+function calendarDate(value: string) {
+  const date = document.querySelector<HTMLButtonElement>(
+    `button[aria-label="${value}"]`,
+  );
+  expect(date, `Missing calendar date ${value}`).not.toBeNull();
+  return date!;
+}
+async function navigateCalendar(label: string) {
+  const navigation = document.querySelector<HTMLButtonElement>(
+    `button[aria-label="${label}"]`,
+  );
+  expect(navigation).not.toBeNull();
+  await act(async () => navigation!.click());
+}
+async function blurInput(label: string) {
+  await act(async () =>
+    rangeInput(label).dispatchEvent(
+      new FocusEvent("focusout", { bubbles: true }),
+    ),
+  );
+}
 const initial: DateRangeOptions = {
   startDate: "2026-10-05",
   endDate: "2026-10-19",
@@ -90,9 +114,12 @@ describe("date batch configuration", () => {
     });
     expect(onSubmit).toHaveBeenCalledOnce();
     expect(onSubmit).toHaveBeenCalledWith({ ...initial, retries: 3 });
+    expect(rangeInput("Начало диапазона").disabled).toBe(true);
+    expect(calendarDate(initial.startDate).disabled).toBe(true);
+    expect(button("Недели").matches(":disabled")).toBe(true);
     await act(async () => resolve());
   });
-  it("uses week selection with Monday dates and month selection with first-day dates", async () => {
+  it("accepts ISO input for weeks, switches the week start, and submits first-of-month dates", async () => {
     const onSubmit = vi.fn(async () => {});
     await act(async () =>
       root.render(
@@ -109,30 +136,173 @@ describe("date batch configuration", () => {
       document
         .querySelector('[aria-label="Начало диапазона"]')
         ?.getAttribute("type"),
-    ).toBe("week");
-    await setInput("Начало диапазона", "2026-W41");
-    await setInput("Конец диапазона", "2026-W43");
+    ).toBe("text");
+    await setInput("Начало диапазона", "2026-10-07");
+    await setInput("Конец диапазона", "2026-10-21");
     expect(document.body.textContent).toContain("3 запроса");
+    expect(calendarDate("2026-10-25").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(calendarDate("2026-10-26").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    await blurInput("Начало диапазона");
+    expect(rangeInput("Начало диапазона").value).toBe("2026-10-05");
     await act(async () => button("Запустить").click());
     expect(onSubmit).toHaveBeenLastCalledWith({
       ...initial,
       granularity: "week",
+    });
+    await act(async () => button("Воскресенье").click());
+    expect(rangeInput("Начало диапазона").value).toBe("2026-10-04");
+    expect(rangeInput("Конец диапазона").value).toBe("2026-10-18");
+    expect(calendarDate("2026-10-24").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(calendarDate("2026-10-25").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    await act(async () => button("Запустить").click());
+    expect(onSubmit).toHaveBeenLastCalledWith({
+      ...initial,
+      startDate: "2026-10-04",
+      endDate: "2026-10-18",
+      granularity: "week",
+      weekStartsOn: "sunday",
     });
     await act(async () => button("Месяцы").click());
     expect(
       document
         .querySelector('[aria-label="Начало диапазона"]')
         ?.getAttribute("type"),
-    ).toBe("month");
-    await setInput("Начало диапазона", "2026-01");
-    await setInput("Конец диапазона", "2026-03");
+    ).toBe("text");
+    await setInput("Начало диапазона", "2026-01-17");
+    await setInput("Конец диапазона", "2026-03-29");
+    expect(calendarDate("2026-02-01").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(
+      document.querySelector('button[aria-label="2026-02-02"]'),
+    ).toBeNull();
     await act(async () => button("Запустить").click());
     expect(onSubmit).toHaveBeenLastCalledWith({
       ...initial,
       startDate: "2026-01-01",
       endDate: "2026-03-01",
       granularity: "month",
+      weekStartsOn: "sunday",
     });
+  });
+  it("preserves the selected weeks when switching week starts back and forth", async () => {
+    const onSubmit = vi.fn(async () => {});
+    await act(async () =>
+      root.render(
+        createElement(DateBatchDialog, {
+          open: true,
+          initial: { ...initial, granularity: "week" },
+          onOpenChange() {},
+          onSubmit,
+        }),
+      ),
+    );
+    await act(async () => button("Воскресенье").click());
+    expect(rangeInput("Начало диапазона").value).toBe("2026-10-04");
+    expect(rangeInput("Конец диапазона").value).toBe("2026-10-18");
+    for (let click = 0; click < 2; click++) {
+      await act(async () => button("Понедельник").click());
+      expect(rangeInput("Начало диапазона").value).toBe(initial.startDate);
+      expect(rangeInput("Конец диапазона").value).toBe(initial.endDate);
+    }
+    await act(async () => button("Запустить").click());
+    expect(onSubmit).toHaveBeenCalledWith({
+      ...initial,
+      granularity: "week",
+      weekStartsOn: "monday",
+    });
+  });
+  it("synchronizes two calendar clicks and typed dates in both directions", async () => {
+    const onSubmit = vi.fn(async () => {});
+    await act(async () =>
+      root.render(
+        createElement(DateBatchDialog, {
+          open: true,
+          initial,
+          onOpenChange() {},
+          onSubmit,
+        }),
+      ),
+    );
+    await act(async () => calendarDate("2026-10-08").click());
+    await act(async () => calendarDate("2026-10-15").click());
+    expect(rangeInput("Начало диапазона").value).toBe("2026-10-08");
+    expect(rangeInput("Конец диапазона").value).toBe("2026-10-15");
+    expect(document.body.textContent).toContain("8 запросов");
+    expect(onSubmit).not.toHaveBeenCalled();
+    await setInput("Начало диапазона", "2026-09-28");
+    await setInput("Конец диапазона", "2026-10-03");
+    await navigateCalendar("Предыдущий месяц");
+    for (const date of ["2026-09-28", "2026-09-30", "2026-10-01", "2026-10-03"])
+      expect(calendarDate(date).getAttribute("aria-pressed")).toBe("true");
+    expect(calendarDate("2026-09-27").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(calendarDate("2026-10-04").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(document.body.textContent).toContain("6 запросов");
+  });
+  it("keeps the first selected date while paging to the end of a range", async () => {
+    const onSubmit = vi.fn(async () => {});
+    const range = {
+      ...initial,
+      startDate: "2025-01-08",
+      endDate: "2025-01-08",
+    };
+    await act(async () =>
+      root.render(
+        createElement(DateBatchDialog, {
+          open: true,
+          initial: range,
+          onOpenChange() {},
+          onSubmit,
+        }),
+      ),
+    );
+    await act(async () => calendarDate("2025-01-08").click());
+    expect(document.querySelector('button[aria-label="2025-04-03"]')).toBeNull();
+    await navigateCalendar("Следующий месяц");
+    expect(document.querySelector('button[aria-label="2025-01-08"]')).toBeNull();
+    expect(rangeInput("Начало диапазона").value).toBe("2025-01-08");
+    await act(async () => calendarDate("2025-04-03").click());
+    expect(rangeInput("Начало диапазона").value).toBe("2025-01-08");
+    expect(rangeInput("Конец диапазона").value).toBe("2025-04-03");
+    expect(calendarDate("2025-02-01").getAttribute("aria-pressed")).toBe("true");
+    expect(calendarDate("2025-04-03").getAttribute("aria-pressed")).toBe("true");
+    expect(document.body.textContent).toContain("86 запросов");
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(async () => button("Запустить").click());
+    expect(onSubmit).toHaveBeenCalledWith({ ...range, endDate: "2025-04-03" });
+  });
+  it("does not submit partial or impossible ISO dates", async () => {
+    const onSubmit = vi.fn(async () => {});
+    await act(async () =>
+      root.render(
+        createElement(DateBatchDialog, {
+          open: true,
+          initial,
+          onOpenChange() {},
+          onSubmit,
+        }),
+      ),
+    );
+    for (const value of ["2026-10-", "2026-02-30", ""]) {
+      await setInput("Начало диапазона", value);
+      expect(button("Запустить").disabled).toBe(true);
+      await act(async () => button("Запустить").click());
+    }
+    expect(onSubmit).not.toHaveBeenCalled();
+    await setInput("Начало диапазона", "2026-10-05");
+    expect(button("Запустить").disabled).toBe(false);
   });
   it("prevents reversed ranges and invalid retry counts", async () => {
     const onSubmit = vi.fn(async () => {});

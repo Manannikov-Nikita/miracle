@@ -87,6 +87,52 @@ describe("agent transcript", () => {
     expect(user.querySelectorAll("button")).toHaveLength(0);
   });
 
+  it("renders saved images from chat attachment URLs without remote images or raw data URLs", async () => {
+    const image = {
+      id: "image-1",
+      name: "График.png",
+      mimeType: "image/png",
+      size: 128,
+      url: "/api/chats/chat/images/image-1",
+    };
+    await render(
+      [
+        message("user", "user", "Объясни этот график", {
+          images: [
+            image,
+            { ...image, id: "remote", url: "https://example.com/image.png" },
+            {
+              ...image,
+              id: "raw",
+              url: "data:image/png;base64,secret-image-bytes",
+            },
+            {
+              ...image,
+              id: "traversal",
+              url: "/api/chats/chat/images/..\\..\\index.html",
+            },
+            { ...image, id: "bad-size", size: -1 },
+            null,
+          ],
+        }),
+      ],
+      "completed",
+    );
+    const user = host.querySelector("article.user")!;
+    const images = user.querySelectorAll("img");
+    expect(images).toHaveLength(1);
+    expect(images[0]!.getAttribute("src")).toBe(
+      "/api/chats/chat/images/image-1",
+    );
+    expect(images[0]!.getAttribute("alt")).toBe("График.png");
+    expect(images[0]!.getAttribute("loading")).toBe("lazy");
+    const link = images[0]!.closest("a")!;
+    expect(link.getAttribute("href")).toBe("/api/chats/chat/images/image-1");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(user.innerHTML).not.toContain("secret-image-bytes");
+  });
+
   it("keeps activity visible before an answer and below the same answer element as it streams and tool events arrive", async () => {
     const conversation = [
       message("user", "user", "Count trips"),
@@ -242,6 +288,78 @@ describe("agent transcript", () => {
         (button) => button.textContent === "Разрешить",
       ),
     ).toBe(false);
+  });
+
+  it("keeps a new permission request collapsed below the answer while its decisions remain available", async () => {
+    const permission = message("approval", "approval", "Run a local command?", {
+      approvalId: "approve-1",
+      command: "npm run build",
+    });
+    await render(
+      [permission, message("answer", "assistant", "I can check the build.")],
+      "waiting",
+    );
+    const answer = host.querySelector("article.assistant")!;
+    const approval = host.querySelector("article.approval")!;
+    expect(answer.nextElementSibling).toBe(approval);
+    const disclosure = approval.querySelector<HTMLButtonElement>(
+      'button[aria-expanded="false"]',
+    )!;
+    expect(disclosure).not.toBeNull();
+    expect(approval.querySelector(".agent-markdown")).toBeNull();
+    const allow = [...approval.querySelectorAll("button")].find(
+      (button) => button.textContent === "Разрешить",
+    )!;
+    const deny = [...approval.querySelectorAll("button")].find(
+      (button) => button.textContent === "Отклонить",
+    )!;
+    expect(allow).toBeDefined();
+    expect(deny).toBeDefined();
+    await act(async () => disclosure.click());
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    const details = document.getElementById(
+      disclosure.getAttribute("aria-controls")!,
+    )!;
+    expect(details.textContent).toContain("Run a local command?");
+    expect(details.textContent).toContain("npm run build");
+    await act(async () => disclosure.click());
+    expect(approval.querySelector(".agent-markdown")).toBeNull();
+    await act(async () => deny.click());
+    expect(approve).toHaveBeenCalledWith("approve-1", "deny");
+  });
+
+  it("identifies automatic approvals and keeps historical requests collapsed and non-actionable", async () => {
+    await render(
+      [
+        message("automatic", "approval", "Write the query", {
+          approvalId: "auto-1",
+          decision: "allow",
+          resolved: true,
+          automatic: true,
+        }),
+        message("denied", "approval", "Delete the file", {
+          approvalId: "deny-1",
+          decision: "deny",
+          resolved: true,
+        }),
+        message("closed", "approval", "Old request", {
+          approvalId: "old-1",
+        }),
+        message("answer", "assistant", "The query is ready."),
+      ],
+      "completed",
+    );
+    const approvals = host.querySelectorAll("article.approval");
+    expect(approvals[0]!.textContent).toContain("Разрешено автоматически");
+    expect(approvals[1]!.textContent).toContain("Отклонено");
+    expect(approvals[2]!.textContent).toContain("Запрос закрыт");
+    for (const approval of approvals) {
+      expect(approval.querySelectorAll("button")).toHaveLength(1);
+      expect(
+        approval.querySelector("button")!.getAttribute("aria-expanded"),
+      ).toBe("false");
+      expect(approval.querySelector(".agent-markdown")).toBeNull();
+    }
   });
 
   it("preserves independent server audit receipts and reports them as completed during a running turn", async () => {

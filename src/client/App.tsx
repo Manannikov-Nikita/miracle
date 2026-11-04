@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import type { Connection, QueryDocument, ResultSet } from "../shared/types";
+import type { ProjectTextFile } from "../shared/project-files";
 import { api, openLocalSession } from "./api";
 import { createMetadataStore } from "./metadata-store";
 import { Brand, ErrorBox, Modal, Spinner, Toasts } from "./components/UI";
@@ -36,6 +37,8 @@ export default function App() {
     null,
   );
   const [savedToOpen, setSavedToOpen] = useState<QueryDocument | null>(null);
+  const [fileToOpen, setFileToOpen] = useState<ProjectTextFile | null>(null);
+  const [fileRevision, setFileRevision] = useState(0);
   const [incomingResult, setIncomingResult] = useState<ResultSet | null>(null);
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
   const [paneMode, setPaneMode] = useState<PaneMode>("split");
@@ -259,6 +262,7 @@ export default function App() {
               onClose={narrow ? () => setExplorerDrawer(false) : undefined}
               key={workspaceId}
               kind={explorer}
+              workspaceId={workspaceId}
               connections={connections}
               activeConnectionId={connectionId}
               onConnectionChange={setConnectionId}
@@ -270,9 +274,15 @@ export default function App() {
                 setSavedToOpen(q);
                 showSql();
               }}
-              onOpenSource={(q) => {
+              onOpenFile={(file) => {
                 setExplorerDrawer(false);
-                setSourceToOpen({ source: q });
+                setFileToOpen(file);
+                showSql();
+              }}
+              fileRevision={fileRevision}
+              onOpenSource={(q, run) => {
+                setExplorerDrawer(false);
+                setSourceToOpen({ source: q, run });
                 showSql();
               }}
               queryRevision={queryRevision}
@@ -283,7 +293,7 @@ export default function App() {
             {paneMode === "none" && (
               <div className="workbench-empty" role="status">
                 <p>Области скрыты</p>
-                <span>Включите редактор SQL или доску кнопками слева.</span>
+                <span>Включите редактор или доску кнопками слева.</span>
               </div>
             )}
             <div
@@ -336,6 +346,11 @@ export default function App() {
                       metadata={metadata}
                       sourceToOpen={sourceToOpen}
                       savedToOpen={savedToOpen}
+                      fileToOpen={fileToOpen}
+                      onFileConsumed={() => setFileToOpen(null)}
+                      onProjectFileSaved={() =>
+                        setFileRevision((value) => value + 1)
+                      }
                       onSourceConsumed={() => setSourceToOpen(null)}
                       onSavedConsumed={() => setSavedToOpen(null)}
                       onQueriesChanged={() => setQueryRevision((r) => r + 1)}
@@ -419,7 +434,11 @@ export default function App() {
               ["Отменить действие", "⌘ / Ctrl + Z"],
               ["Перемещать доску", "Пробел + перетаскивание"],
               ["Выбрать несколько блоков", "Shift + клик или рамка"],
-              ["Перемещать без прилипания", "Alt / ⌥ + перетаскивание"],
+              ["Копировать выбранные блоки", "⌘ / Ctrl + C"],
+              ["Вставить блоки", "⌘ / Ctrl + V"],
+              ["Скопировать перетаскиванием", "Option / Alt + перетаскивание"],
+              ["Менять размер без прилипания", "Option / Alt + край блока"],
+              ["Сохранять пропорции графика", "Shift + угол графика"],
               ["Удалить выбранный объект", "Delete / Backspace"],
               ["Настроить объект", "Enter"],
               ["Изменить размеры панелей", "Стрелки на разделителе"],

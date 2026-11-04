@@ -308,7 +308,7 @@ describe("personal local workspace", () => {
       viewBefore,
     );
     expect(localStorage.getItem("miracle:view:unrelated-workspace")).toBeNull();
-    await click('[aria-label="SQL-файлы"]');
+    await click('[aria-label="Проводник проекта"]');
     expect(container.textContent).toContain("Перезагрузите страницу");
     expect(replacementWrites).toBe(0);
   });

@@ -192,6 +192,10 @@ beforeEach(() => {
             currentRun = { ...currentRun, status: "cancelled" };
             return new Response(JSON.stringify(currentRun));
           }
+          if (path === "/api/query-runs/run/resume") {
+            currentRun = { ...currentRun, status: "running", error: undefined };
+            return new Response(JSON.stringify(currentRun));
+          }
           throw new Error(`Unexpected request ${path}`);
         },
         () => workspaceId,
@@ -215,7 +219,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
-async function render(sql = source.sql) {
+async function render(sql = source.sql, history?: QueryRun) {
   localStorage.setItem(
     `miracle:sql-tabs:${workspaceId}`,
     JSON.stringify([{ ...source, sql, id: "tab", name: "date.sql" }]),
@@ -236,6 +240,9 @@ async function render(sql = source.sql) {
           },
         ],
         activeConnectionId: "c",
+        sourceToOpen: history
+          ? { source: history.source, run: history }
+          : undefined,
         metadata,
         onConnectionChange() {},
         onSourceConsumed() {},
@@ -291,6 +298,223 @@ async function start() {
 }
 
 describe("SQL batch execution", () => {
+  async function pauseRun() {
+    currentRun = {
+      ...currentRun,
+      status: "paused",
+      resultSetId: "result",
+      rowCount: 1,
+      error: "Engine unavailable",
+      batch: {
+        ...currentRun.batch!,
+        currentDate: "2026-10-02",
+        attempt: 3,
+        completed: 1,
+        succeeded: 1,
+        failed: 1,
+        items: [
+          { date: "2026-10-01", status: "completed", attempts: 1, rowCount: 1 },
+          {
+            date: "2026-10-02",
+            status: "failed",
+            attempts: 3,
+            error: "Engine unavailable",
+          },
+        ],
+      },
+    };
+    await act(async () => vi.advanceTimersByTimeAsync(650));
+  }
+  it("waits for explicit continuation, resumes the same run once, and retains earlier rows", async () => {
+    await render();
+    await start();
+    await pauseRun();
+    expect(container.textContent).toContain("Серия приостановлена");
+    expect(container.textContent).toContain(
+      "Ошибка · 2026-10-02",
+    );
+    expect(container.textContent).toContain("Engine unavailable");
+    expect(button("Добавить результат на доску").disabled).toBe(true);
+    expect(button("Закрыть вкладку date.sql").disabled).toBe(true);
+    await act(async () => {
+      harness.enter?.();
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(
+      requests.filter(
+        (r) => r.path === "/api/query-runs" && r.options.method === "POST",
+      ),
+    ).toHaveLength(1);
+    expect(requests.filter((r) => r.path.endsWith("/resume"))).toHaveLength(0);
+    const originalFetch = globalThis.fetch;
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        if (path === "/api/query-runs/run/resume") {
+          requests.push({ path, options });
+          return new Promise<Response>((done) => {
+            resolve = done;
+          });
+        }
+        return originalFetch(path, options);
+      }),
+    );
+    const resume = button("Продолжить");
+    await act(async () => {
+      resume.click();
+      resume.click();
+    });
+    expect(requests.filter((r) => r.path.endsWith("/resume"))).toHaveLength(1);
+    expect(resume.disabled).toBe(true);
+    expect(container.querySelector(".result-table")?.textContent).toContain(
+      "2026-10-01",
+    );
+    currentResult = { ...currentResult, rowCount: 2 };
+    currentRun = {
+      ...currentRun,
+      status: "completed",
+      error: undefined,
+      rowCount: 2,
+      batch: {
+        ...currentRun.batch!,
+        currentDate: undefined,
+        completed: 2,
+        succeeded: 2,
+        failed: 0,
+      },
+    };
+    await act(async () => resolve(new Response(JSON.stringify(currentRun))));
+    expect(container.querySelector(".result-table")?.textContent).toContain(
+      "2026-10-02",
+    );
+    expect(button("Добавить результат на доску").disabled).toBe(false);
+    expect(
+      requests.filter(
+        (r) => r.path === "/api/query-runs" && r.options.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
+  it("restores a paused run after remount and keeps it available when resume is rejected", async () => {
+    await render();
+    await start();
+    await pauseRun();
+    await act(async () => root.render(null));
+    await render();
+    expect(container.textContent).toContain("Серия приостановлена");
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        if (path.endsWith("/resume"))
+          return new Response(
+            JSON.stringify({ error: "Нет свободного слота" }),
+            { status: 429 },
+          );
+        return originalFetch(path, options);
+      }),
+    );
+    await act(async () => button("Продолжить").click());
+    expect(container.textContent).toContain("Нет свободного слота");
+    expect(button("Продолжить").disabled).toBe(false);
+    expect(container.querySelector(".result-table")?.textContent).toContain(
+      "2026-10-01",
+    );
+    await act(async () => button("Остановить").click());
+    expect(container.textContent).toContain("Серия остановлена");
+    expect(button("Продолжить")).toBeUndefined();
+    expect(button("Добавить результат на доску").disabled).toBe(false);
+  });
+  it("opens a paused history entry as its existing run instead of starting a new one", async () => {
+    await pauseRun();
+    await render(source.sql, currentRun);
+    expect(container.textContent).toContain("Серия приостановлена");
+    expect(button("Продолжить")).toBeDefined();
+    expect(
+      requests.filter(
+        (r) => r.path === "/api/query-runs" && r.options.method === "POST",
+      ),
+    ).toHaveLength(0);
+    await act(async () => button("Продолжить").click());
+    expect(
+      requests.filter((r) => r.path === "/api/query-runs/run/resume"),
+    ).toHaveLength(1);
+    expect(
+      requests.filter(
+        (r) => r.path === "/api/query-runs" && r.options.method === "POST",
+      ),
+    ).toHaveLength(0);
+    await pauseRun();
+    const tabsBefore = container.querySelectorAll('[role="tab"]').length;
+    currentRun = { ...currentRun, status: "running", error: undefined };
+    await render(source.sql, currentRun);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(tabsBefore);
+    expect(container.querySelector(".run-status")?.textContent).toContain(
+      "Выполняется",
+    );
+  });
+  it("keeps tracking cancellation when another window resumed the paused run", async () => {
+    await render();
+    await start();
+    await pauseRun();
+    const originalFetch = globalThis.fetch;
+    currentRun = { ...currentRun, status: "running" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        if (path === "/api/query-runs/run/cancel") {
+          requests.push({ path, options });
+          currentRun = { ...currentRun, status: "cancelling" };
+          return new Response(JSON.stringify(currentRun));
+        }
+        return originalFetch(path, options);
+      }),
+    );
+    await act(async () => button("Остановить").click());
+    expect(container.textContent).toContain("Останавливаем серию");
+    currentRun = { ...currentRun, status: "cancelled" };
+    await act(async () => vi.advanceTimersByTimeAsync(650));
+    expect(container.textContent).toContain("Серия остановлена");
+    expect(container.textContent).not.toContain("Останавливаем серию");
+    expect(button("Добавить результат на доску").disabled).toBe(false);
+  });
+  it("reconciles a lost resume response without starting the query again", async () => {
+    await render();
+    await start();
+    await pauseRun();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        if (path === "/api/query-runs/run/resume") {
+          requests.push({ path, options });
+          currentRun = { ...currentRun, status: "running", error: undefined };
+          throw new TypeError("Response connection lost");
+        }
+        return originalFetch(path, options);
+      }),
+    );
+    await act(async () => button("Продолжить").click());
+    expect(button("Продолжить")).toBeUndefined();
+    expect(container.querySelector(".run-status")?.textContent).toContain(
+      "Выполняется",
+    );
+    currentRun = {
+      ...currentRun,
+      status: "completed",
+      batch: { ...currentRun.batch!, completed: 2, succeeded: 2, failed: 0 },
+    };
+    await act(async () => vi.advanceTimersByTimeAsync(650));
+    expect(container.textContent).toContain("Серия завершена");
+    expect(
+      requests.filter((r) => r.path === "/api/query-runs/run/resume"),
+    ).toHaveLength(1);
+    expect(
+      requests.filter(
+        (r) => r.path === "/api/query-runs" && r.options.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
   it.each(["new result", "failure"])(
     "labels retained previous rows during a new run ending in %s",
     async (outcome) => {

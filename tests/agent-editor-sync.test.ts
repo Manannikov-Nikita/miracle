@@ -207,6 +207,37 @@ describe("agent edits alongside independent local changes", () => {
     expect(sync.tabs[0].sql).toBe("agent SQL");
   });
 
+  it("keeps the weekly start option in local edits and the saved editor payload", async () => {
+    const original = {
+      ...doc(),
+      dateRange: {
+        startDate: "2026-01-05",
+        endDate: "2026-01-12",
+        granularity: "week" as const,
+        retries: 0,
+      },
+    };
+    const changed = {
+      startDate: "2026-01-04",
+      endDate: "2026-01-11",
+      granularity: "week" as const,
+      retries: 0,
+      weekStartsOn: "sunday" as const,
+    };
+    const request = vi
+      .fn()
+      .mockResolvedValue({ ...doc(2), dateRange: changed });
+    const sync = new EditorSync([original], request, vi.fn());
+    sync.local([{ ...sync.tabs[0], dateRange: changed }]);
+    expect(sync.dirty(sync.tabs[0])).toBe(true);
+    await sync.flush();
+    expect(JSON.parse(request.mock.calls[0][1].body).dateRange).toEqual(
+      changed,
+    );
+    expect(sync.tabs[0].dateRange).toEqual(changed);
+    expect(sync.dirty(sync.tabs[0])).toBe(false);
+  });
+
   it("rebases an independent local change when HTTP sees the agent revision before SSE", async () => {
     const request = vi
       .fn()

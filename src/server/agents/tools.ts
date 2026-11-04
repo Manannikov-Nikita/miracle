@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { customChartGuide } from "../custom-chart-guide.js";
+import { chartGuide, chartInputSchema } from "../chart-guide.js";
 import { sourceSchema } from "../validation.js";
 import { problem } from "../project-store.js";
 import type { AgentManager, ActiveAgent } from "./manager.js";
@@ -9,6 +10,48 @@ const integer = { type: "integer", minimum: 0 };
 const object = { type: "object" };
 const id = { type: "string", format: "uuid" };
 const mutation = { baseRevision: integer, mutationId: id };
+const nodePatchSchema = {
+  type: "object",
+  properties: {
+    position: {
+      type: "object",
+      properties: {
+        x: { type: "number", minimum: -1000000, maximum: 1000000 },
+        y: { type: "number", minimum: -1000000, maximum: 1000000 },
+      },
+      required: ["x", "y"],
+    },
+    width: {
+      type: "number",
+      exclusiveMinimum: 0,
+      maximum: 10000,
+      description:
+        "Node width in board coordinates. For proportional resizing set width and height together; read chart_guide.",
+    },
+    height: {
+      type: "number",
+      exclusiveMinimum: 0,
+      maximum: 10000,
+      description: "Node height in board coordinates.",
+    },
+    data: {
+      type: "object",
+      properties: {
+        title: string,
+        text: string,
+        view: { type: "string", enum: ["table", "chart", "custom"] },
+        chart: chartInputSchema,
+        table: object,
+        customChart: object,
+        resultSetId: id,
+        source: object,
+      },
+      additionalProperties: true,
+    },
+  },
+  // The same patch envelope is also used by update_edge for edge-specific fields.
+  additionalProperties: true,
+};
 const textPaging = {
   offset: integer,
   limit: { type: "integer", minimum: 1, maximum: 64000 },
@@ -220,15 +263,43 @@ export const miracleTools = [
   ),
   tool(
     "board_patch",
-    "Apply atomic board operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Data patches may set title,text,source,resultSetId,view (table|chart|custom),chart/table settings or customChart. Read custom_chart_guide before creating custom source; it defines runtime, limits and bounded diagnostic retries. Positions are canvas coordinates. Unchanged fields remain intact.",
+    "Apply atomic board operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart are replaced as complete objects; read_board and preserve their unchanged fields. Positions and dimensions are board coordinates.",
     {
       id,
       ...mutation,
       name: string,
-      operations: { type: "array", items: object, maxItems: 200 },
+      operations: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: [
+                "add_node",
+                "update_node",
+                "remove_node",
+                "add_edge",
+                "update_edge",
+                "remove_edge",
+              ],
+            },
+            id: string,
+            patch: nodePatchSchema,
+            node: object,
+            edge: object,
+          },
+          required: ["type"],
+        },
+        maxItems: 200,
+      },
     },
     ["id", "baseRevision", "mutationId", "operations"],
     false,
+  ),
+  tool(
+    "chart_guide",
+    "Read standard chart controls: axes, auxiliary grid lines, value labels, palettes and individual series colors; binding, defaults, full chart replacement, and proportional block resizing via width/height. Use before editing standard chart settings or chart dimensions.",
   ),
   tool(
     "custom_chart_guide",
@@ -388,6 +459,9 @@ export async function callMiracleTool(
       break;
     case "custom_chart_guide":
       result = customChartGuide;
+      break;
+    case "chart_guide":
+      result = chartGuide;
       break;
     case "read_custom_chart_status": {
       const status = ops.customChartStatus(

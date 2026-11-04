@@ -35,6 +35,56 @@ describe("calendar date ranges", () => {
       ),
     ).toEqual(["2025-12-22", "2025-12-29", "2026-01-05"]);
   });
+  it("iterates Sunday weeks across a year boundary and a daylight-saving transition", () => {
+    expect(
+      dateRangeDates(
+        range({
+          granularity: "week",
+          weekStartsOn: "sunday",
+          startDate: "2025-12-28",
+          endDate: "2026-01-11",
+        }),
+      ),
+    ).toEqual(["2025-12-28", "2026-01-04", "2026-01-11"]);
+    expect(
+      dateRangeDates(
+        range({
+          granularity: "week",
+          weekStartsOn: "sunday",
+          startDate: "2026-03-22",
+          endDate: "2026-04-05",
+        }),
+      ),
+    ).toEqual(["2026-03-22", "2026-03-29", "2026-04-05"]);
+  });
+  it("keeps Monday as the default and validates the chosen weekly boundary", () => {
+    const mondays = range({
+      granularity: "week",
+      startDate: "2026-01-05",
+      endDate: "2026-01-12",
+    });
+    expect(dateRangeDates(mondays)).toEqual(
+      dateRangeDates({ ...mondays, weekStartsOn: "monday" }),
+    );
+    expect(() =>
+      dateRangeDates({ ...mondays, weekStartsOn: "sunday" }),
+    ).toThrow(/воскресенье/);
+    expect(() =>
+      dateRangeDates(
+        range({
+          granularity: "week",
+          startDate: "2026-01-04",
+          endDate: "2026-01-11",
+        }),
+      ),
+    ).toThrow(/понедельник/);
+    expect(() =>
+      dateRangeDates({ ...mondays, weekStartsOn: "friday" as any }),
+    ).toThrow(/Начало недели/);
+    expect(dateRangeDates(range({ weekStartsOn: "sunday" }))).toEqual(
+      dateRangeDates(range()),
+    );
+  });
   it("iterates month starts without month-end drift", () => {
     expect(
       dateRangeDates(

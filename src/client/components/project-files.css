@@ -1,0 +1,128 @@
+.project-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 12px;
+  text-align: left;
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-file-row:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.project-file-row.selected {
+  background: var(--hover);
+  color: var(--text);
+}
+.project-file-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+.project-file-row > svg {
+  flex-shrink: 0;
+  color: var(--text-quiet);
+}
+.project-folder-row > svg:first-child {
+  transition: transform 120ms ease;
+}
+.project-folder-row > svg.expanded {
+  transform: rotate(90deg);
+}
+.project-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-file-name small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-quiet);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.project-file-loading {
+  margin-left: auto;
+  color: var(--text-quiet);
+}
+.project-tree-note {
+  margin: 8px 13px;
+  color: var(--text-quiet);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.project-saved-heading {
+  width: 100%;
+  text-align: left;
+  gap: 6px;
+  justify-content: flex-start;
+}
+.project-saved-heading > span {
+  margin-left: auto;
+}
+.project-tree-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px 4px 13px;
+}
+.project-root-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--text-quiet);
+  font-size: 12px;
+  font-weight: 500;
+}
+.project-root-label:hover,
+.project-root-label:focus-visible {
+  color: var(--text);
+}
+.project-tree-heading .icon-button {
+  width: 26px;
+  height: 26px;
+}
+.project-create-file {
+  padding: 3px 7px 3px 30px;
+}
+.project-create-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.project-create-row > svg {
+  flex-shrink: 0;
+  color: var(--text-quiet);
+}
+.project-create-row input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  padding: 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--control-bg);
+  font-size: 12px;
+}
+.project-create-row input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.project-create-row .icon-button {
+  flex-shrink: 0;
+  width: 22px;
+  height: 26px;
+}
+.project-create-error {
+  margin: 5px 0;
+  color: var(--danger, #e59b9b);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

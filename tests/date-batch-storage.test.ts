@@ -81,6 +81,24 @@ function legacyThree(path: string) {
   );
   return db;
 }
+function legacyFour(path: string) {
+  const db = legacyThree(path);
+  db.sqlite.exec(`
+    CREATE TABLE editor_documents(id TEXT PRIMARY KEY,document TEXT NOT NULL CHECK(json_valid(document)),revision INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL);
+    CREATE TABLE project_events(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,entity_id TEXT,payload TEXT NOT NULL CHECK(json_valid(payload)));
+    CREATE TABLE project_mutations(scope TEXT NOT NULL,id TEXT NOT NULL,input_hash TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(scope,id));
+    CREATE TABLE editor_imports(id TEXT PRIMARY KEY);
+    CREATE TABLE agent_profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,provider TEXT NOT NULL CHECK(provider IN ('codex','claude')),command_encrypted TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE TABLE agent_chats(id TEXT PRIMARY KEY,title TEXT NOT NULL,profile_id TEXT NOT NULL REFERENCES agent_profiles(id),provider TEXT NOT NULL,native_session_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE agent_turns(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES agent_chats(id),request_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,context_json TEXT NOT NULL,error TEXT,created_at TEXT NOT NULL,finished_at TEXT);
+    CREATE UNIQUE INDEX agent_one_active_turn ON agent_turns((1)) WHERE status IN ('running','waiting');
+    CREATE TABLE agent_messages(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES agent_chats(id),turn_id TEXT REFERENCES agent_turns(id),role TEXT NOT NULL,content TEXT NOT NULL,details_json TEXT,created_at TEXT NOT NULL);
+    CREATE INDEX agent_messages_chat ON agent_messages(chat_id,created_at);
+    CREATE INDEX agent_turns_chat ON agent_turns(chat_id,created_at);
+    PRAGMA user_version=4;
+  `);
+  return db;
+}
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   for (const path of roots.splice(0))
@@ -98,7 +116,7 @@ const progress = {
 };
 
 describe("date batch storage migration", () => {
-  it.each([1, 2, 3])(
+  it.each([1, 2, 3, 4])(
     "upgrades version %i without changing rows, identity or key",
     (schemaVersion) => {
       const path = makeRoot();
@@ -107,12 +125,14 @@ describe("date batch storage migration", () => {
           ? legacy(path)
           : schemaVersion === 2
             ? legacyTwo(path)
-            : legacyThree(path);
+            : schemaVersion === 3
+              ? legacyThree(path)
+              : legacyFour(path);
       const key = readFileSync(join(path, "encryption.key"));
       const credential = db.query("SELECT password_encrypted FROM connections")
         .rows[0].password_encrypted;
       migrate(db);
-      expect(version(db)).toBe(4);
+      expect(version(db)).toBe(5);
       expect(
         db.query("SELECT trino_options_encrypted FROM connections").rows[0]
           .trino_options_encrypted,
@@ -147,7 +167,7 @@ describe("date batch storage migration", () => {
   it("initializes the new schema and encryption sentinel atomically", () => {
     const path = makeRoot();
     const db = fresh(path);
-    expect(version(db)).toBe(4);
+    expect(version(db)).toBe(5);
     expect(
       db.query("SELECT value FROM app_settings WHERE key='workspace_id'")
         .rows[0].value,
@@ -193,14 +213,14 @@ describe("date batch storage migration", () => {
   });
   it("refuses a future workspace without lowering its schema version", () => {
     const db = fresh(makeRoot());
-    db.sqlite.exec("PRAGMA user_version=5");
+    db.sqlite.exec("PRAGMA user_version=6");
     expect(() => migrate(db)).toThrow(/newer/);
-    expect(version(db)).toBe(5);
+    expect(version(db)).toBe(6);
   });
 });
 
 describe("versioned workspace backups", () => {
-  it.each([1, 2, 3, 4])(
+  it.each([1, 2, 3, 4, 5])(
     "preserves version %i on backup/restore, then permits upgrading old backups",
     async (schemaVersion) => {
       const root = makeRoot();
@@ -212,7 +232,9 @@ describe("versioned workspace backups", () => {
             ? legacyTwo(path)
             : schemaVersion === 3
               ? legacyThree(path)
-              : fresh(path);
+              : schemaVersion === 4
+                ? legacyFour(path)
+                : fresh(path);
       if (schemaVersion >= 2)
         db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES('batch','interrupted','{}',?1)",
@@ -239,7 +261,7 @@ describe("versioned workspace backups", () => {
       ).toBe(identity);
       expect(readFileSync(join(restored, "encryption.key"))).toEqual(key);
       migrate(copy);
-      expect(version(copy)).toBe(4);
+      expect(version(copy)).toBe(5);
       expect(
         copy.query(
           "SELECT name FROM pragma_table_info('connections') WHERE name='trino_options_encrypted'",
@@ -282,13 +304,13 @@ describe("versioned workspace backups", () => {
     await backupWorkspace(path, backup);
     const manifestPath = join(backup, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.schemaVersion = 5;
+    manifest.schemaVersion = 6;
     writeFileSync(manifestPath, JSON.stringify(manifest));
     await expect(
       restoreWorkspace(backup, join(root, "restored")),
     ).rejects.toThrow(/Unsupported backup/);
     const future = open(path);
-    future.sqlite.exec("PRAGMA user_version=5");
+    future.sqlite.exec("PRAGMA user_version=6");
     future.close();
     await expect(backupWorkspace(path, join(root, "future"))).rejects.toThrow(
       /Unsupported workspace/,
@@ -297,7 +319,7 @@ describe("versioned workspace backups", () => {
   });
 });
 
-it("preserves revisioned editor documents, encrypted profiles and agent conversation through backup/restore", async () => {
+it("preserves documents, profiles, chat preferences and image bytes through backup/restore", async () => {
   const root = makeRoot(),
     path = join(root, "project/.miracle");
   const db = fresh(path);
@@ -316,7 +338,11 @@ it("preserves revisioned editor documents, encrypted profiles and agent conversa
     [box.encrypt("codex --model local-model")],
   );
   db.query(
-    "INSERT INTO agent_chats VALUES('chat','Investigation','profile','codex','native-session','2026-10-31T00:00:00.000Z','2026-10-31T00:00:00.000Z')",
+    "INSERT INTO agent_chats(id,title,profile_id,provider,native_session_id,created_at,updated_at,auto_approve) VALUES('chat','Investigation','profile','codex','native-session','2026-10-31T00:00:00.000Z','2026-10-31T00:00:00.000Z',1)",
+  );
+  db.query(
+    "INSERT INTO agent_images(chat_id,id,mime_type,bytes) VALUES('chat','image','image/png',?1)",
+    [Buffer.from([0, 137, 80, 78, 71, 255])],
   );
   db.query(
     "INSERT INTO agent_turns VALUES('turn','chat','request','completed',?1,NULL,'2026-10-31T00:00:00.000Z','2026-10-31T00:00:01.000Z')",
@@ -346,9 +372,20 @@ it("preserves revisioned editor documents, encrypted profiles and agent conversa
   ).toBe("codex --model local-model");
   expect(
     copy.query(
-      "SELECT provider,native_session_id FROM agent_chats WHERE id='chat'",
+      "SELECT provider,native_session_id,auto_approve FROM agent_chats WHERE id='chat'",
     ).rows[0],
-  ).toEqual({ provider: "codex", native_session_id: "native-session" });
+  ).toEqual({
+    provider: "codex",
+    native_session_id: "native-session",
+    auto_approve: 1,
+  });
+  const image = copy.query(
+    "SELECT mime_type,bytes FROM agent_images WHERE chat_id='chat' AND id='image'",
+  ).rows[0];
+  expect(image.mime_type).toBe("image/png");
+  expect(Buffer.from(image.bytes)).toEqual(
+    Buffer.from([0, 137, 80, 78, 71, 255]),
+  );
   expect(
     copy.query("SELECT status,context_json FROM agent_turns WHERE id='turn'")
       .rows[0],

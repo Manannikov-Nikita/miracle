@@ -4,7 +4,7 @@ import {
   ClockCounterClockwise,
   Code,
   Database,
-  FileCode,
+  FolderSimple,
   PlugsConnected,
   Question,
   SquaresFour,
@@ -99,7 +99,7 @@ export default function WorkspaceRail({
         aria-label="Переключение панелей"
       >
         <IconButton
-          label="Редактор SQL"
+          label="Редактор"
           className={mode === "split" || mode === "sql" ? "active" : ""}
           aria-pressed={mode === "split" || mode === "sql"}
           onClick={() => onTogglePane("sql")}
@@ -126,8 +126,8 @@ export default function WorkspaceRail({
             },
             {
               kind: "queries",
-              icon: <FileCode size={21} />,
-              label: "SQL-файлы",
+              icon: <FolderSimple size={21} />,
+              label: "Проводник проекта",
             },
             {
               kind: "history",

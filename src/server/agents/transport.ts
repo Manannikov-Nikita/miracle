@@ -47,6 +47,7 @@ export class AgentTransport {
     args: string[],
     cwd: string,
     env: NodeJS.ProcessEnv,
+    private readonly maxMessageBytes = 4 * 1024 * 1024,
   ) {
     this.child = spawn(executable, args, {
       cwd,
@@ -76,10 +77,11 @@ export class AgentTransport {
     this.child.stdout.setEncoding("utf8");
     this.child.stdout.on("data", (chunk: string) => {
       pending += chunk;
-      if (Buffer.byteLength(pending) > 4 * 1024 * 1024) {
+      if (Buffer.byteLength(pending) > this.maxMessageBytes) {
         onError(
           agentError(
-            "Provider output exceeded the 4 MiB protocol message limit",
+            `Provider output exceeded the ${this.maxMessageBytes / 1024 / 1024} MiB protocol message limit`,
+            "AGENT_PROTOCOL_MESSAGE_LIMIT",
           ),
         );
         void this.stop();

@@ -1,10 +1,23 @@
 import type { QueryRun } from "../../shared/types";
 import { Spinner } from "./UI";
 
-export default function DateBatchProgress({ run }: { run: QueryRun }) {
+export default function DateBatchProgress({
+  run,
+  onResume,
+  onCancel,
+  action,
+  actionError,
+}: {
+  run: QueryRun;
+  onResume?: () => void;
+  onCancel?: () => void;
+  action?: "resume" | "cancel";
+  actionError?: string;
+}) {
   const batch = run.batch;
   if (!batch) return null;
   const running = run.status === "running" || run.status === "cancelling";
+  const paused = run.status === "paused";
   const current = batch.items.find((item) => item.date === batch.currentDate);
   const failures = batch.items.filter(
     (item) => item.status === "failed" || item.status === "interrupted",
@@ -21,13 +34,15 @@ export default function DateBatchProgress({ run }: { run: QueryRun }) {
             ? "Останавливаем серию…"
             : running
               ? "Запуск по датам"
-              : run.status === "cancelled"
-                ? "Серия остановлена"
-                : run.status === "interrupted"
-                  ? "Серия прервана"
-                  : batch.failed
-                    ? "Серия завершена с ошибками"
-                    : "Серия завершена"}
+              : paused
+                ? "Серия приостановлена"
+                : run.status === "cancelled"
+                  ? "Серия остановлена"
+                  : run.status === "interrupted"
+                    ? "Серия прервана"
+                    : batch.failed
+                      ? "Серия завершена с ошибками"
+                      : "Серия завершена"}
         </span>
         <strong>
           {batch.completed} / {batch.total}
@@ -44,20 +59,64 @@ export default function DateBatchProgress({ run }: { run: QueryRun }) {
       >
         <span style={{ width: `${percent}%` }} />
       </div>
-      <div className="batch-progress-details">
-        <span>
-          Успешно: {batch.succeeded}
-          {batch.failed ? ` · Ошибок: ${batch.failed}` : ""}
-        </span>
-        {running && batch.currentDate && (
+      {!paused && (
+        <div className="batch-progress-details">
           <span>
-            {batch.currentDate} ·{" "}
-            {current?.status === "retrying" ? "Повтор" : "Попытка"}{" "}
-            {batch.attempt} из {(run.source.dateRange?.retries ?? 0) + 1}
+            Успешно: {batch.succeeded}
+            {batch.failed ? ` · Ошибок: ${batch.failed}` : ""}
           </span>
-        )}
-      </div>
-      {failures.length > 0 && (
+          {running && batch.currentDate && (
+            <span>
+              {batch.currentDate} ·{" "}
+              {current?.status === "retrying" ? "Повтор" : "Попытка"}{" "}
+              {batch.attempt} из {(run.source.dateRange?.retries ?? 0) + 1}
+            </span>
+          )}
+        </div>
+      )}
+      {paused && (
+        <div className="batch-pause">
+          <div className="batch-pause-message" role="status">
+            <strong>Ошибка · {batch.currentDate}</strong>
+            {(current?.error || run.error) && (
+              <details className="batch-pause-diagnostic">
+                <summary>Подробнее</summary>
+                <p className="batch-pause-error">
+                  {current?.error || run.error}
+                </p>
+              </details>
+            )}
+          </div>
+          <div className="batch-pause-actions">
+            {onResume && (
+              <button
+                className="button primary"
+                disabled={!!action}
+                onClick={onResume}
+              >
+                {action === "resume" ? (
+                  <>
+                    <Spinner /> Продолжаем…
+                  </>
+                ) : (
+                  "Продолжить"
+                )}
+              </button>
+            )}
+            {onCancel && (
+              <button className="button" disabled={!!action} onClick={onCancel}>
+                {action === "cancel" ? "Останавливаем…" : "Остановить"}
+              </button>
+            )}
+          </div>
+          {actionError && (
+            <p className="batch-pause-error" role="alert">
+              {actionError}
+            </p>
+          )}
+        </div>
+      )}
+      {!paused && failures.length > 0 && (
         <details className="batch-failures">
           <summary>Ошибки по датам · {failures.length}</summary>
           <ul>
@@ -70,11 +129,14 @@ export default function DateBatchProgress({ run }: { run: QueryRun }) {
           </ul>
         </details>
       )}
-      {!running && batch.succeeded > 0 && run.status !== "completed" && (
-        <p className="date-batch-hint">
-          В таблице сохранены результаты успешных дат.
-        </p>
-      )}
+      {!running &&
+        !paused &&
+        batch.succeeded > 0 &&
+        run.status !== "completed" && (
+          <p className="date-batch-hint">
+            В таблице сохранены результаты успешных дат.
+          </p>
+        )}
     </div>
   );
 }

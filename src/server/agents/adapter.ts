@@ -2,6 +2,7 @@ import { buildAgentCommand } from "./command.js";
 import { startCodexTurn } from "./codex.js";
 import { startClaudeTurn } from "./claude.js";
 import { agentError, checkAgentCommand } from "./transport.js";
+import type { AgentProviderImage } from "./images.js";
 
 export type AdapterEvent =
   | { type: "message"; text: string }
@@ -19,6 +20,7 @@ export interface AgentAdapterOptions {
   command: string;
   cwd: string;
   prompt: string;
+  images?: AgentProviderImage[];
   resumeSessionId?: string;
   mcp: { url: string; token: string };
   onEvent: (event: AdapterEvent) => void;

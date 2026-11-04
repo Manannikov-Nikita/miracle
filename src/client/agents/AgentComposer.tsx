@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import {
   DotsThree,
@@ -9,10 +9,15 @@ import {
   Gear,
   ChatCircle,
   Check,
+  ImageSquare,
+  Plus,
+  ShieldCheck,
+  X,
 } from "@phosphor-icons/react";
 import type { AgentChatState } from "./useAgentChat";
 import AgentHistory from "./AgentHistory";
 import AgentFileMentions, { AgentContextChips } from "./AgentFileMentions";
+import type { DraftAgentImage } from "./useAgentImageDrafts";
 
 export interface ComposerProps {
   state: AgentChatState;
@@ -26,6 +31,10 @@ export interface ComposerProps {
   onFilesChange?: (paths: string[]) => void;
   boardNodes?: { id: string; title: string }[];
   onDismissBoardNode?: (id: string) => void;
+  images?: DraftAgentImage[];
+  imagesLoading?: boolean;
+  onImagesAdd?: (files: File[]) => Promise<void>;
+  onImageRemove?: (id: string) => void;
 }
 export default function AgentComposer({
   state,
@@ -39,14 +48,21 @@ export default function AgentComposer({
   onFilesChange,
   boardNodes = [],
   onDismissBoardNode,
+  images = [],
+  imagesLoading = false,
+  onImagesAdd,
+  onImageRemove,
 }: ComposerProps) {
   const [history, setHistory] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const imageInput = useRef<HTMLInputElement>(null);
   const profileId = state.conversation?.chat.profileId || selectedProfile;
   const profile = state.profiles.find((p) => p.id === profileId);
   const canSend =
     !state.busy &&
     !state.active &&
-    Boolean(draft.trim()) &&
+    !imagesLoading &&
+    Boolean(draft.trim() || images.length) &&
     Boolean(profile?.trusted);
   const submit = () => {
     if (canSend) void onSend();
@@ -58,7 +74,32 @@ export default function AgentComposer({
   return (
     <div className="agent-composer-zone">
       <form
-        className="agent-composer"
+        className={`agent-composer${dragging ? " dragging" : ""}`}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.files);
+          if (!files.length || !onImagesAdd) return;
+          event.preventDefault();
+          if (state.busy) return;
+          void onImagesAdd(files);
+        }}
+        onDragOver={(event) => {
+          if (!onImagesAdd || !event.dataTransfer.types.includes("Files"))
+            return;
+          event.preventDefault();
+          if (state.busy) return;
+          setDragging(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+            setDragging(false);
+        }}
+        onDrop={(event) => {
+          setDragging(false);
+          if (!onImagesAdd || !event.dataTransfer.files.length) return;
+          event.preventDefault();
+          if (state.busy) return;
+          void onImagesAdd(Array.from(event.dataTransfer.files));
+        }}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
@@ -88,6 +129,32 @@ export default function AgentComposer({
           boardNodes={boardNodes}
           onDismissBoardNode={onDismissBoardNode}
         />
+        {images.length > 0 && (
+          <div
+            className="agent-image-previews"
+            aria-label="Изображения для агента"
+          >
+            {images.map((image) => (
+              <div className="agent-image-preview" key={image.localId}>
+                <img src={image.dataUrl} alt={image.name} />
+                <button
+                  type="button"
+                  title="Убрать изображение"
+                  aria-label={`Убрать изображение ${image.name}`}
+                  disabled={state.busy}
+                  onClick={() => onImageRemove?.(image.localId)}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {imagesLoading && (
+          <p className="agent-image-loading" role="status">
+            Загружаем изображения…
+          </p>
+        )}
         <AgentFileMentions
           draft={draft}
           draftKey={state.selected || "new"}
@@ -97,119 +164,193 @@ export default function AgentComposer({
           onSubmit={submit}
         />
         <div className="agent-composer-toolbar">
-          <Menu.Root>
-            <Menu.Trigger asChild>
-              <button
-                type="button"
-                className="agent-icon-button"
-                aria-label="Действия чата"
-                title="Действия чата"
-              >
-                <DotsThree size={21} />
-              </button>
-            </Menu.Trigger>
-            <Menu.Portal container={document.getElementById("agent-panel")}>
-              <Menu.Content
-                className="agent-menu"
-                side="top"
-                align="start"
-                sideOffset={12}
-              >
-                <Menu.Item
-                  disabled={state.busy}
-                  onSelect={() => state.setSelected("")}
+          <input
+            ref={imageInput}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            disabled={state.busy}
+            hidden
+            aria-label="Изображения для агента"
+            onChange={(event) => {
+              const files = Array.from(event.target.files || []);
+              event.target.value = "";
+              void onImagesAdd?.(files);
+            }}
+          />
+          <div className="agent-composer-tools">
+            <Menu.Root>
+              <Menu.Trigger asChild>
+                <button
+                  type="button"
+                  className="agent-icon-button agent-composer-control"
+                  aria-label="Добавить вложение"
+                  title="Добавить вложение"
+                  disabled={!onImagesAdd || state.busy}
                 >
-                  <ChatCircle size={17} />
-                  Новый разговор
-                </Menu.Item>
-                <Menu.Item
-                  disabled={state.busy}
-                  onSelect={() => setHistory(true)}
+                  <Plus size={18} />
+                </button>
+              </Menu.Trigger>
+              <Menu.Portal container={document.getElementById("agent-panel")}>
+                <Menu.Content
+                  className="agent-menu"
+                  side="top"
+                  align="start"
+                  sideOffset={12}
                 >
-                  <ClockCounterClockwise size={17} />
-                  История чатов
-                </Menu.Item>
-              </Menu.Content>
-            </Menu.Portal>
-          </Menu.Root>
-          <Menu.Root>
-            <Menu.Trigger asChild>
-              <button
-                type="button"
-                className="agent-profile-button"
-                aria-label="Выбрать профиль агента"
-                title={profile?.name || "Выбрать профиль"}
-                disabled={state.busy}
-              >
-                <span>{profile?.name || "Выбрать агента"}</span>
-                <CaretDown size={12} />
-              </button>
-            </Menu.Trigger>
-            <Menu.Portal container={document.getElementById("agent-panel")}>
-              <Menu.Content
-                className="agent-menu agent-profile-menu"
-                side="top"
-                align="start"
-                sideOffset={12}
-              >
-                <Menu.Label className="agent-menu-label">
-                  Локальные агенты
-                </Menu.Label>
-                <Menu.RadioGroup
-                  value={profileId}
-                  onValueChange={selectProfile}
+                  <Menu.Item
+                    disabled={!onImagesAdd || state.busy}
+                    onSelect={() => imageInput.current?.click()}
+                    title="До 4 изображений по 5 МБ · PNG, JPEG, GIF, WebP"
+                  >
+                    <ImageSquare size={18} />
+                    Изображения
+                  </Menu.Item>
+                </Menu.Content>
+              </Menu.Portal>
+            </Menu.Root>
+            <Menu.Root>
+              <Menu.Trigger asChild>
+                <button
+                  type="button"
+                  className="agent-icon-button agent-composer-control"
+                  aria-label="Действия чата"
+                  title="Действия чата"
                 >
-                  {state.profiles.map((p) => (
-                    <Menu.RadioItem key={p.id} value={p.id}>
-                      <span className="agent-profile-option">
-                        <strong>{p.name}</strong>
-                        <small>
-                          {p.provider === "codex" ? "Codex CLI" : "Claude CLI"}
-                          {!p.trusted ? " · требуется настройка" : ""}
-                        </small>
-                      </span>
-                      <Menu.ItemIndicator>
-                        <Check size={16} />
-                      </Menu.ItemIndicator>
-                    </Menu.RadioItem>
-                  ))}
-                </Menu.RadioGroup>
-                {state.selected && (
-                  <p className="agent-menu-hint">
-                    Другой профиль откроет новый чат.
-                  </p>
-                )}
-                <Menu.Separator />
-                <Menu.Item onSelect={onSettings}>
-                  <Gear size={17} />
-                  Настроить агента
-                </Menu.Item>
-              </Menu.Content>
-            </Menu.Portal>
-          </Menu.Root>
-          <div className="agent-composer-spacer" />
-          {state.active ? (
+                  <DotsThree size={18} weight="bold" />
+                </button>
+              </Menu.Trigger>
+              <Menu.Portal container={document.getElementById("agent-panel")}>
+                <Menu.Content
+                  className="agent-menu"
+                  side="top"
+                  align="start"
+                  sideOffset={12}
+                >
+                  <Menu.Item
+                    disabled={state.busy}
+                    onSelect={() => state.setSelected("")}
+                  >
+                    <ChatCircle size={17} />
+                    Новый разговор
+                  </Menu.Item>
+                  <Menu.Item
+                    disabled={state.busy}
+                    onSelect={() => setHistory(true)}
+                  >
+                    <ClockCounterClockwise size={17} />
+                    История чатов
+                  </Menu.Item>
+                </Menu.Content>
+              </Menu.Portal>
+            </Menu.Root>
             <button
               type="button"
-              className="agent-send"
-              aria-label="Остановить"
-              title="Остановить задачу"
-              disabled={state.busy}
-              onClick={() => void state.stop().catch(() => {})}
+              role="switch"
+              aria-label="Автоапрув"
+              aria-checked={Boolean(state.autoApprove)}
+              className="agent-composer-control agent-auto-approve"
+              disabled={
+                state.busy ||
+                state.approvalBusy ||
+                Boolean(
+                  state.selected &&
+                  state.conversation?.chat.id !== state.selected,
+                )
+              }
+              title={`Автоапрув: ${state.autoApprove ? "включён" : "выключен"}. Автоматически разрешать действия в этом чате, включая ожидающие`}
+              onClick={() =>
+                void state.setAutoApprove(!state.autoApprove).catch(() => {})
+              }
             >
-              <Stop size={17} weight="fill" />
+              <ShieldCheck
+                size={18}
+                weight={state.autoApprove ? "fill" : "regular"}
+                aria-hidden="true"
+              />
             </button>
-          ) : (
-            <button
-              type="submit"
-              className="agent-send"
-              aria-label="Отправить сообщение"
-              title="Отправить · ⌘ / Ctrl + Enter"
-              disabled={!canSend}
-            >
-              <ArrowUp size={21} weight="bold" />
-            </button>
-          )}
+          </div>
+          <div className="agent-composer-model">
+            <Menu.Root>
+              <Menu.Trigger asChild>
+                <button
+                  type="button"
+                  className="agent-profile-button agent-composer-control"
+                  aria-label="Выбрать профиль агента"
+                  title={profile?.name || "Выбрать профиль"}
+                  disabled={state.busy}
+                >
+                  <span>{profile?.name || "Выбрать агента"}</span>
+                  <CaretDown size={12} />
+                </button>
+              </Menu.Trigger>
+              <Menu.Portal container={document.getElementById("agent-panel")}>
+                <Menu.Content
+                  className="agent-menu agent-profile-menu"
+                  side="top"
+                  align="start"
+                  sideOffset={12}
+                >
+                  <Menu.Label className="agent-menu-label">
+                    Локальные агенты
+                  </Menu.Label>
+                  <Menu.RadioGroup
+                    value={profileId}
+                    onValueChange={selectProfile}
+                  >
+                    {state.profiles.map((p) => (
+                      <Menu.RadioItem key={p.id} value={p.id}>
+                        <span className="agent-profile-option">
+                          <strong>{p.name}</strong>
+                          <small>
+                            {p.provider === "codex"
+                              ? "Codex CLI"
+                              : "Claude CLI"}
+                            {!p.trusted ? " · требуется настройка" : ""}
+                          </small>
+                        </span>
+                        <Menu.ItemIndicator>
+                          <Check size={16} />
+                        </Menu.ItemIndicator>
+                      </Menu.RadioItem>
+                    ))}
+                  </Menu.RadioGroup>
+                  {state.selected && (
+                    <p className="agent-menu-hint">
+                      Другой профиль откроет новый чат.
+                    </p>
+                  )}
+                  <Menu.Separator />
+                  <Menu.Item onSelect={onSettings}>
+                    <Gear size={17} />
+                    Настроить агента
+                  </Menu.Item>
+                </Menu.Content>
+              </Menu.Portal>
+            </Menu.Root>
+            {state.active ? (
+              <button
+                type="button"
+                className="agent-send agent-composer-control"
+                aria-label="Остановить"
+                title="Остановить задачу"
+                disabled={state.busy}
+                onClick={() => void state.stop().catch(() => {})}
+              >
+                <Stop size={16} weight="fill" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="agent-send agent-composer-control"
+                aria-label="Отправить сообщение"
+                title="Отправить · ⌘ / Ctrl + Enter"
+                disabled={!canSend}
+              >
+                <ArrowUp size={18} />
+              </button>
+            )}
+          </div>
         </div>
       </form>
       {profile && !profile.trusted && (

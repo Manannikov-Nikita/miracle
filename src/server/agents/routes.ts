@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AgentManager } from "./manager.js";
 import { callMiracleTool, miracleTools } from "./tools.js";
+import { readAgentImage } from "./images.js";
 
 export function registerAgentRoutes(
   app: FastifyInstance,
@@ -10,11 +11,31 @@ export function registerAgentRoutes(
 ) {
   const id = (req: FastifyRequest) =>
     z.uuid().parse((req.params as { id: string }).id);
-  app.post("/api/chats/:id/messages", async (req, reply) => {
+  app.patch("/api/chats/:id", async (req) => {
     need(req);
-    const turn = manager.start(id(req), req.body);
-    reply.code(202);
-    return turn;
+    return manager.updateChat(id(req), req.body);
+  });
+  app.post(
+    "/api/chats/:id/messages",
+    { bodyLimit: 29 * 1024 * 1024 },
+    async (req, reply) => {
+      need(req);
+      const turn = manager.start(id(req), req.body);
+      reply.code(202);
+      return turn;
+    },
+  );
+  app.get("/api/chats/:chatId/images/:imageId", async (req, reply) => {
+    need(req);
+    const params = z
+      .object({ chatId: z.uuid(), imageId: z.string().regex(/^[a-f0-9]{64}$/) })
+      .parse(req.params);
+    const image = readAgentImage(manager.store, params.chatId, params.imageId);
+    reply
+      .type(image.mimeType)
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Cache-Control", "private, no-store");
+    return reply.send(image.bytes);
   });
   app.post("/api/agent-turns/:id/cancel", async (req) => {
     need(req);

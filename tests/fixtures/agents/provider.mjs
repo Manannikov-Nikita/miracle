@@ -158,6 +158,35 @@ rl.on("line", async (line) => {
     if (realpathSync(m.params.cwd) !== process.cwd()) process.exit(11);
     if (
       m.method === "thread/resume" &&
+      process.env.FIXTURE_SCENARIO === "large-history"
+    ) {
+      await emit({
+        id: m.id,
+        result: {
+          thread: {
+            id: "codex-session",
+            turns: [
+              {
+                items: [
+                  {
+                    type: "userMessage",
+                    content: [
+                      {
+                        type: "image",
+                        url: `data:image/png;base64,${"a".repeat(33 * 1024 * 1024)}`,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (
+      m.method === "thread/resume" &&
       process.env.FIXTURE_SCENARIO === "storage-error"
     ) {
       await emit({
@@ -182,6 +211,17 @@ rl.on("line", async (line) => {
       !Array.isArray(m.params.input[0].text_elements)
     )
       process.exit(12);
+    if (process.env.FIXTURE_SCENARIO === "images-echo")
+      await emit({
+        method: "item/started",
+        params: {
+          item: {
+            type: "userMessage",
+            id: "input-with-images",
+            content: m.params.input,
+          },
+        },
+      });
     if (process.env.FIXTURE_SCENARIO.startsWith("child-")) {
       await emit({
         method: "turn/started",

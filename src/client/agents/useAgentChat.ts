@@ -6,6 +6,7 @@ import type {
   AgentProfile,
   AgentTurn,
   AgentTargetContext,
+  AgentImageInput,
   ProjectContext,
 } from "../../shared/agents";
 import { api, json } from "../api";
@@ -28,6 +29,9 @@ export function useAgentChat() {
     [busy, setBusy] = useState(false);
   const [unread, setUnread] = useState(false),
     [open, setOpen] = useState(false);
+  const [newAutoApprove, setNewAutoApprove] = useState(false);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const approvalChanging = useRef(false);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const openRef = useRef(open);
@@ -184,10 +188,11 @@ export function useAgentChat() {
   const create = async (profileId: string) => {
     const chat = await api<AgentChat>("/api/chats", {
       method: "POST",
-      body: json({ profileId }),
+      body: json({ profileId, autoApprove: newAutoApprove }),
     });
     setChats((items) => [chat, ...items]);
     setSelected(chat.id);
+    setNewAutoApprove(false);
     return chat;
   };
   const send = async (
@@ -196,6 +201,7 @@ export function useAgentChat() {
     clientRequestId: string,
     onCreated?: (id: string) => void,
     references: Partial<AgentTargetContext> = {},
+    images: AgentImageInput[] = [],
   ) =>
     action(async () => {
       const selectedChat = selectedRef.current;
@@ -213,7 +219,7 @@ export function useAgentChat() {
       sendRequests.current.set(clientRequestId, { chatId, context });
       const turn = await api<AgentTurn>(`/api/chats/${chatId}/messages`, {
         method: "POST",
-        body: json({ content, context, clientRequestId }),
+        body: json({ content, context, clientRequestId, images }),
       });
       if (!terminalTurns.current.has(turn.id)) setActive(turn);
       sendRequests.current.delete(clientRequestId);
@@ -221,6 +227,39 @@ export function useAgentChat() {
     });
   return {
     profiles,
+    autoApprove: selected
+      ? Boolean(
+          chats.find((chat) => chat.id === selected)?.autoApprove ??
+          (conversation?.chat.id === selected && conversation.chat.autoApprove),
+        )
+      : newAutoApprove,
+    approvalBusy,
+    setAutoApprove: async (enabled: boolean) => {
+      if (approvalChanging.current) return;
+      const id = selectedRef.current;
+      if (!id) {
+        setNewAutoApprove(enabled);
+        return;
+      }
+      approvalChanging.current = true;
+      setApprovalBusy(true);
+      setError("");
+      try {
+        await api<AgentChat>(`/api/chats/${id}`, {
+          method: "PATCH",
+          body: json({ autoApprove: enabled }),
+        });
+        // Another tab may change the policy before this response arrives.
+        // Reconcile with the server instead of replacing a newer SSE refresh.
+        await refresh();
+      } catch (error) {
+        setError((error as Error).message);
+        throw error;
+      } finally {
+        approvalChanging.current = false;
+        setApprovalBusy(false);
+      }
+    },
     resolvedApprovals,
     chats,
     projectRoot,
