@@ -4,7 +4,7 @@
 
 <p align="center"><strong>Личный SQL-редактор и аналитическая доска.</strong><br />ClickHouse · Trino · SQLite · Apache-2.0</p>
 
-<p align="center"><a href="docs/assets/miracle-preview.mp4">Смотреть видео с управлением воспроизведением</a> · <a href="docs/motion-preview.md">О демонстрации</a></p>
+<p align="center"><a href="docs/assets/miracle-preview.mp4?raw=true">Скачать MP4</a> · <a href="docs/motion-preview.md">О демонстрации</a></p>
 
 [Выпуски](https://github.com/Manannikov-Nikita/miracle/releases) · [Установка](docs/local-installation.md) · [Руководство](docs/usage.md) · [Что проверено](docs/release-validation.md)
 
