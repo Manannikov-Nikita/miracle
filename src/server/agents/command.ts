@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+
 export type AgentProvider = "codex" | "claude";
 export interface ParsedAgentCommand {
   executable: string;
@@ -63,7 +66,118 @@ export function parseAgentCommand(command: string): ParsedAgentCommand {
   }
   const executable = words.shift();
   if (!executable) throw new Error("The command needs an executable");
-  return { executable, args: words, env };
+  return { executable: expandHomePath(executable), args: words, env };
+}
+
+const expandHomePath = (value: string) =>
+  value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+
+/** Locate the provider argv without interpreting the command through a shell. */
+function agentLaunchPrefix(parsed: ParsedAgentCommand): string[] {
+  let i = 0;
+  const prefix: string[] = [];
+  const unsupported = (program: string): never => {
+    throw new Error(
+      `Unsupported or incomplete ${program} launcher; use an executable wrapper script that forwards CLI arguments`,
+    );
+  };
+  const takeValue = (program: string) => {
+    const value = parsed.args[i++];
+    if (!value || value.startsWith("-")) unsupported(program);
+    prefix.push(value!);
+    return value!;
+  };
+  let program = basename(parsed.executable).replace(/\.(?:exe|cmd)$/i, "");
+  // env can wrap a runtime or package runner; each iteration consumes its program.
+  while (program === "env") {
+    let options = true;
+    while (i < parsed.args.length) {
+      const arg = parsed.args[i]!;
+      if (options && arg === "--") {
+        prefix.push(arg);
+        i++;
+        options = false;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
+        prefix.push(arg);
+        i++;
+        options = false;
+      } else if (
+        options &&
+        (arg === "-u" || arg === "--unset" || arg.startsWith("--unset="))
+      ) {
+        prefix.push(arg);
+        i++;
+        const name = arg.includes("=")
+          ? arg.slice(arg.indexOf("=") + 1)
+          : takeValue(program);
+        if (!name || name.startsWith("MIRACLE_")) unsupported(program);
+      } else if (arg.startsWith("-")) unsupported(program);
+      else break;
+    }
+    const executable = expandHomePath(takeValue(program));
+    prefix[prefix.length - 1] = executable;
+    program = basename(executable).replace(/\.(?:exe|cmd)$/i, "");
+  }
+  if (program === "node" || program === "nodejs" || program === "npx") {
+    const flags =
+      program === "npx"
+        ? ["-y", "--yes", "-n", "--no", "--no-install"]
+        : [
+            "--no-warnings",
+            "--no-deprecation",
+            "--enable-source-maps",
+            "--trace-warnings",
+          ];
+    const valued =
+      program === "npx"
+        ? ["-p", "--package"]
+        : [
+            "-r",
+            "--require",
+            "--import",
+            "--loader",
+            "--experimental-loader",
+            "-C",
+            "--conditions",
+          ];
+    while (i < parsed.args.length && parsed.args[i]!.startsWith("-")) {
+      const arg = parsed.args[i++]!;
+      prefix.push(arg);
+      if (arg === "--") break;
+      const equal = arg.indexOf("=");
+      const flag = equal >= 0 ? arg.slice(0, equal) : arg;
+      if (valued.includes(flag)) {
+        if (equal < 0) takeValue(program);
+        else if (!arg.slice(equal + 1)) unsupported(program);
+      } else if (!flags.includes(arg)) unsupported(program);
+    }
+    const entrypoint = expandHomePath(takeValue(program));
+    prefix[prefix.length - 1] = entrypoint;
+  }
+  // Preserve the existing executable-wrapper convention: positional prefix,
+  // then provider flags. Wrapper-specific flags belong inside the wrapper script.
+  while (i < parsed.args.length && !parsed.args[i]!.startsWith("-")) {
+    const value = parsed.args[i++]!;
+    if (
+      [
+        "exec",
+        "e",
+        "resume",
+        "app-server",
+        "login",
+        "logout",
+        "mcp",
+        "review",
+      ].includes(value)
+    )
+      throw new Error(
+        "Miracle manages the provider subcommand; configure the base CLI command",
+      );
+    prefix.push(value);
+  }
+  return prefix;
 }
 
 export function childAgentEnvironment(
@@ -85,29 +199,9 @@ const quoteArg = (value: string) =>
 
 export function buildAgentCommand(provider: AgentProvider, command: string) {
   const parsed = parseAgentCommand(command);
-  const args: string[] = [];
-  // Wrapper scripts may take positional arguments before native CLI flags.
-  let i = 0;
-  while (i < parsed.args.length && !parsed.args[i]!.startsWith("-")) {
-    const value = parsed.args[i++]!;
-    if (
-      [
-        "exec",
-        "e",
-        "resume",
-        "app-server",
-        "login",
-        "logout",
-        "mcp",
-        "review",
-        "--",
-      ].includes(value)
-    )
-      throw new Error(
-        "Miracle manages the provider subcommand; configure the base CLI command",
-      );
-    args.push(value);
-  }
+  const prefixArgs = agentLaunchPrefix(parsed);
+  const args: string[] = [...prefixArgs];
+  let i = prefixArgs.length;
   if (provider === "codex") args.push("app-server");
   const managed =
     provider === "codex"
@@ -236,5 +330,5 @@ export function buildAgentCommand(provider: AgentProvider, command: string) {
       return quoteArg(arg);
     }),
   ].join(" ");
-  return { ...parsed, args, preview };
+  return { ...parsed, prefixArgs, args, preview };
 }
