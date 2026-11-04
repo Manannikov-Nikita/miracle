@@ -985,6 +985,27 @@ svg {
   color: var(--text-quiet);
   font-size: 12px;
 }
+.miracle-editor-overlays {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 60;
+}
+.miracle-editor-overlays .suggest-widget,
+.miracle-editor-overlays .suggest-details {
+  border-radius: 8px;
+  box-shadow: 0 15px 40px #0007;
+}
+.miracle-editor-overlays .suggest-widget .monaco-list {
+  border-radius: 8px;
+  overflow: hidden;
+}
+.miracle-editor-overlays .suggest-widget .monaco-list .monaco-list-row {
+  padding-left: 6px;
+  padding-right: 10px;
+}
 .editor-status {
   height: 23px;
   flex-shrink: 0;
