@@ -731,6 +731,41 @@ const windowOnly = new Set(
   ].map((name) => name.toLowerCase()),
 );
 
+// Includes window/grouping functions: none may become a GROUP BY key. This is
+// classification for completions, not validation of server combinator support.
+export function isClickhouseAggregateFunction(
+  name: string,
+  catalog?: SqlFunctionCatalog,
+): boolean {
+  const suffixes = [
+    ...new Set(
+      [
+        ...Object.keys(combinatorDescriptions),
+        ...(catalog?.aggregateCombinators || []),
+      ]
+        .map((suffix) => suffix.toLowerCase())
+        .filter(Boolean),
+    ),
+  ].sort((a, b) => b.length - a.length);
+  let candidate = name.toLowerCase();
+  while (candidate) {
+    if (windowOnly.has(candidate) || candidate === "grouping") return true;
+    const exact = catalog?.functions.find(
+      (fn) => fn.name.toLowerCase() === candidate,
+    );
+    if (exact) return exact.isAggregate;
+    const builtin = builtinByName.get(candidate);
+    if (builtin) return builtin.isAggregate;
+    const suffix = suffixes.find(
+      (part) => candidate.length > part.length && candidate.endsWith(part),
+    );
+    if (!suffix) return false;
+    // Every iteration removes a nonempty suffix; even malformed chains finish.
+    candidate = candidate.slice(0, -suffix.length);
+  }
+  return false;
+}
+
 function functionSuggestion(fn: SqlFunction): SqlSuggestion {
   const fallback = builtinByName.get(fn.name.toLowerCase());
   return {

@@ -9,7 +9,12 @@ import type { MetadataStore } from "./metadata-store";
 import {
   clickhouseFunctionSuggestions,
   clickhouseKeywords,
+  isClickhouseAggregateFunction,
 } from "./clickhouse-completion";
+import {
+  sqlCompletionContext,
+  sqlExpressionKey,
+} from "./sql-completion-context";
 
 type Context = Pick<QuerySource, "database" | "catalog" | "schema"> & {
   engine?: Engine;
@@ -69,6 +74,48 @@ const keywords = [
   "OVER",
   "PARTITION BY",
 ];
+const expressionKeywords = [
+  "CASE",
+  "WHEN",
+  "THEN",
+  "ELSE",
+  "END",
+  "AND",
+  "OR",
+  "NOT",
+  "NULL",
+  "IS NULL",
+  "IS NOT NULL",
+  "IN",
+  "BETWEEN",
+  "LIKE",
+];
+const groupingKeywords = new Set([
+  ...expressionKeywords,
+  "HAVING",
+  "ORDER BY",
+  "LIMIT",
+  "OFFSET",
+  "WITH ROLLUP",
+  "WITH CUBE",
+  "WITH TOTALS",
+]);
+const sortingKeywords = new Set([
+  ...expressionKeywords,
+  "ASC",
+  "DESC",
+  "NULLS FIRST",
+  "NULLS LAST",
+  "LIMIT",
+  "OFFSET",
+  "FETCH",
+  "WITH FILL",
+  "COUNT",
+  "SUM",
+  "AVG",
+  "MIN",
+  "MAX",
+]);
 const identifier =
   '(?:[\\p{L}_$][\\p{L}\\p{N}_$]*|"(?:[^"]|"")+"|`(?:[^`]|``)+`)';
 const qualifiedIdentifier = `${identifier}(?:\\s*\\.\\s*${identifier}){0,2}`;
@@ -247,6 +294,186 @@ export function referencedSqlTables(
   return [...selected];
 }
 
+// Trino has no function metadata endpoint here. Keep its documented aggregates
+// separate from ClickHouse's dialect/catalog-aware classification.
+const trinoAggregates = new Set([
+  "any_value",
+  "arbitrary",
+  "array_agg",
+  "avg",
+  "bool_and",
+  "bool_or",
+  "checksum",
+  "count",
+  "count_if",
+  "every",
+  "geometric_mean",
+  "listagg",
+  "max",
+  "max_by",
+  "min",
+  "min_by",
+  "sum",
+  "bitwise_and_agg",
+  "bitwise_or_agg",
+  "bitwise_xor_agg",
+  "histogram",
+  "map_agg",
+  "map_union",
+  "multimap_agg",
+  "approx_distinct",
+  "approx_most_frequent",
+  "approx_percentile",
+  "numeric_histogram",
+  "corr",
+  "covar_pop",
+  "covar_samp",
+  "kurtosis",
+  "regr_intercept",
+  "regr_slope",
+  "skewness",
+  "stddev",
+  "stddev_pop",
+  "stddev_samp",
+  "variance",
+  "var_pop",
+  "var_samp",
+  "reduce_agg",
+  "grouping",
+  "rank",
+  "dense_rank",
+  "percent_rank",
+  "row_number",
+  "ntile",
+  "lag",
+  "lead",
+  "first_value",
+  "last_value",
+  "nth_value",
+  "cume_dist",
+]);
+
+function projectionSuggestions(
+  analysis: ReturnType<typeof sqlCompletionContext>,
+  qualifier: string[],
+  context: Context,
+  catalog: SqlFunctionCatalog | undefined,
+  columnTables: SchemaTable[],
+  prefix: string | undefined,
+) {
+  const suggestions: SqlSuggestion[] = [];
+  const excluded = new Set<string>();
+  const grouping = analysis.clause === "groupBy";
+  if (!grouping && analysis.clause !== "orderBy")
+    return { suggestions, excluded };
+  const key = (text: string) => sqlExpressionKey(text, context.engine);
+  const used = new Set(
+    (grouping ? analysis.groupBy : analysis.orderBy).map(key),
+  );
+  const unsafe = new Set(
+    analysis.projections.filter(
+      (projection) =>
+        projection.hasWindow ||
+        projection.hasSubquery ||
+        projection.functionNames.some((name) =>
+          context.engine === "clickhouse"
+            ? isClickhouseAggregateFunction(name, catalog)
+            : trinoAggregates.has(normalize(name)),
+        ),
+    ),
+  );
+  // ClickHouse aliases can reference other SELECT aliases, including forward
+  // references. A scalar wrapper around an aggregate alias is still aggregate.
+  if (grouping && context.engine === "clickhouse") {
+    for (let pass = 0; pass < analysis.projections.length; pass++) {
+      const aliases = new Set(
+        [...unsafe].flatMap((p) =>
+          p.alias ? [normalize(parts(p.alias)[0])] : [],
+        ),
+      );
+      let changed = false;
+      for (const projection of analysis.projections) {
+        if (unsafe.has(projection)) continue;
+        const code = scanSql(projection.expression, true).code;
+        if (
+          [...code.matchAll(new RegExp(identifier, "gu"))].some((match) =>
+            aliases.has(normalize(parts(match[0])[0])),
+          )
+        ) {
+          unsafe.add(projection);
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+  }
+  analysis.projections.forEach((projection, index) => {
+    const { expression, alias, reference } = projection;
+    const keys = [key(expression), ...(alias ? [key(alias)] : [])];
+    if (
+      used.has(key(String(index + 1))) ||
+      keys.some((value) => used.has(value))
+    ) {
+      keys.forEach((value) => excluded.add(value));
+      if (!qualifier.length && reference)
+        excluded.add(key(quote(reference.name, context)));
+      return;
+    }
+    if (
+      (grouping && unsafe.has(projection)) ||
+      projection.hasSubquery ||
+      /^(?:[^()]+\.)?\*$/.test(expression.trim()) ||
+      /^(?:\d+(?:\.\d+)?|'(?:[^']|'')*')$/.test(expression.trim())
+    )
+      return;
+    let insertText = expression;
+    if (qualifier.length) {
+      if (
+        !reference ||
+        reference.qualifier.length !== qualifier.length ||
+        !matches(reference.qualifier, qualifier)
+      )
+        return;
+      insertText = quote(reference.name, context);
+    } else if (alias && (!grouping || context.engine === "clickhouse")) {
+      // A ClickHouse alias that shadows an input column depends on the server's
+      // prefer_column_name_to_alias setting; the original expression is safe.
+      const shadowsInput =
+        grouping &&
+        columnTables.some((table) =>
+          table.columns?.some(
+            (column) => normalize(column.name) === normalize(parts(alias)[0]),
+          ),
+        );
+      if (!shadowsInput) insertText = alias;
+    }
+    const label = insertText;
+    const choices = [
+      label,
+      ...(alias ? [parts(alias)[0]] : []),
+      ...(reference ? [reference.name] : []),
+    ];
+    const match =
+      prefix === undefined
+        ? label
+        : choices.find((value) =>
+            normalize(value).startsWith(normalize(prefix)),
+          );
+    if (match === undefined) return;
+    suggestions.push({
+      label,
+      insertText,
+      kind: "column",
+      detail: "Из SELECT",
+      documentation: alias ? `${expression} AS ${alias}` : expression,
+      filterText: prefix ? prefix + match.slice(prefix.length) : match,
+      sortText: `0:select:${String(index).padStart(5, "0")}`,
+    });
+  });
+  for (const value of used) excluded.add(value);
+  return { suggestions, excluded };
+}
+
 export function sqlSuggestions(
   sql: string,
   beforeCursor: string,
@@ -258,6 +485,11 @@ export function sqlSuggestions(
   const scanned = scanSql(beforeCursor, context.engine === "clickhouse");
   if (!scanned.inCode) return [];
   const qualifier = qualifierAtCursor(beforeCursor);
+  const analysis = sqlCompletionContext(
+    sql,
+    beforeCursor.length,
+    context.engine,
+  );
   const suggestions: SqlSuggestion[] = [];
   const limit = options.limit ?? Infinity;
   const prefix = options.prefix?.toLocaleLowerCase();
@@ -271,14 +503,16 @@ export function sqlSuggestions(
     counts.set(item.kind, (counts.get(item.kind) || 0) + 1);
     suggestions.push(item);
   };
-  const referenced = referencedSqlTables(sql, tables, context);
+  const referenced = referencedSqlTables(analysis.scopeSql, tables, context);
   const aliasReference =
     qualifier.length === 1
-      ? references(sql, context).find(
-          (reference) =>
-            reference.alias &&
-            normalize(reference.alias) === normalize(qualifier[0]),
-        )
+      ? [analysis.scopeSql, ...analysis.outerScopes]
+          .flatMap((scope) => references(scope, context))
+          .find(
+            (reference) =>
+              reference.alias &&
+              normalize(reference.alias) === normalize(qualifier[0]),
+          )
       : undefined;
   const columnTables = qualifier.length
     ? aliasReference
@@ -289,15 +523,52 @@ export function sqlSuggestions(
         )
       : tables.filter((table) => matches(tableParts(table), qualifier))
     : referenced;
+  const projected = projectionSuggestions(
+    analysis,
+    qualifier,
+    context,
+    catalog,
+    columnTables,
+    options.prefix,
+  );
+  const projectionKeys = new Set(
+    projected.suggestions.map((item) =>
+      sqlExpressionKey(item.insertText, context.engine),
+    ),
+  );
+  const expressionClause = [
+    "select",
+    "where",
+    "on",
+    "groupBy",
+    "having",
+    "orderBy",
+  ].includes(analysis.clause || "");
+  const sourceClause = analysis.clause === "from" || analysis.clause === "join";
+  const rowExpression = ["groupBy", "where", "on"].includes(
+    analysis.clause || "",
+  );
   for (const table of columnTables) {
     for (const column of table.columns || []) {
       if (!canAdd("column")) break;
-      if (accepts(column.name))
+      const inserted = quote(column.name, context);
+      const columnKey = sqlExpressionKey(
+        [...qualifier.map((part) => quote(part, context)), inserted].join("."),
+        context.engine,
+      );
+      if (
+        accepts(column.name) &&
+        !projectionKeys.has(sqlExpressionKey(inserted, context.engine)) &&
+        !projected.excluded.has(columnKey)
+      )
         add({
           label: column.name,
-          insertText: quote(column.name, context),
+          insertText: inserted,
           kind: "column",
           detail: `${tableParts(table).join(".")} · ${column.type}`,
+          ...(expressionClause && !qualifier.length
+            ? { sortText: `1:column:${column.name}` }
+            : {}),
         });
     }
   }
@@ -316,6 +587,9 @@ export function sqlSuggestions(
             : path.map((part) => quote(part, context)).join("."),
           kind: "table",
           detail: path.slice(0, -1).join("."),
+          ...(sourceClause && !qualifier.length
+            ? { sortText: `1:table:${table.name}` }
+            : {}),
         });
     }
     const schemas = new Map<string, { insertText: string; name: string }>();
@@ -337,7 +611,14 @@ export function sqlSuggestions(
     for (const [label, { insertText, name }] of schemas) {
       if (!canAdd("schema")) break;
       if (accepts(label) || accepts(name))
-        add({ label, insertText, kind: "schema" });
+        add({
+          label,
+          insertText,
+          kind: "schema",
+          ...(sourceClause && !qualifier.length
+            ? { sortText: `1:schema:${label}` }
+            : {}),
+        });
     }
     if (!qualifier.length) {
       const vocabulary =
@@ -352,6 +633,11 @@ export function sqlSuggestions(
           : keywords;
       for (const keyword of vocabulary) {
         if (!canAdd("keyword")) break;
+        if (analysis.clause === "groupBy" && !groupingKeywords.has(keyword))
+          continue;
+        if (analysis.clause === "orderBy" && !sortingKeywords.has(keyword))
+          continue;
+        if (rowExpression && trinoAggregates.has(normalize(keyword))) continue;
         const item = keywordSuggestion(keyword, scanned.code);
         if (accepts(item.filterText || item.insertText)) add(item);
       }
@@ -360,19 +646,26 @@ export function sqlSuggestions(
           scanned.code.match(/[\p{L}_$][\p{L}\p{N}_$]*$/u)?.[0] || "";
         for (const item of clickhouseFunctionSuggestions(prefix, catalog)) {
           if (!canAdd("function")) break;
+          if (
+            rowExpression &&
+            isClickhouseAggregateFunction(item.label, catalog)
+          )
+            continue;
           if (accepts(item.filterText || item.label)) add(item);
         }
       }
     }
   }
-  if (suggestions.length <= limit) return suggestions;
+  const preferred = projected.suggestions.slice(0, limit);
+  if (preferred.length + suggestions.length <= limit)
+    return [...preferred, ...suggestions];
   // Keep every relevant category available when a large schema has hundreds of
   // identically prefixed tables. Construct at most `limit` items per category,
   // then interleave them into one bounded list; Monaco ranks the matches.
   const groups = (
     ["column", "schema", "keyword", "function", "table"] as const
   ).map((kind) => suggestions.filter((item) => item.kind === kind));
-  const bounded: SqlSuggestion[] = [];
+  const bounded: SqlSuggestion[] = [...preferred];
   for (let index = 0; bounded.length < limit; index++) {
     let added = false;
     for (const group of groups) {
