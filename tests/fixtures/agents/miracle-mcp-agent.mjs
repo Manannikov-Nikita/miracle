@@ -1,5 +1,5 @@
 /** Deterministic Claude wire peer exercising Miracle's actual HTTP MCP tools. */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -18,6 +18,14 @@ const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
 const endpoint = config.mcpServers.miracle.url;
 const token = process.env.MIRACLE_AGENT_MCP_TOKEN;
 const control = process.env.FIXTURE_CONTROL;
+// The parent polls for these files from another process. Publish only complete
+// contents: writeFileSync creates the destination before writing its payload.
+function publish(name, contents) {
+  const destination = join(control, name);
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, contents, { mode: 0o600 });
+  renameSync(temporary, destination);
+}
 let seq = 0;
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -193,18 +201,17 @@ createInterface({ input: process.stdin }).once("line", async (line) => {
       clientInfo: { name: "fixture", version: "1" },
     });
     const tools = await rpc("tools/list");
-    writeFileSync(
-      join(control, "capability.json"),
+    publish(
+      "capability.json",
       JSON.stringify({
         endpoint,
         token,
         initialized,
         toolNames: tools.tools.map((t) => t.name),
       }),
-      { mode: 0o600 },
     );
     const result = process.env.FIXTURE_WORKFLOW === "1" ? await workflow() : {};
-    writeFileSync(join(control, "result.json"), JSON.stringify(result));
+    publish("result.json", JSON.stringify(result));
     while (!existsSync(join(control, "release"))) await delay(10);
     emit({
       type: "result",
@@ -214,7 +221,7 @@ createInterface({ input: process.stdin }).once("line", async (line) => {
       result: "MCP workflow complete",
     });
   } catch (error) {
-    writeFileSync(join(control, "failure.txt"), String(error?.stack || error));
+    publish("failure.txt", String(error?.stack || error));
     emit({
       type: "result",
       subtype: "error_during_execution",
