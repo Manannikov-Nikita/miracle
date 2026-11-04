@@ -167,6 +167,15 @@ async function addEngine(s: Awaited<ReturnType<typeof open>>) {
         ["UInt64", "UInt8"],
         [["9007199254740993", 1]],
       );
+    if (sql.includes("chart-controls"))
+      return compact(
+        ["month", "revenue", "region"],
+        ["String", "Float64", "String"],
+        [
+          ["Jan", 10, "North"],
+          ["Jan", 20, "South"],
+        ],
+      );
     return compact(["n"], ["UInt8"], [[1]]);
   });
   await new Promise<void>((resolve, reject) => {
@@ -193,6 +202,224 @@ async function addEngine(s: Awaited<ReturnType<typeof open>>) {
   });
   return { connection, executedSql };
 }
+
+it("exposes chart appearance and geometry controls through the actual MCP discovery and guide", async () => {
+  const s = await open();
+  const agent = await s.start();
+  const response = await fetch(agent.capability.endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${agent.capability.token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "chart-discovery",
+      method: "tools/list",
+    }),
+  });
+  expect(response.status).toBe(200);
+  const { result } = (await response.json()) as any;
+  const guideTool = result.tools.find(
+    (tool: any) => tool.name === "chart_guide",
+  );
+  expect(guideTool).toBeDefined();
+  expect(guideTool.annotations.readOnlyHint).toBe(true);
+  const patchTool = result.tools.find(
+    (tool: any) => tool.name === "board_patch",
+  );
+  const patch =
+    patchTool.inputSchema.properties.operations.items.properties.patch
+      .properties;
+  expect(patch.width.type).toBe("number");
+  expect(patch.height.type).toBe("number");
+  const chart = patch.data.properties.chart;
+  for (const setting of ["showXAxis", "showYAxis", "showGrid", "showLabels"]) {
+    expect(chart.properties[setting].type).toBe("boolean");
+    expect(chart.required).not.toContain(setting);
+  }
+  expect(chart.properties.labelPosition.enum).toEqual([
+    "auto",
+    "outside",
+    "inside",
+  ]);
+  expect(chart.properties.palette.enum).toEqual([
+    "default",
+    "cool",
+    "warm",
+    "vivid",
+  ]);
+  expect(chart.properties.seriesColors.type).toBe("object");
+  expect(chart.properties.orientation.enum).toEqual(["vertical", "horizontal"]);
+  expect(chart.properties.legend.type).toBe("boolean");
+  expect(chart.properties.numberFormat.enum).toContain("compact");
+  const guide = JSON.stringify(await agent.mcp("chart_guide"));
+  for (const setting of [
+    "showXAxis",
+    "showYAxis",
+    "showGrid",
+    "showLabels",
+    "labelPosition",
+    "palette",
+    "seriesColors",
+    "width",
+    "height",
+  ])
+    expect(guide).toContain(setting);
+  expect(guide).toContain("baseRevision");
+  s.release();
+});
+
+it("round-trips chart controls, resets and proportional sizes through MCP without re-running SQL", async () => {
+  const s = await open();
+  const { connection, executedSql } = await addEngine(s);
+  const agent = await s.start();
+  const source = {
+    connectionId: connection.id,
+    sql: "SELECT 'Jan' AS month, 10 AS revenue, 'North' AS region /* chart-controls */",
+  };
+  const run = await agent.mcp("run_query", {
+    ...source,
+    mutationId: randomUUID(),
+  });
+  const done = await until(
+    () => agent.mcp("query_status", { id: run.id }),
+    (state) => state.status === "completed",
+  );
+  const page = await agent.mcp("read_result", { id: done.resultSetId });
+  const columnId = (name: string) =>
+    page.result.columns.find((column: any) => column.name === name).id;
+  const chart = {
+    kind: "bar",
+    x: columnId("month"),
+    y: [columnId("revenue")],
+    series: columnId("region"),
+    legend: true,
+  };
+  let board = await agent.mcp("create_board", {
+    name: "MCP chart controls",
+    mutationId: randomUUID(),
+    document: {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "chart",
+          type: "artifact",
+          position: { x: 15, y: 30 },
+          width: 480,
+          height: 320,
+          data: {
+            title: "Revenue",
+            kind: "result",
+            view: "chart",
+            resultSetId: done.resultSetId,
+            source,
+            chart,
+          },
+        },
+      ],
+      edges: [],
+    },
+  });
+  const original = await agent.mcp("read_board", { id: board.id });
+  const originalNode = original.document.nodes[0];
+  const colors = {
+    [JSON.stringify([chart.y[0], chart.series, "North"])]: "#aabbcc",
+    [JSON.stringify([chart.y[0], chart.series, "South"])]: "#123456",
+  };
+  const styled = {
+    ...chart,
+    orientation: "horizontal",
+    stacked: true,
+    showXAxis: false,
+    showYAxis: false,
+    showGrid: false,
+    showLabels: true,
+    labelPosition: "inside",
+    palette: "warm",
+    seriesColors: colors,
+    numberFormat: "compact",
+    sort: "desc",
+    legendPosition: "right",
+    legendAlign: "end",
+  };
+  const patch = async (data: unknown) =>
+    agent.mcp("board_patch", {
+      id: board.id,
+      baseRevision: board.revision,
+      mutationId: randomUUID(),
+      operations: [{ type: "update_node", id: "chart", patch: data }],
+    });
+  board = await patch({ data: { chart: styled } });
+  let reread = await agent.mcp("read_board", { id: board.id });
+  expect(reread.document.nodes[0]).toEqual({
+    ...originalNode,
+    data: { ...originalNode.data, chart: styled },
+  });
+  board = await patch({
+    width: originalNode.width * 1.5,
+    height: originalNode.height * 1.5,
+  });
+  reread = await agent.mcp("read_board", { id: board.id });
+  expect(reread.document.nodes[0]).toEqual({
+    ...originalNode,
+    width: 720,
+    height: 480,
+    data: { ...originalNode.data, chart: styled },
+  });
+  expect(reread.document.nodes[0].width / reread.document.nodes[0].height).toBe(
+    originalNode.width / originalNode.height,
+  );
+  const invalid = await agent.mcpResponse("board_patch", {
+    id: board.id,
+    baseRevision: board.revision,
+    mutationId: randomUUID(),
+    operations: [
+      {
+        type: "update_node",
+        id: "chart",
+        patch: { data: { chart: { ...styled, seriesColors: { bad: "red" } } } },
+      },
+    ],
+  });
+  expect(invalid.status).toBe(200);
+  expect(((await invalid.json()) as any).result.isError).toBe(true);
+  expect(await agent.mcp("read_board", { id: board.id })).toEqual(reread);
+  const stale = await agent.mcpResponse("board_patch", {
+    id: board.id,
+    baseRevision: original.revision,
+    mutationId: randomUUID(),
+    operations: [
+      { type: "update_node", id: "chart", patch: { width: 600, height: 400 } },
+    ],
+  });
+  const conflict = ((await stale.json()) as any).result;
+  expect(conflict.isError).toBe(true);
+  expect(JSON.parse(conflict.content[0].text).code).toBe("REVISION_CONFLICT");
+  expect(await agent.mcp("read_board", { id: board.id })).toEqual(reread);
+  const reset = {
+    ...styled,
+    showXAxis: true,
+    showYAxis: true,
+    showGrid: true,
+    showLabels: false,
+    labelPosition: "auto",
+    palette: "default",
+    seriesColors: {},
+  };
+  board = await patch({ data: { chart: reset } });
+  reread = await agent.mcp("read_board", { id: board.id });
+  expect(reread.document.nodes[0].data.chart).toEqual(reset);
+  expect(reread.document.nodes[0]).toMatchObject({
+    width: 720,
+    height: 480,
+    position: originalNode.position,
+  });
+  expect(
+    executedSql.filter((sql) => sql.includes("chart-controls")),
+  ).toHaveLength(1);
+  s.release();
+});
 
 it("executes a subprocess MCP workflow against persisted SQL, query results and board operations", async () => {
   const s = await open();

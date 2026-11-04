@@ -230,7 +230,7 @@ it.each([false, true])(
         await request("GET", `/api/query-runs/${started.json().id}`)
       ).json();
     }
-    expect(finished.status).toBe("failed");
+    expect(finished.status).toBe(batch ? "paused" : "failed");
     const diagnostic = batch ? finished.batch.items[0].error : finished.error;
     expect(diagnostic).toContain("diagnostic\n".repeat(700));
     expect(diagnostic).toContain("END OF DIAGNOSTIC");

@@ -22,6 +22,96 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 describe("native agent adapters", () => {
+  it("marks an oversized Codex resume snapshot retryable before any turn starts", async () => {
+    const f = setup("codex", "large-history");
+    const p = startAgentTurn({
+      provider: "codex",
+      command: f.command,
+      cwd: f.cwd,
+      prompt: "Continue",
+      resumeSessionId: "old-session",
+      mcp: { url: "http://127.0.0.1/mcp", token: "secret" },
+      onEvent: () => {},
+    });
+    await expect(p.completion).rejects.toMatchObject({
+      code: "AGENT_SESSION_TOO_LARGE",
+    });
+    const entries = readFileSync(f.trace, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      entries.find((entry) => entry.wire?.method === "thread/resume").wire
+        .params.excludeTurns,
+    ).toBe(true);
+    expect(entries.some((entry) => entry.wire?.method === "turn/start")).toBe(
+      false,
+    );
+  });
+  it("accepts a large Codex image echo without exposing image bytes as an action", async () => {
+    const f = setup("codex", "images-echo");
+    const events: AdapterEvent[] = [];
+    const p = startAgentTurn({
+      provider: "codex",
+      command: f.command,
+      cwd: f.cwd,
+      prompt: "Inspect image",
+      images: [
+        {
+          name: "large.png",
+          mimeType: "image/png",
+          data: "a".repeat(5 * 1024 * 1024),
+        },
+      ],
+      mcp: { url: "http://127.0.0.1/mcp", token: "secret" },
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === "approval") p.respond(event.id, "allow");
+      },
+    });
+    await expect(p.completion).resolves.toEqual({ sessionId: "codex-session" });
+    expect(JSON.stringify(events).length).toBeLessThan(10000);
+    expect(events.some((event) => event.type === "message")).toBe(true);
+  });
+  it.each(["codex", "claude"] as const)(
+    "%s sends image bytes as native multimodal content",
+    async (provider) => {
+      const f = setup(provider);
+      const data =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+      const p = startAgentTurn({
+        provider,
+        command: f.command,
+        cwd: f.cwd,
+        prompt: "Describe this chart",
+        images: [{ name: "chart.png", mimeType: "image/png", data }],
+        mcp: { url: "http://127.0.0.1/mcp", token: "secret" },
+        onEvent: (event) => {
+          if (event.type === "approval") p.respond(event.id, "allow");
+        },
+      });
+      await p.completion;
+      const entries = readFileSync(f.trace, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const content =
+        provider === "codex"
+          ? entries.find((entry) => entry.wire?.method === "turn/start").wire
+              .params.input
+          : entries.find((entry) => entry.wire?.type === "user").wire.message
+              .content;
+      expect(content).toContainEqual(
+        provider === "codex"
+          ? { type: "image", url: `data:image/png;base64,${data}` }
+          : {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data },
+            },
+      );
+      expect(content[0].text).toBe("Describe this chart");
+    },
+  );
   it.each(["child-completed", "child-error"])(
     "Codex isolates parent messages and completion from %s during native resume",
     async (scenario) => {

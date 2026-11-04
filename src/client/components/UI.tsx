@@ -37,6 +37,7 @@ export function Modal({
   children,
   wide = false,
   dismissible = true,
+  className = "",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -45,6 +46,7 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
   dismissible?: boolean;
+  className?: string;
 }) {
   return (
     <Dialog.Root
@@ -56,7 +58,7 @@ export function Modal({
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop" />
         <Dialog.Content
-          className={`modal ${wide ? "modal-wide" : ""}`}
+          className={`modal ${wide ? "modal-wide" : ""} ${className}`}
           aria-describedby={description ? "modal-description" : undefined}
           onEscapeKeyDown={(event) => {
             if (!dismissible) event.preventDefault();

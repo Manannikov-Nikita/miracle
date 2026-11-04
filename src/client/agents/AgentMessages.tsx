@@ -1,11 +1,13 @@
+import { useId, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ShieldCheck } from "@phosphor-icons/react";
+import { CaretRight, ShieldCheck } from "@phosphor-icons/react";
 import type { AgentMessage } from "../../shared/agents";
 import type { AgentChatState } from "./useAgentChat";
 import AgentActivity from "./AgentActivity";
 import { transcriptTurns } from "./agent-transcript";
 import { AgentContextChips } from "./AgentFileMentions";
+import AgentMessageImages from "./AgentMessageImages";
 
 function MessageReferences({ context }: { context: unknown }) {
   if (!context || typeof context !== "object") return null;
@@ -53,6 +55,8 @@ function Approval({
   message: AgentMessage;
   state: AgentChatState;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const approvalId = message.details?.approvalId;
   const decision =
     state.resolvedApprovals.get(String(approvalId)) ||
@@ -65,37 +69,35 @@ function Approval({
     !message.details?.resolved;
   const label =
     decision === "allow"
-      ? "Разрешено"
+      ? message.details?.automatic === true
+        ? "Разрешено автоматически"
+        : "Разрешено"
       : decision === "deny"
         ? "Отклонено"
         : pending
           ? "Нужно разрешение"
           : "Запрос закрыт";
-  const content = (
-    <>
-      <MessageContent content={message.content} />
-      {message.details && (
-        <details className="agent-approval-details">
-          <summary>Запрашиваемое действие</summary>
-          <pre>{JSON.stringify(message.details, null, 2)}</pre>
-        </details>
-      )}
-    </>
-  );
   return (
     <article
       className={`agent-message approval ${pending ? "pending" : "resolved"}`}
     >
-      {pending ? (
-        <>
-          <div className="agent-approval-heading">
-            <ShieldCheck size={18} />
-            <strong>{label}</strong>
-          </div>
-          {content}
-          <div className="agent-actions">
+      <div className="agent-approval-row">
+        <button
+          type="button"
+          className="agent-approval-trigger"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <ShieldCheck size={14} />
+          <span className="agent-approval-label">{label}</span>
+          <span className="agent-approval-preview">{message.content}</span>
+          <CaretRight size={12} className="agent-approval-caret" />
+        </button>
+        {pending && (
+          <div className="agent-approval-actions">
             <button
-              className="button primary"
+              type="button"
               disabled={state.busy}
               onClick={() =>
                 void state.approve(approvalId, "allow").catch(() => {})
@@ -104,7 +106,7 @@ function Approval({
               Разрешить
             </button>
             <button
-              className="button"
+              type="button"
               disabled={state.busy}
               onClick={() =>
                 void state.approve(approvalId, "deny").catch(() => {})
@@ -113,16 +115,21 @@ function Approval({
               Отклонить
             </button>
           </div>
-        </>
-      ) : (
-        <details className="agent-approval-resolved">
-          <summary>
-            <ShieldCheck size={14} />
-            {label}
-          </summary>
-          {content}
-        </details>
-      )}
+        )}
+      </div>
+      <div id={detailsId} hidden={!expanded} className="agent-approval-content">
+        {expanded && (
+          <>
+            <MessageContent content={message.content} />
+            {message.details && (
+              <details className="agent-approval-details">
+                <summary>Запрашиваемое действие</summary>
+                <pre>{JSON.stringify(message.details, null, 2)}</pre>
+              </details>
+            )}
+          </>
+        )}
+      </div>
     </article>
   );
 }
@@ -143,7 +150,11 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
           (message) => message.role === "user",
         );
         const replyMessages = group.messages.filter(
-          (message) => message.role !== "user" && message.role !== "action",
+          (message) =>
+            message.role === "assistant" || message.role === "system",
+        );
+        const approvals = group.messages.filter(
+          (message) => message.role === "approval",
         );
         const hasActivity =
           Boolean(group.turn) ||
@@ -160,34 +171,34 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
                 <MessageReferences
                   context={message.details?.context || group.turn?.context}
                 />
+                <AgentMessageImages images={message.details?.images} />
                 <MessageContent content={message.content} />
               </article>
             ))}
-            {replyMessages.map((message) =>
-              message.role === "approval" ? (
-                <Approval key={message.id} message={message} state={state} />
-              ) : (
-                <article
-                  key={message.id}
-                  className={`agent-message ${message.role}`}
+            {replyMessages.map((message) => (
+              <article
+                key={message.id}
+                className={`agent-message ${message.role}`}
+              >
+                <small
+                  className={
+                    message.role === "assistant"
+                      ? "sr-only"
+                      : "agent-message-label"
+                  }
                 >
-                  <small
-                    className={
-                      message.role === "assistant"
-                        ? "sr-only"
-                        : "agent-message-label"
-                    }
-                  >
-                    {message.role === "assistant"
-                      ? conversation?.chat.provider === "claude"
-                        ? "Claude"
-                        : "Codex"
-                      : "Уведомление"}
-                  </small>
-                  <MessageContent content={message.content} />
-                </article>
-              ),
-            )}
+                  {message.role === "assistant"
+                    ? conversation?.chat.provider === "claude"
+                      ? "Claude"
+                      : "Codex"
+                    : "Уведомление"}
+                </small>
+                <MessageContent content={message.content} />
+              </article>
+            ))}
+            {approvals.map((message) => (
+              <Approval key={message.id} message={message} state={state} />
+            ))}
             {hasActivity && (
               <AgentActivity messages={group.messages} turn={group.turn} />
             )}

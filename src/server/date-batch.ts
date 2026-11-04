@@ -190,15 +190,17 @@ export async function performDateBatch(options: {
   state: DateBatchState;
   batch: DateBatchProgress;
   limits: QueryLimits & { quotaBytes: number };
+  elapsedMs?: number;
 }) {
   const { db, id, source, engine, state, limits } = options;
   let batch = options.batch;
   const started = Date.now();
+  const elapsed = () => (options.elapsedMs || 0) + Date.now() - started;
   const persist = () =>
     db.query("UPDATE query_runs SET batch=?2,elapsed_ms=?3 WHERE id=?1", [
       id,
       batch,
-      Date.now() - started,
+      elapsed(),
     ]);
   const finish = (status: string, error?: string) => {
     delete batch.currentDate;
@@ -211,13 +213,15 @@ export async function performDateBatch(options: {
       );
       db.query(
         "UPDATE query_runs SET status=?2,batch=?3,error=?4,elapsed_ms=?5,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
-        [id, status, batch, error, Date.now() - started],
+        [id, status, batch, error, elapsed()],
       );
     });
   };
   try {
     for (let index = 0; index < batch.items.length; index++) {
       state.controller.signal.throwIfAborted();
+      // A resumed run keeps its committed prefix and appends only missing dates.
+      if (batch.items[index]!.status === "completed") continue;
       for (
         let attempt = 1;
         attempt <= source.dateRange!.retries + 1;
@@ -274,7 +278,7 @@ export async function performDateBatch(options: {
             output,
             item.date,
             next,
-            Date.now() - started,
+            elapsed(),
             limits.quotaBytes,
             state.controller.signal,
           );
@@ -304,9 +308,14 @@ export async function performDateBatch(options: {
             );
           } else {
             item.status = "failed";
-            batch.completed++;
             batch.failed++;
-            persist();
+            // End this worker and release its slot. Only explicit resume retries
+            // this date; the unexecuted suffix stays pending in durable storage.
+            db.query(
+              "UPDATE query_runs SET status='paused',batch=?2,error=?3,elapsed_ms=?4,finished_at=NULL WHERE id=?1",
+              [id, batch, item.error, elapsed()],
+            );
+            return;
           }
         } finally {
           clearTimeout(timer);

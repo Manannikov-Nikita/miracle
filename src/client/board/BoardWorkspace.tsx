@@ -41,6 +41,7 @@ import { api, waitForRun } from "../api";
 import { useProjectSync } from "../agents/ProjectSync";
 import { Select } from "../components/Select";
 import { ErrorBox } from "../components/UI";
+import DateBatchProgress from "../components/DateBatchProgress";
 import ArtifactNode, {
   BoardActions,
   type ArtifactFlowNode,
@@ -76,6 +77,13 @@ import {
 import { AlignmentGuides } from "./AlignmentGuides";
 import { AlignmentToolbar } from "./AlignmentToolbar";
 import { snapResizedNode, type ResizeSides } from "./resize-snapping";
+import { preserveResizeAspect } from "./resize-aspect";
+import {
+  copyBoardSelection,
+  nativeBoardClipboardTarget,
+  pasteBoardFragment,
+  readBoardClipboard,
+} from "./clipboard";
 import "./board.css";
 export { createResultNode } from "./model";
 export interface BoardWorkspaceProps {
@@ -89,6 +97,38 @@ const nodeTypes = { artifact: ArtifactNode, "edge-anchor": () => null };
 const edgeTypes = { board: BoardEdgeView };
 // Documents store explicit sizes, while transient React Flow measurements are not persisted.
 const boardFitOptions = { padding: 0.15, includeHiddenNodes: true };
+type PendingBoardRefresh = {
+  runId: string;
+  boardId: string;
+  nodeId: string;
+  title: string;
+  sourceRevision: number;
+  resultSetId?: string;
+};
+const refreshStorageKey = (workspaceId: string) =>
+  `miracle:board-refreshes:${workspaceId}`;
+function readPendingRefreshes(workspaceId: string): PendingBoardRefresh[] {
+  try {
+    const value = JSON.parse(
+      localStorage.getItem(refreshStorageKey(workspaceId)) || "[]",
+    );
+    return Array.isArray(value)
+      ? value.filter(
+          (entry) =>
+            entry &&
+            [entry.runId, entry.boardId, entry.nodeId, entry.title].every(
+              (part) => typeof part === "string",
+            ) &&
+            Number.isInteger(entry.sourceRevision) &&
+            entry.sourceRevision >= 0 &&
+            (entry.resultSetId === undefined ||
+              typeof entry.resultSetId === "string"),
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
 function Workspace({
   workspaceId,
   incomingResult,
@@ -156,6 +196,19 @@ function Workspace({
   const [guides, setGuides] = useState<AlignmentGuide[]>([]);
   const movingIds = useRef<ReadonlySet<string> | null>(null);
   const altPressed = useRef(false);
+  const shiftPressed = useRef(false);
+  const duplicateDrag = useRef<{
+    boardId: string;
+    ids: Map<string, string>;
+    edgeIds: Set<string>;
+    cancelled: boolean;
+  } | null>(null);
+  const [copyDragging, setCopyDragging] = useState(false);
+  const lastPaste = useRef<{
+    copyId: string;
+    boardId: string;
+    nextIndex: number;
+  } | null>(null);
   const snapCancelled = useRef(false);
   const [inspecting, setInspecting] = useState(false);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
@@ -168,6 +221,22 @@ function Workspace({
   }, [editingEdge, selectedEdge]);
   const [metadata, setMetadata] = useState<Record<string, ResultSet>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [pendingRefreshes, setPendingRefreshes] = useState(() =>
+    readPendingRefreshes(workspaceId),
+  );
+  const pendingRefreshesRef = useRef(pendingRefreshes);
+  const [refreshRuns, setRefreshRuns] = useState<Record<string, QueryRun>>({});
+  const [refreshErrors, setRefreshErrors] = useState<Record<string, string>>(
+    {},
+  );
+  const [refreshActions, setRefreshActions] = useState<
+    Record<string, "resume" | "cancel">
+  >({});
+  const refreshLocks = useRef(new Set<string>());
+  const refreshStarts = useRef(new Set<string>());
+  const refreshPollers = useRef(new Map<string, AbortController>());
+  const conflictRef = useRef(store.conflict);
+  conflictRef.current = store.conflict;
   const [dialog, setDialog] = useState<
     "new" | "rename" | "delete" | "copy" | null
   >(null);
@@ -183,8 +252,11 @@ function Workspace({
     boardId: string;
     id: string;
     sides: ResizeSides;
+    start: ResizeParams;
     raw: ResizeParams;
     moved: boolean;
+    canPreserveAspect: boolean;
+    proportional: boolean;
   } | null>(null);
   const editableRef = useRef(editable);
   editableRef.current = editable;
@@ -192,7 +264,23 @@ function Workspace({
     (id: string, sides: ResizeSides, raw: ResizeParams) => {
       const current = store.current.current;
       if (!editableRef.current || !current) return;
-      resizing.current = { boardId: current.id, id, sides, raw, moved: false };
+      const node = current.document.nodes.find((item) => item.id === id);
+      const corner =
+        Boolean(sides.left) !== Boolean(sides.right) &&
+        Boolean(sides.top) !== Boolean(sides.bottom);
+      resizing.current = {
+        boardId: current.id,
+        id,
+        sides,
+        start: { ...raw },
+        raw,
+        moved: false,
+        canPreserveAspect:
+          corner &&
+          node?.data.kind === "result" &&
+          (node.data.view === "chart" || node.data.view === "custom"),
+        proportional: false,
+      };
       gesture.current = current.document;
       movingIds.current = null;
       snapCancelled.current = false;
@@ -212,11 +300,39 @@ function Workspace({
         return;
       active.raw = raw;
       active.moved ||= moved;
+      // Latch the modifier for each actual movement, not mouseup: releasing
+      // Shift just before the pointer must not undo the displayed proportion.
+      if (moved)
+        active.proportional = active.canPreserveAspect && shiftPressed.current;
       // onResizeEnd precedes XYFlow's final dimensions change. Keep the raw
       // rectangle until onNodesChange consumes it, so release cannot revert it.
     },
     [store.current],
   );
+  const cancelDuplicateDrag = useCallback(() => {
+    const active = duplicateDrag.current;
+    const current = store.current.current;
+    if (!active || active.cancelled || current?.id !== active.boardId) return;
+    // XYFlow still owns the pointer gesture and may emit more changes after
+    // Escape/blur. Keep the cancelled mapping until its final event or restart.
+    active.cancelled = true;
+    const copiedIds = new Set(active.ids.values());
+    change(
+      {
+        ...current.document,
+        nodes: current.document.nodes.filter((node) => !copiedIds.has(node.id)),
+        edges: current.document.edges.filter(
+          (edge) => !active.edgeIds.has(edge.id),
+        ),
+      },
+      false,
+    );
+    selectNodes(new Set(active.ids.keys()));
+    setSelected([...active.ids.keys()][0] ?? null);
+    gesture.current = null;
+    movingIds.current = null;
+    setCopyDragging(false);
+  }, [change, store.current]);
   const processing = useRef(false);
   const controllers = useRef(new Set<AbortController>());
   const mounted = useRef(true);
@@ -225,11 +341,14 @@ function Workspace({
   useEffect(() => {
     const modifier = (event: MouseEvent | PointerEvent | KeyboardEvent) => {
       altPressed.current = event.altKey;
+      shiftPressed.current = event.shiftKey;
       if (event.altKey) setGuides([]);
     };
     const cancel = () => {
       altPressed.current = false;
+      shiftPressed.current = false;
       snapCancelled.current = true;
+      cancelDuplicateDrag();
       setGuides([]);
     };
     const keyDown = (event: KeyboardEvent) => {
@@ -254,7 +373,7 @@ function Workspace({
       window.removeEventListener("pointercancel", cancel, true);
       window.removeEventListener("blur", cancel);
     };
-  }, []);
+  }, [cancelDuplicateDrag]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -269,6 +388,8 @@ function Workspace({
     gesture.current = null;
     resizing.current = null;
     movingIds.current = null;
+    duplicateDrag.current = null;
+    setCopyDragging(false);
     snapCancelled.current = false;
     setInspecting(false);
     setSelectedEdge(null);
@@ -360,15 +481,186 @@ function Workspace({
     },
     [change, selected],
   );
+  function updatePendingRefreshes(
+    update: (current: PendingBoardRefresh[]) => PendingBoardRefresh[],
+  ) {
+    // Merge with current storage so another browser tab's pending runs are retained.
+    let current = readPendingRefreshes(workspaceId);
+    for (const entry of pendingRefreshesRef.current)
+      if (!current.some((other) => other.runId === entry.runId))
+        current.push(entry);
+    const next = update(current);
+    pendingRefreshesRef.current = next;
+    try {
+      localStorage.setItem(
+        refreshStorageKey(workspaceId),
+        JSON.stringify(next),
+      );
+    } catch {
+      notify(
+        "Не удалось сохранить состояние обновления в браузере. Продолжите серию до закрытия страницы.",
+        "error",
+      );
+    }
+    if (mounted.current) setPendingRefreshes(next);
+  }
+  function forgetRefresh(runId: string) {
+    updatePendingRefreshes((items) =>
+      items.filter((item) => item.runId !== runId),
+    );
+  }
+  async function trackRefresh(pending: PendingBoardRefresh) {
+    if (!mounted.current || refreshPollers.current.has(pending.runId)) return;
+    const controller = new AbortController();
+    refreshPollers.current.set(pending.runId, controller);
+    controllers.current.add(controller);
+    setBusy((value) => ({ ...value, [pending.nodeId]: true }));
+    setRefreshErrors((value) => ({ ...value, [pending.runId]: "" }));
+    try {
+      const done = await waitForRun(
+        pending.runId,
+        (run) => {
+          if (mounted.current && !controller.signal.aborted)
+            setRefreshRuns((value) => ({ ...value, [pending.runId]: run }));
+        },
+        controller.signal,
+      );
+      if (
+        !mounted.current ||
+        controller.signal.aborted ||
+        done.status === "paused"
+      )
+        return;
+      if (done.status === "completed" && done.resultSetId) {
+        const latest = store.current.current;
+        // Keep the link until this board is opened again, or its conflict is resolved.
+        if (
+          latest?.id !== pending.boardId ||
+          !editableRef.current ||
+          conflictRef.current
+        )
+          return;
+        const node = latest.document.nodes.find(
+          (item) => item.id === pending.nodeId,
+        );
+        if (
+          node &&
+          (node.data.sourceRevision ?? 0) === pending.sourceRevision &&
+          node.data.resultSetId === pending.resultSetId
+        ) {
+          change(
+            applyRefresh(
+              latest.document,
+              pending.nodeId,
+              pending.sourceRevision,
+              done.resultSetId,
+            ),
+          );
+          notify("Снимок обновлён.", "success");
+        } else if (node?.data.resultSetId !== done.resultSetId) {
+          notify("Источник изменился; поздний результат не применён.", "info");
+        }
+      } else if (done.status !== "cancelled") {
+        notify(
+          done.error || "Обновление не завершено. Предыдущий снимок сохранён.",
+          "error",
+        );
+      }
+      forgetRefresh(pending.runId);
+    } catch (error) {
+      if (!controller.signal.aborted && mounted.current)
+        setRefreshErrors((value) => ({
+          ...value,
+          [pending.runId]: (error as Error).message,
+        }));
+    } finally {
+      controllers.current.delete(controller);
+      if (refreshPollers.current.get(pending.runId) === controller)
+        refreshPollers.current.delete(pending.runId);
+      if (mounted.current)
+        setBusy((value) => ({ ...value, [pending.nodeId]: false }));
+    }
+  }
+  useEffect(() => {
+    if (!board || !editable || store.conflict || store.loading) return;
+    for (const pending of pendingRefreshes) {
+      const run = refreshRuns[pending.runId];
+      if (
+        pending.boardId === board.id &&
+        !refreshErrors[pending.runId] &&
+        (!run || ["running", "cancelling", "completed"].includes(run.status))
+      )
+        void trackRefresh(pending);
+    }
+  }, [
+    board?.id,
+    editable,
+    store.conflict,
+    store.loading,
+    pendingRefreshes,
+    refreshRuns,
+    refreshErrors,
+  ]);
+  async function resolveRefresh(
+    pending: PendingBoardRefresh,
+    action: "resume" | "cancel",
+  ) {
+    if (refreshLocks.current.has(pending.runId)) return;
+    refreshLocks.current.add(pending.runId);
+    setRefreshActions((value) => ({ ...value, [pending.runId]: action }));
+    setRefreshErrors((value) => ({ ...value, [pending.runId]: "" }));
+    try {
+      const run = await api<QueryRun>(
+        `/api/query-runs/${pending.runId}/${action}`,
+        { method: "POST" },
+      );
+      if (!mounted.current) return;
+      setRefreshRuns((value) => ({ ...value, [pending.runId]: run }));
+      await trackRefresh(pending);
+    } catch (error) {
+      if (mounted.current)
+        setRefreshErrors((value) => ({
+          ...value,
+          [pending.runId]: (error as Error).message,
+        }));
+      // An accepted request may have lost its response or another tab may have resumed it.
+      try {
+        const current = await api<QueryRun>(`/api/query-runs/${pending.runId}`);
+        if (mounted.current && current.status !== "paused") {
+          setRefreshRuns((value) => ({ ...value, [pending.runId]: current }));
+          await trackRefresh(pending);
+        }
+      } catch {}
+    } finally {
+      refreshLocks.current.delete(pending.runId);
+      if (mounted.current)
+        setRefreshActions((value) => {
+          const next = { ...value };
+          delete next[pending.runId];
+          return next;
+        });
+    }
+  }
   const refresh = useCallback(
     async (id: string) => {
       const current = store.current.current;
       const node = current?.document.nodes.find((n) => n.id === id);
-      if (!current || !node || !editable || busy[id] || store.conflict) return;
+      if (
+        !current ||
+        !node ||
+        !editable ||
+        busy[id] ||
+        store.conflict ||
+        refreshStarts.current.has(`${current.id}:${id}`) ||
+        pendingRefreshesRef.current.some(
+          (pending) => pending.boardId === current.id && pending.nodeId === id,
+        )
+      )
+        return;
       const sourceRevision = node.data.sourceRevision ?? 0;
       const boardId = current.id;
-      const controller = new AbortController();
-      controllers.current.add(controller);
+      const lock = `${boardId}:${id}`;
+      refreshStarts.current.add(lock);
       setBusy((value) => ({ ...value, [id]: true }));
       try {
         await store.save();
@@ -386,32 +678,22 @@ function Workspace({
           {
             method: "POST",
             body: JSON.stringify({ sourceRevision }),
-            signal: controller.signal,
           },
         );
-        const done = await waitForRun(run.id, undefined, controller.signal);
-        if (done.status !== "completed" || !done.resultSetId)
-          throw new Error(
-            done.error ||
-              "Обновление не завершено. Предыдущий снимок сохранён.",
-          );
-        const latest = store.current.current;
-        const latestNode = latest?.document.nodes.find((n) => n.id === id);
-        if (
-          latest?.id === boardId &&
-          latestNode &&
-          (latestNode.data.sourceRevision ?? 0) === sourceRevision
-        ) {
-          change(
-            applyRefresh(latest.document, id, sourceRevision, done.resultSetId),
-          );
-          notify("Снимок обновлён.", "success");
-        } else
-          notify("Источник изменился; поздний результат не применён.", "info");
+        const pending = {
+          runId: run.id,
+          boardId,
+          nodeId: id,
+          title: node.data.title,
+          sourceRevision,
+          resultSetId: node.data.resultSetId,
+        };
+        updatePendingRefreshes((items) => [...items, pending]);
+        await trackRefresh(pending);
       } catch (e) {
-        if (!controller.signal.aborted) notify((e as Error).message, "error");
+        if (mounted.current) notify((e as Error).message, "error");
       } finally {
-        controllers.current.delete(controller);
+        refreshStarts.current.delete(lock);
         if (mounted.current) setBusy((value) => ({ ...value, [id]: false }));
       }
     },
@@ -443,7 +725,7 @@ function Workspace({
   };
   const onNodesChange = (incoming: NodeChange<BoardCanvasNode>[]) => {
     const current = store.current.current;
-    if (!current) return;
+    if (!current || current.id !== board?.id) return;
     const nodeIds = new Set(current.document.nodes.map((node) => node.id));
     const changes = incoming.filter(
       (item) =>
@@ -465,7 +747,7 @@ function Workspace({
       if (ids.size) setSelectedEdge(null);
     }
     if (!editable) return;
-    const meaningful = changes.filter(
+    let meaningful = changes.filter(
       (c) =>
         c.type !== "select" &&
         !(c.type === "dimensions" && c.resizing === undefined),
@@ -482,14 +764,87 @@ function Workspace({
         (c.type === "dimensions" && c.resizing === false),
     );
     if (ongoing && !gesture.current) gesture.current = current.document;
-    const dragging = meaningful.flatMap((c) =>
+    let dragging = meaningful.flatMap((c) =>
       c.type === "position" && c.dragging === true ? [c.id] : [],
     );
-    if (dragging.length) {
+    const hasDragMovement = meaningful.some((item) => {
+      if (item.type !== "position" || !item.dragging || !item.position)
+        return false;
+      const node = current.document.nodes.find((node) => node.id === item.id);
+      return (
+        node &&
+        (node.position.x !== item.position.x ||
+          node.position.y !== item.position.y)
+      );
+    });
+    let workingDocument = current.document;
+    if (
+      !movingIds.current &&
+      !duplicateDrag.current &&
+      !resizing.current &&
+      altPressed.current &&
+      dragging.length &&
+      hasDragMovement
+    ) {
+      // XYFlow keeps the original drag IDs for the complete gesture. Redirect
+      // their position changes to copies rather than replacing original IDs.
+      const ids = new Map(dragging.map((id) => [id, crypto.randomUUID()]));
+      const copies = current.document.nodes
+        .filter((node) => ids.has(node.id))
+        .map((node) => ({ ...structuredClone(node), id: ids.get(node.id)! }));
+      const edges = current.document.edges
+        .filter(
+          (edge) =>
+            edge.source &&
+            edge.target &&
+            ids.has(edge.source) &&
+            ids.has(edge.target),
+        )
+        .map((edge) => ({
+          ...structuredClone(edge),
+          id: crypto.randomUUID(),
+          source: ids.get(edge.source!)!,
+          target: ids.get(edge.target!)!,
+        }));
+      duplicateDrag.current = {
+        boardId: current.id,
+        ids,
+        edgeIds: new Set(edges.map((edge) => edge.id)),
+        cancelled: false,
+      };
+      workingDocument = {
+        ...current.document,
+        nodes: [...current.document.nodes, ...copies],
+        edges: [...current.document.edges, ...edges],
+      };
+      selectNodes(new Set(ids.values()));
+      setSelected([...ids.values()][0] ?? null);
+      setSelectedEdge(null);
+      setCopyDragging(true);
+    }
+    const duplication = duplicateDrag.current;
+    if (duplication?.boardId === current.id) {
+      if (duplication.cancelled) {
+        meaningful = meaningful.filter(
+          (item) => item.type !== "position" || !duplication.ids.has(item.id),
+        );
+        gesture.current = null;
+        if (completed) duplicateDrag.current = null;
+        if (!meaningful.length) return;
+      } else {
+        meaningful = meaningful.map((item) =>
+          item.type === "position" && duplication.ids.has(item.id)
+            ? { ...item, id: duplication.ids.get(item.id)! }
+            : item,
+        );
+        dragging = dragging.map((id) => duplication.ids.get(id) ?? id);
+      }
+    }
+    if (dragging.length && (hasDragMovement || movingIds.current)) {
       if (!movingIds.current) snapCancelled.current = false;
       movingIds.current = new Set(dragging);
     }
-    let next = applyBoardNodeChanges(meaningful, current.document.nodes);
+    let next = applyBoardNodeChanges(meaningful, workingDocument.nodes);
     const activeResize = resizing.current;
     const resizeChanges =
       activeResize?.boardId === current.id &&
@@ -497,19 +852,30 @@ function Workspace({
         (c) => c.type === "dimensions" && c.id === activeResize.id,
       );
     if (activeResize && resizeChanges && activeResize.moved) {
+      const rectangle = activeResize.proportional
+        ? preserveResizeAspect(
+            activeResize.raw,
+            activeResize.start,
+            activeResize.sides,
+          )
+        : activeResize.raw;
       // Raw callbacks contain the full rectangle; individual XYFlow changes
       // omit unchanged coordinates and final changes omit setAttributes.
       next = next.map((node) =>
         node.id === activeResize.id
           ? {
               ...node,
-              position: { x: activeResize.raw.x, y: activeResize.raw.y },
-              width: activeResize.raw.width,
-              height: activeResize.raw.height,
+              position: { x: rectangle.x, y: rectangle.y },
+              width: rectangle.width,
+              height: rectangle.height,
             }
           : node,
       );
-      if (!altPressed.current && !snapCancelled.current) {
+      if (
+        !activeResize.proportional &&
+        !altPressed.current &&
+        !snapCancelled.current
+      ) {
         const snapped = snapResizedNode(
           next,
           activeResize.id,
@@ -537,9 +903,9 @@ function Workspace({
       changes.filter((c) => c.type === "remove").map((c) => c.id),
     );
     const document = {
-      ...current.document,
+      ...workingDocument,
       nodes: next,
-      edges: current.document.edges.filter(
+      edges: workingDocument.edges.filter(
         (e) =>
           (!e.source || !removed.has(e.source)) &&
           (!e.target || !removed.has(e.target)),
@@ -552,6 +918,10 @@ function Workspace({
       gesture.current = null;
     }
     if (completed && movingIds.current) movingIds.current = null;
+    if (completed && duplicateDrag.current) {
+      duplicateDrag.current = null;
+      setCopyDragging(false);
+    }
     if (completed && resizeChanges) resizing.current = null;
   };
   const alignSelection = (action: AlignmentAction) => {
@@ -718,12 +1088,91 @@ function Workspace({
         ),
       [],
     ),
-    busy,
+    busy: {
+      ...busy,
+      ...Object.fromEntries(
+        pendingRefreshes
+          .filter((pending) => pending.boardId === board?.id)
+          .map((pending) => [pending.nodeId, true]),
+      ),
+    },
   };
   return (
     <section
       ref={workspaceRef}
       tabIndex={-1}
+      onCopy={(event) => {
+        const current = store.current.current;
+        if (
+          event.defaultPrevented ||
+          !current ||
+          nativeBoardClipboardTarget(event.target)
+        )
+          return;
+        try {
+          if (
+            copyBoardSelection(
+              event.clipboardData,
+              current,
+              workspaceId,
+              selectionRef.current,
+            )
+          )
+            event.preventDefault();
+        } catch (error) {
+          notify((error as Error).message, "error");
+        }
+      }}
+      onPaste={(event) => {
+        const current = store.current.current;
+        if (
+          event.defaultPrevented ||
+          !current ||
+          !editable ||
+          store.loading ||
+          store.conflict ||
+          gesture.current ||
+          nativeBoardClipboardTarget(event.target)
+        )
+          return;
+        const fragment = readBoardClipboard(event.clipboardData);
+        if (!fragment) return;
+        event.preventDefault();
+        if (fragment.workspaceId !== workspaceId) {
+          notify("Нельзя вставить блоки из другого проекта.", "error");
+          return;
+        }
+        const canvas = workspaceRef.current
+          ?.querySelector(".board-canvas")
+          ?.getBoundingClientRect();
+        if (!canvas) return;
+        const center = flow.screenToFlowPosition({
+          x: canvas.left + canvas.width / 2,
+          y: canvas.top + canvas.height / 2,
+        });
+        const previous = lastPaste.current;
+        const index =
+          previous?.copyId === fragment.copyId &&
+          previous.boardId === current.id
+            ? previous.nextIndex
+            : 0;
+        try {
+          const pasted = pasteBoardFragment(fragment, current, center, index);
+          change(pasted.document);
+          selectNodes(pasted.ids);
+          setSelected([...pasted.ids][0] ?? null);
+          setSelectedEdge(null);
+          setInspecting(false);
+          lastPaste.current = {
+            copyId: fragment.copyId,
+            boardId: current.id,
+            nextIndex: pasted.nextIndex,
+          };
+          workspaceRef.current?.focus({ preventScroll: true });
+        } catch (error) {
+          notify((error as Error).message, "error");
+        }
+      }}
       onKeyDown={(e) => {
         if (
           (e.target as HTMLElement).closest(
@@ -740,7 +1189,7 @@ function Workspace({
           store.redo();
         }
       }}
-      className={`board-workspace${hasSelection ? " board-has-selection" : ""}`}
+      className={`board-workspace${hasSelection ? " board-has-selection" : ""}${copyDragging ? " board-copy-dragging" : ""}`}
       aria-label="Аналитическая доска"
     >
       <div className="board-header">
@@ -906,6 +1355,49 @@ function Workspace({
           )}
         </div>
       )}
+      {pendingRefreshes.some(
+        (pending) =>
+          pending.boardId === board?.id &&
+          (refreshRuns[pending.runId]?.status === "paused" ||
+            refreshErrors[pending.runId]),
+      ) && (
+        <div
+          className="board-refresh-notices"
+          aria-label="Приостановленные обновления доски"
+        >
+          {pendingRefreshes
+            .filter(
+              (pending) =>
+                pending.boardId === board?.id &&
+                (refreshRuns[pending.runId]?.status === "paused" ||
+                  refreshErrors[pending.runId]),
+            )
+            .map((pending) => (
+              <section
+                key={pending.runId}
+                aria-label={`Обновление: ${pending.title}`}
+              >
+                <strong>{pending.title}</strong>
+                {refreshRuns[pending.runId]?.status === "paused" ? (
+                  <DateBatchProgress
+                    run={refreshRuns[pending.runId]}
+                    onResume={() => void resolveRefresh(pending, "resume")}
+                    onCancel={() => void resolveRefresh(pending, "cancel")}
+                    action={refreshActions[pending.runId]}
+                    actionError={refreshErrors[pending.runId]}
+                  />
+                ) : (
+                  <>
+                    <p role="alert">{refreshErrors[pending.runId]}</p>
+                    <button onClick={() => void trackRefresh(pending)}>
+                      Проверить состояние
+                    </button>
+                  </>
+                )}
+              </section>
+            ))}
+        </div>
+      )}
       <div
         className="board-canvas"
         onDragOver={(e) => {
@@ -996,7 +1488,12 @@ function Workspace({
                 const selection = [...changes]
                   .reverse()
                   .find((item) => item.type === "select" && item.selected);
-                if (selection?.type === "select") {
+                // Marquee selection also reports links between selected nodes.
+                // Keep that node group; an explicit edge click selects it below.
+                if (
+                  selection?.type === "select" &&
+                  !selectionRef.current.size
+                ) {
                   setSelectedEdge(selection.id);
                   setSelected(null);
                   selectNodes(new Set());
@@ -1037,14 +1534,25 @@ function Workspace({
                 setSelectedEdge(null);
               }}
               onNodeDragStart={() => {
+                duplicateDrag.current = null;
+                movingIds.current = null;
+                snapCancelled.current = false;
+              }}
+              onSelectionDragStart={() => {
+                duplicateDrag.current = null;
+                movingIds.current = null;
                 snapCancelled.current = false;
               }}
               onNodeDragStop={() => {
                 movingIds.current = null;
+                duplicateDrag.current = null;
+                setCopyDragging(false);
                 setGuides([]);
               }}
               onSelectionDragStop={() => {
                 movingIds.current = null;
+                duplicateDrag.current = null;
+                setCopyDragging(false);
                 setGuides([]);
               }}
               onEdgeClick={(_, edge) => {
@@ -1159,7 +1667,7 @@ function Workspace({
         </span>
         <span>
           Shift + клик: выбрать несколько · рамка: фон · панорама: пробел + фон
-          · Alt: без привязки
+          · Option / Alt + перетаскивание: копия
         </span>
       </footer>
       <Dialog.Root
@@ -1303,7 +1811,7 @@ function Workspace({
 export default function BoardWorkspace(props: BoardWorkspaceProps) {
   return (
     <ReactFlowProvider>
-      <Workspace {...props} />
+      <Workspace key={props.workspaceId} {...props} />
     </ReactFlowProvider>
   );
 }

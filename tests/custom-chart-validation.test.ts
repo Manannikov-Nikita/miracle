@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { boardDocumentSchema } from "../src/server/validation";
 
 const spec = {
@@ -72,6 +72,27 @@ describe("custom chart persisted contract", () => {
         }),
       ).success,
     ).toBe(false);
+  });
+  it("enforces the UTF-8 boundary without Node globals when pasting a custom chart", () => {
+    const customChart = {
+      ...spec,
+      html: "🙂".repeat(32768),
+      css: "🙂".repeat(32768),
+      javascript: "",
+    };
+    vi.stubGlobal("Buffer", undefined);
+    try {
+      expect(
+        boardDocumentSchema.safeParse(makeBoard({ customChart })).success,
+      ).toBe(true);
+      expect(
+        boardDocumentSchema.safeParse(
+          makeBoard({ customChart: { ...customChart, javascript: "x" } }),
+        ).success,
+      ).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
   it("enforces description and individual source lengths", () => {
     for (const customChart of [

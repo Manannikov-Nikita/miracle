@@ -10,6 +10,7 @@ import TableView from "./TableView";
 import ChartTypePicker from "./ChartTypePicker";
 import type { CustomChartSpec } from "../../shared/custom-charts";
 import CustomChart from "./CustomChart";
+import ChartColors from "./ChartColors";
 
 function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   const [rows, setRows] = useState<Cell[][] | null>(null);
@@ -191,6 +192,60 @@ export function ChartSettings({
       <details className="board-chart-appearance">
         <summary>Оформление</summary>
         <div className="board-chart-appearance-fields">
+          <div className="board-chart-visibility">
+            <label>
+              <input
+                type="checkbox"
+                aria-label="Показывать ось X"
+                checked={spec.showXAxis ?? true}
+                onChange={(event) => set({ showXAxis: event.target.checked })}
+              />
+              Ось X
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                aria-label="Показывать ось Y"
+                checked={spec.showYAxis ?? true}
+                onChange={(event) => set({ showYAxis: event.target.checked })}
+              />
+              Ось Y
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={spec.showGrid ?? true}
+                onChange={(event) => set({ showGrid: event.target.checked })}
+              />
+              Сетка
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={spec.showLabels ?? false}
+                onChange={(event) => set({ showLabels: event.target.checked })}
+              />
+              Подписи значений
+            </label>
+          </div>
+          {spec.showLabels && spec.kind === "bar" && (
+            <label>
+              Положение подписей
+              <Select
+                aria-label="Положение подписей"
+                disabled={disabled}
+                value={spec.labelPosition ?? "auto"}
+                onValueChange={(value) =>
+                  set({ labelPosition: value as ChartSpec["labelPosition"] })
+                }
+                options={[
+                  { value: "auto", label: "Авто" },
+                  { value: "outside", label: "Снаружи" },
+                  { value: "inside", label: "Внутри" },
+                ]}
+              />
+            </label>
+          )}
           <label>
             Числа
             <Select
@@ -266,6 +321,13 @@ export function ChartSettings({
               </label>
             </>
           )}
+          <ChartColors
+            key={result.id}
+            result={result}
+            spec={spec}
+            disabled={disabled}
+            onChange={set}
+          />
         </div>
       </details>
       <p>До 5 000 точек. Агрегация и округление задаются в SQL.</p>

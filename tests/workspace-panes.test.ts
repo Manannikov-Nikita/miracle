@@ -109,9 +109,7 @@ describe("independent workspace panes on desktop", () => {
     return host.querySelector<HTMLElement>(`[data-testid="${name}-content"]`)!;
   }
   function expectPanes(sql: boolean, board: boolean) {
-    expect(button("Редактор SQL").getAttribute("aria-pressed")).toBe(
-      String(sql),
-    );
+    expect(button("Редактор").getAttribute("aria-pressed")).toBe(String(sql));
     expect(button("Доска").getAttribute("aria-pressed")).toBe(String(board));
     expect(pane("sql").closest(".pane-host")?.hasAttribute("inert")).toBe(!sql);
     expect(pane("board").closest(".pane-host")?.hasAttribute("inert")).toBe(
@@ -145,7 +143,7 @@ describe("independent workspace panes on desktop", () => {
     expectPanes(false, true);
     const sqlContent = pane("sql");
     const boardContent = pane("board");
-    await click("Редактор SQL");
+    await click("Редактор");
     expectPanes(true, true);
 
     const input = host.querySelector<HTMLInputElement>(
@@ -158,11 +156,11 @@ describe("independent workspace panes on desktop", () => {
       )!.set!.call(input, "select 42");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await click("Редактор SQL");
+    await click("Редактор");
     expectPanes(false, true);
     await click("Доска");
     expectPanes(false, false);
-    await click("Редактор SQL");
+    await click("Редактор");
     expectPanes(true, false);
     await click("Доска");
     expectPanes(true, true);
@@ -202,7 +200,7 @@ describe("independent workspace panes on desktop", () => {
     await settle();
     expectPanes(false, false);
     expect(host.querySelector('[aria-label="Test explorer"]')).toBe(explorer);
-    await click("Редактор SQL");
+    await click("Редактор");
     await click("Доска");
     await act(async () => collapse.click());
     await settle();

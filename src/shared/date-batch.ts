@@ -1,10 +1,13 @@
 import type { Engine } from "./types.js";
 
 export type DateGranularity = "day" | "week" | "month";
+export type WeekStartsOn = "monday" | "sunday";
 export interface DateRangeOptions {
   startDate: string;
   endDate: string;
   granularity: DateGranularity;
+  /** Omitted values retain the original Monday-based weekly execution. */
+  weekStartsOn?: WeekStartsOn;
   /** Additional attempts after the initial request. */
   retries: number;
 }
@@ -67,10 +70,19 @@ export function dateRangeDates(options: DateRangeOptions): string[] {
       `Число повторов должно быть целым от 0 до ${MAX_DATE_RETRIES}`,
     );
   if (
-    options.granularity === "week" &&
-    (start.getUTCDay() !== 1 || end.getUTCDay() !== 1)
+    options.weekStartsOn !== undefined &&
+    options.weekStartsOn !== "monday" &&
+    options.weekStartsOn !== "sunday"
   )
-    throw new Error("Для недель выберите понедельник в обеих датах");
+    throw new Error("Начало недели должно быть понедельником или воскресеньем");
+  const weekStart = options.weekStartsOn === "sunday" ? 0 : 1;
+  if (
+    options.granularity === "week" &&
+    (start.getUTCDay() !== weekStart || end.getUTCDay() !== weekStart)
+  )
+    throw new Error(
+      `Для недель выберите ${weekStart === 0 ? "воскресенье" : "понедельник"} в обеих датах`,
+    );
   if (
     options.granularity === "month" &&
     (start.getUTCDate() !== 1 || end.getUTCDate() !== 1)

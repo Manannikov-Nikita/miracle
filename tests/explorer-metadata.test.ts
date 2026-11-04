@@ -160,12 +160,12 @@ describe("schema explorer", () => {
         "SQLITE_IOERR: workspace metadata read failed",
       );
       expect(alert.querySelector(".error-title")?.textContent).toContain(
-        kind === "queries" ? "SQL-файлы" : "историю",
+        kind === "queries" ? "сохранённые запросы" : "историю",
       );
       await act(async () => alert.querySelector("button")!.click());
       expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(container.textContent).toContain(
-        kind === "queries" ? "Сохраните запрос" : "История начнётся",
+        kind === "queries" ? "ФАЙЛЫ ПРОЕКТА" : "История начнётся",
       );
     },
   );

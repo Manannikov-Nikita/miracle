@@ -2,9 +2,9 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { projectSchema } from "./project-schema.js";
+import { agentImagesSchema, projectSchema } from "./project-schema.js";
 const timestamp = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
-export const WORKSPACE_SCHEMA_VERSION = 4;
+export const WORKSPACE_SCHEMA_VERSION = 5;
 const jsonFields = new Set(["source", "document", "columns", "rows", "batch"]);
 /** One prepared-statement connection owns the workspace until close. */
 export class Database {
@@ -90,13 +90,26 @@ export function migrate(db: Database, initialize?: () => void) {
   if (version > WORKSPACE_SCHEMA_VERSION)
     throw new Error("Workspace schema is newer than this version of Miracle");
   if (version === WORKSPACE_SCHEMA_VERSION) return;
+  if (version === 4) {
+    db.transaction(() => {
+      db.sqlite.exec(`
+        ALTER TABLE agent_chats ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1));
+        ${agentImagesSchema}
+        PRAGMA user_version=5;
+      `);
+    });
+    return;
+  }
   if (version >= 1 && version <= 3) {
     db.transaction(() => {
       if (version === 1)
         db.sqlite.exec(
           "ALTER TABLE query_runs ADD COLUMN batch TEXT CHECK(batch IS NULL OR json_valid(batch));",
         );
-      if (version < 3) db.sqlite.exec("ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT;");
+      if (version < 3)
+        db.sqlite.exec(
+          "ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT;",
+        );
       db.sqlite.exec(projectSchema);
     });
     return;
@@ -126,10 +139,10 @@ export function migrate(db: Database, initialize?: () => void) {
 export function retention(db: Database) {
   db.transaction(() => {
     db.query(
-      "DELETE FROM result_sets WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') AND NOT EXISTS (SELECT 1 FROM board_result_refs b WHERE b.result_set_id=result_sets.id) AND NOT EXISTS (SELECT 1 FROM query_runs q WHERE q.result_set_id=result_sets.id AND q.status IN ('running','cancelling'))",
+      "DELETE FROM result_sets WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') AND NOT EXISTS (SELECT 1 FROM board_result_refs b WHERE b.result_set_id=result_sets.id) AND NOT EXISTS (SELECT 1 FROM query_runs q WHERE q.result_set_id=result_sets.id AND q.status IN ('running','cancelling','paused'))",
     );
     db.query(
-      "DELETE FROM query_runs WHERE started_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') AND status NOT IN ('running','cancelling')",
+      "DELETE FROM query_runs WHERE started_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') AND status NOT IN ('running','cancelling','paused')",
     );
   });
 }

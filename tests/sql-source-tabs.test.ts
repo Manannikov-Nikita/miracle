@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setImmediate as yieldIO } from "node:timers/promises";
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { EditorView } from "@codemirror/view";
 import SqlWorkspace, {
   type SqlSourceRequest,
 } from "../src/client/components/SqlWorkspace";
@@ -51,6 +52,10 @@ vi.mock(
 vi.mock("monaco-editor/features/wordOperations/register.js", () => ({}));
 vi.mock("monaco-editor/editor/editor.worker.js?worker", () => ({
   default: class {},
+}));
+
+vi.mock("../src/client/file-highlighting", () => ({
+  ensureFileLanguage: async () => {},
 }));
 
 const storage = "miracle:sql-tabs:source-tab-test";
@@ -175,10 +180,331 @@ describe("chart source SQL tabs", () => {
       ?.textContent;
   }
   function editor() {
-    return container.querySelector<HTMLTextAreaElement>(
-      '[aria-label="Test SQL editor"]',
+    return container.querySelector<HTMLElement>(
+      '[aria-label="Test SQL editor"], .cm-content',
     )!;
   }
+  function markdownView() {
+    const host = container.querySelector<HTMLElement>(".cm-editor");
+    return host ? EditorView.findFromDOM(host) : undefined;
+  }
+  function editorValue() {
+    return (
+      markdownView()?.state.doc.toString() ??
+      (editor() as HTMLTextAreaElement).value
+    );
+  }
+  it.each([
+    {},
+    { editor: 0, results: 0 },
+    { editor: 40 },
+    { editor: -5, results: 105 },
+  ])(
+    "recovers a visible SQL editor from an invalid saved panel layout %j",
+    async (invalid) => {
+      localStorage.setItem(
+        "miracle:editor-layout:source-tab-test",
+        JSON.stringify(invalid),
+      );
+      await render();
+      expect(
+        container.querySelector<HTMLElement>("#editor[data-panel]")?.style
+          .flexGrow,
+      ).toBe("55");
+      expect(
+        container.querySelector<HTMLElement>("#results[data-panel]")?.style
+          .flexGrow,
+      ).toBe("45");
+    },
+  );
+  const projectFile = (path: string, content = "# Notes") => ({
+    path,
+    name: path.split("/").pop()!,
+    content,
+    revision: "disk-v1",
+    size: content.length,
+    updatedAt: "2026-11-04T00:00:00Z",
+  });
+  async function openProjectFile(
+    path: string,
+    content?: string,
+    sync?: ProjectSync,
+  ) {
+    props = {
+      ...props,
+      fileToOpen: projectFile(path, content),
+      onFileConsumed: vi.fn(),
+    };
+    await act(async () =>
+      root.render(
+        sync
+          ? createElement(
+              ProjectSyncContext.Provider,
+              { value: sync },
+              createElement(SqlWorkspace, props),
+            )
+          : createElement(SqlWorkspace, props),
+      ),
+    );
+    await readyEditor();
+  }
+  it("opens text files without SQL actions or stale SQL agent targets and preserves dirty drafts on reopen", async () => {
+    const sync = new ProjectSync();
+    await openProjectFile("docs/notes.md", "# Notes", sync);
+    expect(activeTab()).toBe("notes.md");
+    expect(editorValue()).toBe("# Notes");
+    expect(container.querySelector(".md-preview-h1")?.textContent).toBe(
+      "Notes",
+    );
+    expect(
+      container.querySelector('[aria-label="Test SQL editor"]'),
+    ).toBeNull();
+    expect(container.querySelector(".run-button")).toBeNull();
+    expect(sync.context().editorDocumentId).toBeUndefined();
+    await editSql("# My unsaved notes");
+    await openProjectFile("docs/notes.md", "# External edit", sync);
+    expect(editorValue()).toBe("# My unsaved notes");
+    expect(tabs().filter((t) => t.textContent === "notes.md")).toHaveLength(1);
+    const docs = await (await fetch("/api/editor-documents")).json();
+    expect(
+      docs.some(
+        (d: { sql: string }) =>
+          d.sql.includes("Notes") || d.sql.includes("notes"),
+      ),
+    ).toBe(false);
+  });
+  it("writes SQL project files to disk without creating a saved query", async () => {
+    let saved: Record<string, unknown> | undefined;
+    let queryWrites = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (path, options) => {
+            if (
+              path === "/api/project/file?path=sql%2Freport.sql" &&
+              options.method === "PUT"
+            ) {
+              saved = JSON.parse(options.body as string);
+              return new Response(
+                JSON.stringify({
+                  ...projectFile("sql/report.sql", saved!.content as string),
+                  revision: "disk-v2",
+                }),
+              );
+            }
+            if (path.startsWith("/api/queries") && options.method)
+              queryWrites++;
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("sql/report.sql", "select 1");
+    expect(container.querySelector(".run-button")).not.toBeNull();
+    await editSql("select 2");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    expect(saved).toEqual({ content: "select 2", baseRevision: "disk-v1" });
+    expect(queryWrites).toBe(0);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+  it("retains text edits after a disk revision conflict", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (path, options) => {
+            if (
+              path.startsWith("/api/project/file?") &&
+              options.method === "PUT"
+            ) {
+              return new Response(
+                JSON.stringify({
+                  error: {
+                    code: "FILE_REVISION_CONFLICT",
+                    message: "Файл изменён на диске",
+                  },
+                }),
+                { status: 409 },
+              );
+            }
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("notes.md", "before");
+    await editSql("my edits");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    expect(editorValue()).toBe("my edits");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "диске",
+    );
+    expect(
+      localStorage.getItem("miracle:project-files:source-tab-test"),
+    ).toContain("my edits");
+  });
+  it("refreshes a clean SQL file on reopen while keeping one tab bound to the new revision", async () => {
+    let saved: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (path, options) => {
+            if (
+              path.startsWith("/api/project/file?") &&
+              options.method === "PUT"
+            ) {
+              saved = JSON.parse(options.body as string);
+              return new Response(
+                JSON.stringify({
+                  ...projectFile("query.sql", saved!.content as string),
+                  revision: "disk-v3",
+                }),
+              );
+            }
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("query.sql", "select 1");
+    props = {
+      ...props,
+      fileToOpen: {
+        ...projectFile("query.sql", "select 2"),
+        revision: "disk-v2",
+      },
+    };
+    await act(async () => root.render(createElement(SqlWorkspace, props)));
+    expect(editorValue()).toBe("select 2");
+    expect(tabs().filter((t) => t.textContent === "query.sql")).toHaveLength(1);
+    await editSql("select 3");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    expect(saved).toEqual({ content: "select 3", baseRevision: "disk-v2" });
+  });
+  it("keeps edits made during a file save and advances only the disk revision", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const writes: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (path, options) => {
+            if (
+              path.startsWith("/api/project/file?") &&
+              options.method === "PUT"
+            ) {
+              const body = JSON.parse(options.body as string);
+              writes.push(body);
+              if (writes.length === 1) await pending;
+              return new Response(
+                JSON.stringify({
+                  ...projectFile("notes.md", body.content),
+                  revision: `disk-v${writes.length + 1}`,
+                }),
+              );
+            }
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("notes.md", "old");
+    await editSql("first save");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    await editSql("newer draft");
+    await act(async () => release());
+    expect(editorValue()).toBe("newer draft");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    expect(writes).toEqual([
+      { content: "first save", baseRevision: "disk-v1" },
+      { content: "newer draft", baseRevision: "disk-v2" },
+    ]);
+  });
+  it("restores a SQL disk binding and dirty draft across a workspace remount", async () => {
+    let saved: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (path, options) => {
+            if (
+              path.startsWith("/api/project/file?") &&
+              options.method === "PUT"
+            ) {
+              saved = JSON.parse(options.body as string);
+              return new Response(
+                JSON.stringify({
+                  ...projectFile("query.sql", saved!.content as string),
+                  revision: "disk-v2",
+                }),
+              );
+            }
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("query.sql", "select 1");
+    await editSql("select my_draft");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    props = { ...props, fileToOpen: null };
+    await act(async () => root.render(createElement(SqlWorkspace, props)));
+    await readyEditor();
+    expect(activeTab()).toBe("query.sql");
+    expect(editorValue()).toBe("select my_draft");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    expect(saved).toEqual({
+      content: "select my_draft",
+      baseRevision: "disk-v1",
+    });
+  });
   it("persists the editor draft before publishing its saved query", async () => {
     let editorSqlAtQuerySave: string | undefined;
     const backend = editorApi(
@@ -300,7 +626,7 @@ describe("chart source SQL tabs", () => {
           new Event("submit", { bubbles: true, cancelable: true }),
         ),
     );
-    expect(editor().value).toBe("select agent_update");
+    expect(editorValue()).toBe("select agent_update");
     expect(savedQuery).toBeUndefined();
     await clickTab("other.sql");
     await act(async () => releaseFlush());
@@ -309,7 +635,7 @@ describe("chart source SQL tabs", () => {
       body: { sql: "select agent_update", baseRevision: 2 },
     });
     expect(activeTab()).toBe("other.sql");
-    expect(editor().value).toBe("select 2");
+    expect(editorValue()).toBe("select 2");
     expect(props.onQueriesChanged).toHaveBeenCalledOnce();
   });
   function context(label: string) {
@@ -324,11 +650,18 @@ describe("chart source SQL tabs", () => {
   }
   async function editSql(value: string) {
     await act(async () => {
-      Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )!.set!.call(editor(), value);
-      editor().dispatchEvent(new Event("input", { bubbles: true }));
+      const markdown = markdownView();
+      if (markdown) {
+        markdown.dispatch({
+          changes: { from: 0, to: markdown.state.doc.length, insert: value },
+        });
+      } else {
+        Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value",
+        )!.set!.call(editor(), value);
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      }
     });
   }
   function seed(name: string, saved?: { queryId: string; revision: number }) {
@@ -358,7 +691,7 @@ describe("chart source SQL tabs", () => {
     props.connections = [];
     props.activeConnectionId = "";
     await render();
-    expect(editor().value).toBe("");
+    expect(editorValue()).toBe("");
     expect(tabs()).toHaveLength(1);
     expect(container.textContent).toContain("Подключите первый источник");
     const connect = [...container.querySelectorAll("button")].find((button) =>
@@ -379,7 +712,7 @@ describe("chart source SQL tabs", () => {
     );
     expect(add).not.toBeNull();
     await act(async () => add!.click());
-    expect(editor().value).toBe("");
+    expect(editorValue()).toBe("");
     expect(tabs()).toHaveLength(2);
   });
 
@@ -392,12 +725,12 @@ describe("chart source SQL tabs", () => {
     await act(async () => root.unmount());
     root = createRoot(container);
     await render();
-    expect(editor().value).toBe("select preserved_local_edit");
+    expect(editorValue()).toBe("select preserved_local_edit");
     await act(async () => root.unmount());
     root = createRoot(container);
     props.workspaceId = "different-workspace";
     await render();
-    expect(editor().value).toBe("");
+    expect(editorValue()).toBe("");
     expect(tabs()).toHaveLength(1);
     expect(
       localStorage.getItem("miracle:sql-recovery:source-tab-test"),
@@ -407,7 +740,7 @@ describe("chart source SQL tabs", () => {
   it("opens the literal chart title and its pinned SQL and query context", async () => {
     await render({ source, name: "Выручка / месяц" });
     expect(activeTab()).toBe("Выручка / месяц");
-    expect(editor().value).toBe(source.sql);
+    expect(editorValue()).toBe(source.sql);
     expect(context("Каталог запроса")).toBe("analytics");
     expect(context("Схема запроса")).toBe("finance");
     expect(props.onConnectionChange).toHaveBeenCalledWith("trino");
@@ -417,14 +750,14 @@ describe("chart source SQL tabs", () => {
   it("reactivates a chart tab after switching away and preserves edited SQL", async () => {
     await render({ source, name: "Выручка" });
     await editSql("select my_unsaved_edit");
-    expect(editor().value).toBe("select my_unsaved_edit");
+    expect(editorValue()).toBe("select my_unsaved_edit");
     await clickTab("query_1.sql");
     await render({
       source: { ...source, sql: "select changed_pinned_source" },
       name: "Выручка",
     });
     expect(activeTab()).toBe("Выручка");
-    expect(editor().value).toBe("select my_unsaved_edit");
+    expect(editorValue()).toBe("select my_unsaved_edit");
     expect(tabs()).toHaveLength(2);
   });
 
@@ -433,7 +766,7 @@ describe("chart source SQL tabs", () => {
     await render({ source, name: "Выручка" });
     expect(activeTab()).toBe("Выручка");
     expect(tabs()).toHaveLength(2);
-    expect(editor().value).toBe("select unsaved_draft");
+    expect(editorValue()).toBe("select unsaved_draft");
     expect(context("База запроса")).toBe("private_draft");
     expect(props.onConnectionChange).toHaveBeenLastCalledWith("clickhouse");
   });
@@ -444,7 +777,7 @@ describe("chart source SQL tabs", () => {
     expect(activeTab()).toBe("Выручка.sql");
     expect(tabs()).toHaveLength(3);
     expect(tabs().map((tab) => tab.textContent)).toContain("Выручка");
-    expect(editor().value).toBe(source.sql);
+    expect(editorValue()).toBe(source.sql);
   });
 
   it("reuses the fallback name for repeated empty chart titles", async () => {
@@ -457,14 +790,14 @@ describe("chart source SQL tabs", () => {
       name: "",
     });
     expect(activeTab()).toBe("source.sql");
-    expect(editor().value).toBe("select fallback_draft");
+    expect(editorValue()).toBe("select fallback_draft");
     expect(tabs()).toHaveLength(2);
   });
 
   it("retains source.sql for unnamed source requests", async () => {
     await render({ source });
     expect(activeTab()).toBe("source.sql");
-    expect(editor().value).toBe(source.sql);
+    expect(editorValue()).toBe(source.sql);
   });
 
   it("still reuses saved documents by queryId and preserves their drafts", async () => {
@@ -482,7 +815,7 @@ describe("chart source SQL tabs", () => {
     await render();
     expect(activeTab()).toBe("renamed.sql");
     expect(tabs()).toHaveLength(2);
-    expect(editor().value).toBe("select unsaved_draft");
+    expect(editorValue()).toBe("select unsaved_draft");
     expect(props.onSavedConsumed).toHaveBeenCalledOnce();
   });
   it("preserves recovered connection and context edits when a newer server document has identical SQL", async () => {

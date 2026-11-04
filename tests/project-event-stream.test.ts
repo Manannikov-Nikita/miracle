@@ -51,6 +51,7 @@ async function stream(history: ProjectEvent[], after = 0, authorized = true) {
   const app = {
     get: (path: string, handler: Handler) => routes.set(path, handler),
     post() {},
+    put() {},
     patch() {},
     delete() {},
     addHook: (_name: string, hook: () => Promise<void>) => (preClose = hook),

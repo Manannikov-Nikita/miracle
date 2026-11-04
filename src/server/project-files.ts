@@ -1,7 +1,37 @@
-import { lstatSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { opendir } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+  win32,
+} from "node:path";
 import type { ProjectContext } from "../shared/agents.js";
+import {
+  MAX_PROJECT_FILE_BYTES,
+  type CreateProjectFile,
+  type ProjectTextFile,
+  type ProjectTree,
+  type SaveProjectFile,
+} from "../shared/project-files.js";
 import { problem } from "./project-store.js";
 
 type FileContext = Pick<ProjectContext, "projectRoot" | "dataDir">;
@@ -47,7 +77,7 @@ function scope(context: FileContext) {
     !relative(root, path)
       .split(sep)
       .some((part) => internalNames.has(part));
-  return { root, allowed };
+  return { root, data, allowed };
 }
 
 /** Validate paths only. Native CLI tools retain responsibility for reading files. */
@@ -180,4 +210,317 @@ export async function searchProjectFiles(
     }
   }
   return { files, truncated };
+}
+
+function fileError(error: unknown): never {
+  if ((error as { statusCode?: number })?.statusCode) throw error;
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT" || code === "ENOTDIR")
+    throw problem(404, "Файл или папка не найдены", "FILE_NOT_FOUND");
+  if (code === "EACCES" || code === "EPERM" || code === "EROFS")
+    throw problem(403, "Нет доступа к файлу или папке", "FILE_ACCESS_DENIED");
+  if (code === "ELOOP")
+    throw problem(
+      403,
+      "Символические ссылки недоступны в проводнике",
+      "INVALID_FILE_PATH",
+    );
+  throw error;
+}
+
+/** Reject symbolic links in the selected path, including parent directories. */
+function explorerPath(context: FileContext, path: string, directory = false) {
+  if (!(directory && path === "") && !validRelativePath(path))
+    throw problem(
+      400,
+      "Нужен относительный путь внутри проекта",
+      "INVALID_FILE_PATH",
+    );
+  const { root, data, allowed } = scope(context);
+  let dataIdentity: ReturnType<typeof lstatSync> | undefined;
+  try {
+    dataIdentity = lstatSync(data);
+  } catch {}
+  let absolute = root;
+  for (const part of path ? path.split("/") : []) {
+    absolute = join(absolute, part);
+    if (!allowed(absolute) || internalNames.has(part.toLowerCase()))
+      throw problem(
+        403,
+        "Служебная папка недоступна в проводнике",
+        "INVALID_FILE_PATH",
+      );
+    const info = lstatSync(absolute);
+    if (info.isSymbolicLink())
+      throw problem(
+        403,
+        "Символические ссылки недоступны в проводнике",
+        "INVALID_FILE_PATH",
+      );
+    if (
+      info.isDirectory() &&
+      (excludedDirectories.has(part.toLowerCase()) ||
+        part.toLowerCase() === ".codegraph" ||
+        (info.dev === dataIdentity?.dev && info.ino === dataIdentity.ino))
+    )
+      throw problem(
+        403,
+        "Служебная папка недоступна в проводнике",
+        "INVALID_FILE_PATH",
+      );
+  }
+  if (!allowed(realpathSync(absolute)))
+    throw problem(
+      403,
+      "Путь находится вне доступной папки проекта",
+      "INVALID_FILE_PATH",
+    );
+  const info = lstatSync(absolute);
+  if (directory ? !info.isDirectory() : !info.isFile())
+    throw problem(
+      400,
+      directory ? "Нужна папка проекта" : "Нужен обычный файл проекта",
+      "INVALID_FILE_PATH",
+    );
+  return absolute;
+}
+
+export async function listProjectTree(
+  context: FileContext,
+  path = "",
+  limits: { maxEntries?: number } = {},
+): Promise<ProjectTree> {
+  try {
+    const absolute = explorerPath(context, path, true);
+    const result: ProjectTree = { path, entries: [], truncated: false };
+    const directory = await opendir(absolute);
+    const maxEntries = limits.maxEntries ?? 2000;
+    let visited = 0;
+    for await (const entry of directory) {
+      if (++visited > maxEntries) {
+        result.truncated = true;
+        break;
+      }
+      if (!entry.isFile() && !entry.isDirectory()) continue;
+      const child = path ? `${path}/${entry.name}` : entry.name;
+      try {
+        const target = explorerPath(context, child, entry.isDirectory());
+        result.entries.push({
+          path: child,
+          name: entry.name,
+          kind: entry.isDirectory() ? "directory" : "file",
+          ...(entry.isFile() ? { size: lstatSync(target).size } : {}),
+        });
+      } catch {
+        // Files may disappear during enumeration; inaccessible entries stay hidden.
+      }
+    }
+    result.entries.sort(
+      (a, b) =>
+        Number(b.kind === "directory") - Number(a.kind === "directory") ||
+        (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+    );
+    return result;
+  } catch (error) {
+    fileError(error);
+  }
+}
+
+const tooLarge = () =>
+  problem(
+    413,
+    "Файл больше 2 МиБ и не может быть открыт в редакторе",
+    "FILE_TOO_LARGE",
+  );
+const notText = () =>
+  problem(
+    415,
+    "Редактор поддерживает текстовые файлы в кодировке UTF-8",
+    "FILE_NOT_TEXT",
+  );
+const conflict = () =>
+  problem(
+    409,
+    "Файл изменён на диске. Загрузите актуальную версию перед сохранением",
+    "FILE_REVISION_CONFLICT",
+  );
+const binaryControls = /[\u0000-\u0008\u000b\u000e-\u001f\u007f]/;
+
+function readText(context: FileContext, path: string) {
+  const absolute = explorerPath(context, path);
+  const fd = openSync(
+    absolute,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const info = fstatSync(fd);
+    const current = lstatSync(explorerPath(context, path));
+    if (!info.isFile() || info.dev !== current.dev || info.ino !== current.ino)
+      throw conflict();
+    if (info.size > MAX_PROJECT_FILE_BYTES) throw tooLarge();
+    const buffer = Buffer.alloc(MAX_PROJECT_FILE_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(
+        fd,
+        buffer,
+        length,
+        buffer.length - length,
+        length,
+      );
+      if (!count) break;
+      length += count;
+    }
+    if (length > MAX_PROJECT_FILE_BYTES) throw tooLarge();
+    const after = fstatSync(fd);
+    if (
+      info.size !== after.size ||
+      info.mtimeMs !== after.mtimeMs ||
+      info.ctimeMs !== after.ctimeMs
+    )
+      throw conflict();
+    const bytes = buffer.subarray(0, length);
+    let content: string;
+    try {
+      // Preserve an optional UTF-8 BOM so an unchanged save is byte-for-byte stable.
+      content = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(bytes);
+    } catch {
+      throw notText();
+    }
+    if (binaryControls.test(content)) throw notText();
+    const document: ProjectTextFile = {
+      path,
+      name: basename(path),
+      content,
+      revision: createHash("sha256").update(bytes).digest("hex"),
+      size: length,
+      updatedAt: info.mtime.toISOString(),
+    };
+    return { document, absolute, mode: info.mode };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readProjectFile(
+  context: FileContext,
+  path: string,
+): ProjectTextFile {
+  try {
+    return readText(context, path).document;
+  } catch (error) {
+    fileError(error);
+  }
+}
+
+export function createProjectFile(
+  context: FileContext,
+  input: CreateProjectFile,
+): ProjectTextFile {
+  try {
+    const { directory, name } = input;
+    if (
+      !name.trim() ||
+      name === "." ||
+      name === ".." ||
+      /[\\/\u0000-\u001f\u007f<>:"|?*]/.test(name) ||
+      Buffer.byteLength(name, "utf8") > 255 ||
+      Buffer.from(name, "utf8").toString("utf8") !== name
+    )
+      throw problem(
+        400,
+        "Введите имя файла без пути и недопустимых символов (до 255 байт)",
+        "INVALID_FILE_NAME",
+      );
+    const parent = explorerPath(context, directory, true);
+    const path = directory ? `${directory}/${name}` : name;
+    if (!validRelativePath(path))
+      throw problem(400, "Слишком длинный путь к файлу", "INVALID_FILE_PATH");
+    const absolute = join(parent, name);
+    const { allowed } = scope(context);
+    if (!allowed(absolute) || internalNames.has(name.toLowerCase()))
+      throw problem(
+        403,
+        "Служебный путь недоступен в проводнике",
+        "INVALID_FILE_PATH",
+      );
+    // Exclusive creation keeps an existing file, directory or link untouched.
+    const fd = openSync(
+      absolute,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o666,
+    );
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    return readProjectFile(context, path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
+      throw problem(
+        409,
+        "Файл или папка с таким именем уже существует",
+        "FILE_ALREADY_EXISTS",
+      );
+    return fileError(error);
+  }
+}
+
+export function saveProjectFile(
+  context: FileContext,
+  path: string,
+  input: SaveProjectFile,
+): ProjectTextFile {
+  let temporary: string | undefined;
+  try {
+    const bytes = Buffer.from(input.content, "utf8");
+    if (bytes.length > MAX_PROJECT_FILE_BYTES) throw tooLarge();
+    if (
+      binaryControls.test(input.content) ||
+      bytes.toString("utf8") !== input.content
+    )
+      throw notText();
+    const current = readText(context, path);
+    if (current.document.revision !== input.baseRevision) throw conflict();
+    temporary = join(
+      dirname(current.absolute),
+      `.miracle-edit-${randomUUID()}.tmp`,
+    );
+    const fd = openSync(
+      temporary,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      writeFileSync(fd, bytes);
+      fchmodSync(fd, current.mode & 0o777);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // Recheck both confinement and content immediately before replacing the file.
+    if (readText(context, path).document.revision !== input.baseRevision)
+      throw conflict();
+    renameSync(temporary, current.absolute);
+    temporary = undefined;
+    return readProjectFile(context, path);
+  } catch (error) {
+    return fileError(error);
+  } finally {
+    if (temporary) {
+      try {
+        unlinkSync(temporary);
+      } catch {}
+    }
+  }
 }

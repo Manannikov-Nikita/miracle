@@ -1,7 +1,14 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { ProjectStore, problem } from "./project-store.js";
-import { searchProjectFiles } from "./project-files.js";
+import {
+  createProjectFile,
+  listProjectTree,
+  readProjectFile,
+  saveProjectFile,
+  searchProjectFiles,
+} from "./project-files.js";
+import { MAX_PROJECT_FILE_BYTES } from "../shared/project-files.js";
 
 export function registerProjectRoutes(
   app: FastifyInstance,
@@ -21,6 +28,46 @@ export function registerProjectRoutes(
       .parse(req.query);
     return searchProjectFiles(store.context, q);
   });
+  app.get("/api/project/tree", async (req) => {
+    need(req);
+    const { path } = z
+      .object({ path: z.string().max(4096).default("") })
+      .parse(req.query);
+    return listProjectTree(store.context, path);
+  });
+  app.get("/api/project/file", async (req) => {
+    need(req);
+    const { path } = z
+      .object({ path: z.string().min(1).max(4096) })
+      .parse(req.query);
+    return readProjectFile(store.context, path);
+  });
+  app.post("/api/project/file", async (req, reply) => {
+    need(req);
+    const input = z
+      .object({ directory: z.string().max(4096), name: z.string().max(255) })
+      .parse(req.body);
+    const file = createProjectFile(store.context, input);
+    reply.code(201);
+    return file;
+  });
+  app.put(
+    "/api/project/file",
+    { bodyLimit: MAX_PROJECT_FILE_BYTES * 6 + 1024 },
+    async (req) => {
+      need(req);
+      const { path } = z
+        .object({ path: z.string().min(1).max(4096) })
+        .parse(req.query);
+      const input = z
+        .object({
+          content: z.string().max(MAX_PROJECT_FILE_BYTES),
+          baseRevision: z.string().regex(/^[0-9a-f]{64}$/),
+        })
+        .parse(req.body);
+      return saveProjectFile(store.context, path, input);
+    },
+  );
   app.get("/api/editor-documents", async (req) => {
     need(req);
     return store.editors();

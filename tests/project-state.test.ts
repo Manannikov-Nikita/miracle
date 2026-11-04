@@ -193,6 +193,178 @@ const waitFor = async <
 };
 const fixtureCommand = (provider: string, scenario: string) =>
   `FIXTURE_PROVIDER=${provider} FIXTURE_SCENARIO=${scenario} '${process.execPath}' '${resolve("tests/fixtures/agents/provider.mjs")}'`;
+it("persists per-chat auto-approval preferences and requires a boolean authenticated update", async () => {
+  const s = await open();
+  const profile = (
+    await s.request("POST", "/api/agent-profiles", {
+      name: "Preferences fixture",
+      provider: "codex",
+      command: "codex",
+    })
+  ).json();
+  const manual = (
+    await s.request("POST", "/api/chats", { profileId: profile.id })
+  ).json();
+  const automatic = (
+    await s.request("POST", "/api/chats", {
+      profileId: profile.id,
+      autoApprove: true,
+    })
+  ).json();
+  expect(manual.autoApprove).toBe(false);
+  expect(automatic.autoApprove).toBe(true);
+  for (const payload of [{}, { autoApprove: "true" }, { autoApprove: null }])
+    expect(
+      (await s.request("PATCH", `/api/chats/${manual.id}`, payload)).statusCode,
+    ).toBe(400);
+  expect(
+    (
+      await s.app.inject({
+        method: "PATCH",
+        url: `/api/chats/${manual.id}`,
+        payload: { autoApprove: true },
+        headers: { host: "127.0.0.1:3001" },
+      })
+    ).statusCode,
+  ).toBe(401);
+  expect(
+    (
+      await s.app.inject({
+        method: "PATCH",
+        url: `/api/chats/${manual.id}`,
+        payload: { autoApprove: true },
+        headers: { ...s.headers, "x-csrf-token": "invalid" },
+      })
+    ).statusCode,
+  ).toBe(403);
+  expect(
+    (
+      await s.request("PATCH", `/api/chats/${manual.id}`, { autoApprove: true })
+    ).json(),
+  ).toMatchObject({
+    id: manual.id,
+    autoApprove: true,
+  });
+  expect(
+    (
+      await s.request("PATCH", `/api/chats/${automatic.id}`, {
+        autoApprove: false,
+      })
+    ).json(),
+  ).toMatchObject({
+    id: automatic.id,
+    autoApprove: false,
+  });
+  await s.app.close();
+  const reopened = await open(s.root);
+  expect(
+    (await reopened.request("GET", `/api/chats/${manual.id}`)).json().chat
+      .autoApprove,
+  ).toBe(true);
+  expect(
+    (await reopened.request("GET", `/api/chats/${automatic.id}`)).json().chat
+      .autoApprove,
+  ).toBe(false);
+});
+it.each([false, true])(
+  "automatically answers current and subsequent native approvals (enabled initially: %s)",
+  async (initiallyEnabled) => {
+    const s = await open();
+    const profile = (
+      await s.request("POST", "/api/agent-profiles", {
+        name: "Auto approval fixture",
+        provider: "codex",
+        command: fixtureCommand("codex", "normal"),
+      })
+    ).json();
+    const chat = (
+      await s.request("POST", "/api/chats", {
+        profileId: profile.id,
+        autoApprove: initiallyEnabled,
+      })
+    ).json();
+    await s.request("POST", `/api/chats/${chat.id}/messages`, {
+      content: "Go",
+      clientRequestId: randomUUID(),
+      context: {},
+    });
+    if (!initiallyEnabled) {
+      await waitFor(
+        async () => (await s.request("GET", `/api/chats/${chat.id}`)).json(),
+        (value) => value.turns[0]?.status === "waiting",
+      );
+      const updated = await s.request("PATCH", `/api/chats/${chat.id}`, {
+        autoApprove: true,
+      });
+      expect(updated.statusCode, updated.body).toBe(200);
+    }
+    const done = await waitFor(
+      async () => (await s.request("GET", `/api/chats/${chat.id}`)).json(),
+      (value) => value.turns[0]?.status === "completed",
+    );
+    const approvals = done.messages.filter(
+      (message: any) => message.role === "approval",
+    );
+    expect(approvals).toHaveLength(2);
+    for (const approval of approvals)
+      expect(approval.details).toMatchObject({
+        resolved: true,
+        decision: "allow",
+        automatic: true,
+      });
+    expect(
+      (
+        await s.request(
+          "POST",
+          `/api/agent-approvals/${approvals[0].details.approvalId}`,
+          {
+            decision: "deny",
+          },
+        )
+      ).statusCode,
+    ).toBe(409);
+  },
+);
+it("migrates existing chats with manual approvals and preserves the preference on repeated startup", async () => {
+  const s = await open();
+  const profile = (
+    await s.request("POST", "/api/agent-profiles", {
+      name: "Legacy fixture",
+      provider: "codex",
+      command: "codex",
+    })
+  ).json();
+  const chat = (
+    await s.request("POST", "/api/chats", { profileId: profile.id })
+  ).json();
+  const db = s.app.miracle.db;
+  if (
+    db
+      .query("PRAGMA table_info(agent_chats)")
+      .rows.some((column: any) => column.name === "auto_approve")
+  )
+    db.sqlite.exec("ALTER TABLE agent_chats DROP COLUMN auto_approve");
+  db.sqlite.exec("DROP TABLE IF EXISTS agent_images; PRAGMA user_version=4");
+  await s.app.close();
+  const migrated = await open(s.root);
+  expect(
+    (await migrated.request("GET", `/api/chats/${chat.id}`)).json().chat
+      .autoApprove,
+  ).toBe(false);
+  expect(
+    (
+      await migrated.request("PATCH", `/api/chats/${chat.id}`, {
+        autoApprove: true,
+      })
+    ).statusCode,
+  ).toBe(200);
+  await migrated.app.close();
+  const reopened = await open(s.root);
+  expect(
+    (await reopened.request("GET", `/api/chats/${chat.id}`)).json().chat
+      .autoApprove,
+  ).toBe(true);
+});
 it.each([false, true])(
   "runs a persisted conversation independently of the browser and deduplicates sends (delayed stdout: %s)",
   async (delayedStdout) => {
@@ -434,7 +606,7 @@ it("marks an unfinished persisted turn interrupted on restart without replay", a
   ).toBeNull();
 });
 
-it("requires local profile confirmation after a stopped project is copied", async () => {
+it("requires local profile confirmation after an auto-approved chat project is copied", async () => {
   const s = await open();
   const profile = (
     await s.request("POST", "/api/agent-profiles", {
@@ -444,7 +616,10 @@ it("requires local profile confirmation after a stopped project is copied", asyn
     })
   ).json();
   const chat = (
-    await s.request("POST", "/api/chats", { profileId: profile.id })
+    await s.request("POST", "/api/chats", {
+      profileId: profile.id,
+      autoApprove: true,
+    })
   ).json();
   await s.app.close();
   const copiedRoot = dir();

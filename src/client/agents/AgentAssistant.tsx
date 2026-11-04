@@ -6,7 +6,9 @@ import { ErrorBox, Spinner } from "../components/UI";
 import AgentProfiles from "./AgentProfiles";
 import { useAgentChat } from "./useAgentChat";
 import { useProjectSync, useProjectTargetContext } from "./ProjectSync";
+import { useAgentImageDrafts } from "./useAgentImageDrafts";
 import "./agents.css";
+import "./agent-images.css";
 export default function AgentAssistant() {
   const state = useAgentChat();
   const project = useProjectSync();
@@ -22,6 +24,7 @@ export default function AgentAssistant() {
   const requestIds = useRef(new Map<string, { content: string; id: string }>());
   const draftKey = state.selected || "new",
     draft = drafts[draftKey] || "";
+  const imageDraft = useAgentImageDrafts(draftKey, state.setError);
   const selectedProfile = state.profiles.some(
     (profile) => profile.id === profileId,
   )
@@ -66,7 +69,14 @@ export default function AgentAssistant() {
   };
   const send = async () => {
     const content = draft.trim();
-    if (!content || state.busy || state.active) return;
+    const images = [...imageDraft.images];
+    if (
+      (!content && !images.length) ||
+      imageDraft.loading ||
+      state.busy ||
+      state.active
+    )
+      return;
     const current = project?.context() || targetContext;
     const filePaths = [...(files[draftKey] || [])];
     const references = {
@@ -83,6 +93,7 @@ export default function AgentAssistant() {
       filePaths,
       boardId: references.boardId,
       boardNodeIds: references.boardNodes.map((node) => node.id),
+      imageIds: images.map((image) => image.localId),
     });
     const previous = requestIds.current.get(draftKey);
     const requestId =
@@ -102,6 +113,7 @@ export default function AgentAssistant() {
             [id]: items[draftKey] || content,
           }));
           setFiles((items) => ({ ...items, [id]: filePaths }));
+          imageDraft.move(id, images);
           // Creating a chat only moves this draft. Keep its omitted targets
           // so a failed message POST can be retried with the same identity.
           setDismissed((value) =>
@@ -111,6 +123,7 @@ export default function AgentAssistant() {
           );
         },
         references,
+        images.map(({ localId, ...image }) => image),
       );
       setDrafts((items) => ({
         ...items,
@@ -125,6 +138,7 @@ export default function AgentAssistant() {
         ...(createdId ? { [createdId]: [] } : {}),
       }));
       setDismissed({ key: "", ids: [] });
+      imageDraft.clear([draftKey, ...(createdId ? [createdId] : [])], images);
       if (createdId) requestIds.current.delete(createdId);
       requestIds.current.delete(draftKey);
     } catch {}
@@ -207,6 +221,10 @@ export default function AgentAssistant() {
                 setDrafts((items) => ({ ...items, [draftKey]: value }))
               }
               onSend={send}
+              images={imageDraft.images}
+              imagesLoading={imageDraft.loading}
+              onImagesAdd={imageDraft.add}
+              onImageRemove={imageDraft.remove}
               filePaths={files[draftKey] || []}
               onFilesChange={(paths) =>
                 setFiles((items) => ({ ...items, [draftKey]: paths }))

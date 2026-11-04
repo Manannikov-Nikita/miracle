@@ -118,6 +118,7 @@ export interface ResultPage {
 }
 export type RunStatus =
   | "running"
+  | "paused"
   | "cancelling"
   | "completed"
   | "failed"
@@ -147,6 +148,14 @@ export interface ChartSpec {
   legend: boolean;
   legendPosition?: "top" | "bottom" | "left" | "right";
   legendAlign?: "start" | "center" | "end";
+  showXAxis?: boolean;
+  showYAxis?: boolean;
+  showGrid?: boolean;
+  showLabels?: boolean;
+  labelPosition?: "auto" | "outside" | "inside";
+  palette?: "default" | "cool" | "warm" | "vivid";
+  /** Colors by stable metric / breakdown identity, independent of row order. */
+  seriesColors?: Record<string, string>;
   xLabel?: string;
   yLabel?: string;
   numberFormat?: "auto" | "integer" | "decimal" | "percent" | "compact";

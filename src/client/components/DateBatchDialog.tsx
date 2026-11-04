@@ -2,39 +2,17 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { DateRangeOptions } from "../../shared/types";
 import { dateRangeDates } from "../../shared/date-batch";
 import { ErrorBox, Modal, Spinner } from "./UI";
+import DateRangeCalendar from "./DateRangeCalendar";
+import {
+  normalizeDateForCalendar,
+  isCalendarDate,
+  addCalendarDays,
+} from "./date-range-calendar-helpers";
+import "./date-batch-dialog.css";
 
-const isoDate = (date: Date) => date.toISOString().slice(0, 10);
 function today() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-function monday(value: string) {
-  const date = new Date(`${value}T00:00:00Z`);
-  if (!Number.isFinite(date.getTime())) return "";
-  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() + 6) % 7));
-  return isoDate(date);
-}
-function weekValue(value: string) {
-  const start = monday(value);
-  if (!start) return "";
-  const thursday = new Date(`${start}T00:00:00Z`);
-  thursday.setUTCDate(thursday.getUTCDate() + 3);
-  const year = String(thursday.getUTCFullYear()).padStart(4, "0");
-  const first = new Date(`${monday(`${year}-01-04`)}T00:00:00Z`);
-  const week =
-    1 +
-    Math.round(
-      (new Date(`${start}T00:00:00Z`).getTime() - first.getTime()) / 604800000,
-    );
-  return `${year}-W${String(week).padStart(2, "0")}`;
-}
-function weekDate(value: string) {
-  if (!/^\d{4}-W\d{2}$/.test(value)) return "";
-  const date = new Date(`${monday(`${value.slice(0, 4)}-01-04`)}T00:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + (Number(value.slice(-2)) - 1) * 7);
-  if (!Number.isFinite(date.getTime())) return "";
-  const result = isoDate(date);
-  return weekValue(result) === value ? result : "";
 }
 function defaults(initial?: DateRangeOptions): DateRangeOptions {
   return (
@@ -66,59 +44,72 @@ export default function DateBatchDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submitting = useRef(false);
-  const [weekInputSupported] = useState(() => {
-    const input = document.createElement("input");
-    input.type = "week";
-    return input.type === "week";
-  });
   useEffect(() => {
     if (open) {
       setOptions(defaults(initial));
       setError("");
     }
   }, [open, initial]);
+  const effectiveOptions = useMemo(
+    () => ({
+      ...options,
+      startDate:
+        normalizeDateForCalendar(
+          options.startDate,
+          options.granularity,
+          options.weekStartsOn,
+        ) || options.startDate,
+      endDate:
+        normalizeDateForCalendar(
+          options.endDate,
+          options.granularity,
+          options.weekStartsOn,
+        ) || options.endDate,
+    }),
+    [options],
+  );
   const preview = useMemo(() => {
     try {
-      return { dates: dateRangeDates(options), error: "" };
+      return { dates: dateRangeDates(effectiveOptions), error: "" };
     } catch (error) {
       return { dates: [], error: (error as Error).message };
     }
-  }, [options]);
-  const inputType =
-    options.granularity === "month"
-      ? "month"
-      : options.granularity === "week" && weekInputSupported
-        ? "week"
-        : "date";
-  function display(value: string) {
-    return inputType === "month"
-      ? value.slice(0, 7)
-      : inputType === "week"
-        ? weekValue(value)
-        : value;
-  }
-  function read(value: string) {
-    return inputType === "month"
-      ? value
-        ? `${value}-01`
-        : ""
-      : inputType === "week"
-        ? weekDate(value)
-        : value;
+  }, [effectiveOptions]);
+  function align(
+    value: string,
+    granularity = options.granularity,
+    weekStartsOn = options.weekStartsOn,
+  ) {
+    return normalizeDateForCalendar(value, granularity, weekStartsOn) || value;
   }
   function granularity(value: DateRangeOptions["granularity"]) {
-    const align = (date: string) =>
-      value === "week"
-        ? monday(date)
-        : value === "month"
-          ? `${date.slice(0, 7)}-01`
-          : date;
     setOptions((current) => ({
       ...current,
       granularity: value,
-      startDate: align(current.startDate || today()),
-      endDate: align(current.endDate || today()),
+      startDate: align(
+        current.startDate || today(),
+        value,
+        current.weekStartsOn,
+      ),
+      endDate: align(current.endDate || today(), value, current.weekStartsOn),
     }));
+  }
+  function weekStart(value: NonNullable<DateRangeOptions["weekStartsOn"]>) {
+    setOptions((current) => {
+      const previous = current.weekStartsOn || "monday";
+      // Keep the selected weeks stable when toggling their first weekday.
+      const shift = previous === value ? 0 : value === "sunday" ? -1 : 1;
+      const realign = (date: string) => {
+        const start = normalizeDateForCalendar(date, "week", previous);
+        return start ? addCalendarDays(start, shift) : date;
+      };
+      return {
+        ...current,
+        weekStartsOn: value,
+        startDate: realign(current.startDate),
+        endDate: realign(current.endDate),
+      };
+    });
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -127,7 +118,8 @@ export default function DateBatchDialog({
     setBusy(true);
     setError("");
     try {
-      await onSubmit({ ...options });
+      setOptions(effectiveOptions);
+      await onSubmit({ ...effectiveOptions });
     } catch (error) {
       setError((error as Error).message);
     } finally {
@@ -138,12 +130,13 @@ export default function DateBatchDialog({
   return (
     <Modal
       open={open}
+      className="date-batch-dialog"
       dismissible={!busy}
       onOpenChange={(value) => {
         if (!submitting.current) onOpenChange(value);
       }}
       title="Запуск по датам"
-      description="Один запрос на каждую дату. Успешные результаты добавляются в общую таблицу."
+      description="Выберите начало и конец диапазона в календаре или введите даты."
     >
       <form className="date-batch-form" onSubmit={submit} noValidate>
         <fieldset className="date-granularity" disabled={busy}>
@@ -165,27 +158,52 @@ export default function DateBatchDialog({
             </button>
           ))}
         </fieldset>
+        {options.granularity === "week" && (
+          <fieldset className="date-week-start" disabled={busy}>
+            <legend>Начало недели</legend>
+            {(
+              [
+                ["monday", "Понедельник"],
+                ["sunday", "Воскресенье"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                aria-pressed={(options.weekStartsOn || "monday") === value}
+                onClick={() => weekStart(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+        )}
         <div className="date-batch-range">
           <label>
-            Начало
+            {options.granularity === "week"
+              ? "Первая неделя"
+              : options.granularity === "month"
+                ? "Первый месяц"
+                : "Начало"}
             <input
               aria-label="Начало диапазона"
-              type={inputType}
-              min={
-                options.granularity === "week" && !weekInputSupported
-                  ? "0001-01-01"
-                  : undefined
-              }
-              step={
-                options.granularity === "week" && !weekInputSupported
-                  ? 7
-                  : undefined
-              }
-              value={display(options.startDate)}
+              type="text"
+              placeholder="2025-01-01"
+              maxLength={10}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={!isCalendarDate(options.startDate)}
+              value={options.startDate}
               onChange={(event) =>
                 setOptions((current) => ({
                   ...current,
-                  startDate: read(event.target.value),
+                  startDate: event.target.value,
+                }))
+              }
+              onBlur={() =>
+                setOptions((current) => ({
+                  ...current,
+                  startDate: align(current.startDate),
                 }))
               }
               disabled={busy}
@@ -193,25 +211,30 @@ export default function DateBatchDialog({
             />
           </label>
           <label>
-            Конец включительно
+            {options.granularity === "week"
+              ? "Последняя неделя"
+              : options.granularity === "month"
+                ? "Последний месяц"
+                : "Конец включительно"}
             <input
               aria-label="Конец диапазона"
-              type={inputType}
-              min={
-                options.granularity === "week" && !weekInputSupported
-                  ? "0001-01-01"
-                  : undefined
-              }
-              step={
-                options.granularity === "week" && !weekInputSupported
-                  ? 7
-                  : undefined
-              }
-              value={display(options.endDate)}
+              type="text"
+              placeholder="2025-01-01"
+              maxLength={10}
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={!isCalendarDate(options.endDate)}
+              value={options.endDate}
               onChange={(event) =>
                 setOptions((current) => ({
                   ...current,
-                  endDate: read(event.target.value),
+                  endDate: event.target.value,
+                }))
+              }
+              onBlur={() =>
+                setOptions((current) => ({
+                  ...current,
+                  endDate: align(current.endDate),
                 }))
               }
               disabled={busy}
@@ -219,53 +242,67 @@ export default function DateBatchDialog({
             />
           </label>
         </div>
+        <DateRangeCalendar
+          startDate={effectiveOptions.startDate}
+          endDate={effectiveOptions.endDate}
+          granularity={options.granularity}
+          weekStartsOn={options.weekStartsOn}
+          disabled={busy}
+          onChange={(range) =>
+            setOptions((current) => ({ ...current, ...range }))
+          }
+        />
         <p className="date-batch-hint">
           {options.granularity === "week"
-            ? "Для каждой недели подставляется её понедельник."
+            ? `Недели выбираются целиком. В запрос подставляется ${options.weekStartsOn === "sunday" ? "воскресенье" : "понедельник"} каждой недели.`
             : options.granularity === "month"
               ? "Для каждого месяца подставляется первое число."
               : "Подставляется каждый календарный день диапазона."}
         </p>
-        <label>
-          Повторы при ошибке
-          <input
-            aria-label="Повторы при ошибке"
-            type="number"
-            min={0}
-            max={10}
-            step={1}
-            value={Number.isNaN(options.retries) ? "" : options.retries}
-            onChange={(event) =>
-              setOptions((current) => ({
-                ...current,
-                retries:
-                  event.target.value === "" ? NaN : Number(event.target.value),
-              }))
-            }
-            disabled={busy}
-          />
-          <small>
-            Дополнительные попытки для каждой даты, от 0 до 10. После ошибки
-            серия продолжается.
-          </small>
-        </label>
-        {preview.error ? (
-          <ErrorBox>{preview.error}</ErrorBox>
-        ) : (
-          <div className="date-batch-preview" aria-live="polite">
-            <strong>
-              {preview.dates.length.toLocaleString("ru-RU")}{" "}
-              {queryWord(preview.dates.length)}
-            </strong>
-            <span>
-              {preview.dates[0]}
-              {preview.dates.length > 1 ? ` → ${preview.dates.at(-1)}` : ""}
-            </span>
+        <div className="date-batch-summary">
+          <label className="date-batch-retries">
+            Повторы при ошибке
+            <input
+              aria-label="Повторы при ошибке"
+              type="number"
+              min={0}
+              max={10}
+              step={1}
+              value={Number.isNaN(options.retries) ? "" : options.retries}
+              onChange={(event) =>
+                setOptions((current) => ({
+                  ...current,
+                  retries:
+                    event.target.value === ""
+                      ? NaN
+                      : Number(event.target.value),
+                }))
+              }
+              disabled={busy}
+            />
             <small>
-              <code>{"{{date}}"}</code> → <code>'{preview.dates[0]}'</code>
+              Дополнительные попытки для каждой даты, от 0 до 10. Если все
+              попытки неудачны, серия приостановится до вашего решения.
             </small>
-          </div>
-        )}
+          </label>
+          {preview.error ? (
+            <ErrorBox>{preview.error}</ErrorBox>
+          ) : (
+            <div className="date-batch-preview" aria-live="polite">
+              <strong>
+                {preview.dates.length.toLocaleString("ru-RU")}{" "}
+                {queryWord(preview.dates.length)}
+              </strong>
+              <span>
+                {preview.dates[0]}
+                {preview.dates.length > 1 ? ` → ${preview.dates.at(-1)}` : ""}
+              </span>
+              <small>
+                <code>{"{{date}}"}</code> → <code>'{preview.dates[0]}'</code>
+              </small>
+            </div>
+          )}
+        </div>
         {error && <ErrorBox>{error}</ErrorBox>}
         <div className="modal-actions">
           <button

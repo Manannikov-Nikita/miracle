@@ -91,6 +91,71 @@ const payload = (context: unknown) => ({
   context,
 });
 
+it("applies auto approval changes to active Claude permission callbacks and keeps other chats isolated", async () => {
+  let finish!: () => void;
+  vi.mocked(startAgentTurn).mockImplementationOnce(() => ({
+    completion: new Promise<void>((resolve) => {
+      finish = resolve;
+    }),
+    cancel: async () => finish(),
+    respond: () => {},
+  }));
+  manager.updateChat(chatId, { autoApprove: true });
+  manager.start(chatId, payload({}));
+  await Promise.resolve();
+  const active = manager.active!;
+  const input = { command: "pwd" };
+  await expect(
+    manager.requestPermission(active, { tool_name: "Bash", input }),
+  ).resolves.toEqual({
+    behavior: "allow",
+    updatedInput: input,
+  });
+  expect(store.turn(active.turn.id).status).toBe("running");
+  manager.updateChat(chatId, { autoApprove: false });
+  const pending = manager.requestPermission(active, {
+    tool_name: "Bash",
+    input,
+  });
+  const pendingId = [...active.approvals.keys()][0];
+  expect(store.turn(active.turn.id).status).toBe("waiting");
+  const other = store.createChat({ profileId: store.chat(chatId).profileId });
+  manager.updateChat(other.id, { autoApprove: true });
+  expect(active.approvals.has(pendingId)).toBe(true);
+  manager.respond(pendingId, "deny");
+  await expect(pending).resolves.toMatchObject({ behavior: "deny" });
+  const first = manager.requestPermission(active, { tool_name: "Bash", input });
+  const second = manager.requestPermission(active, {
+    tool_name: "Write",
+    input: { path: "note.md" },
+  });
+  expect(active.approvals.size).toBe(2);
+  manager.updateChat(chatId, { autoApprove: true });
+  await expect(first).resolves.toMatchObject({ behavior: "allow" });
+  await expect(second).resolves.toMatchObject({
+    behavior: "allow",
+    updatedInput: { path: "note.md" },
+  });
+  expect(active.approvals.size).toBe(0);
+  expect(store.turn(active.turn.id).status).toBe("running");
+  const approvals = store
+    .conversation(chatId)
+    .messages.filter((message) => message.role === "approval");
+  expect(
+    approvals.map((message) => ({
+      decision: message.details?.decision,
+      automatic: message.details?.automatic,
+    })),
+  ).toEqual([
+    { decision: "allow", automatic: true },
+    { decision: "deny", automatic: undefined },
+    { decision: "allow", automatic: true },
+    { decision: "allow", automatic: true },
+  ]);
+  finish();
+  await active.completion;
+});
+
 it("persists references and canonical selected-node titles and sends them to the CLI without reading file contents", async () => {
   writeFileSync(
     join(root, "notes with spaces.md"),

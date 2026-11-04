@@ -6,6 +6,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apiEngineFixture } from "./api-engine-fixture.js";
+import { chartSeriesColorKey } from "../src/shared/chart-appearance.js";
+import type { ChartSpec, ResultSet } from "../src/shared/types.js";
 const dataDir = mkdtempSync(join(tmpdir(), "miracle-api-"));
 let fixture: Awaited<ReturnType<typeof apiEngineFixture>>;
 let app: FastifyInstance;
@@ -368,6 +370,91 @@ it("persists chart orientation across board saves and rejects invalid updates", 
   expect(saved.document).toEqual(
     document({ ...chart, orientation: "vertical" }),
   );
+});
+it("persists chart appearance on a real result and rejects invalid color updates atomically", async () => {
+  const connection = (await request("GET", "/api/connections")).json()[0];
+  const source = { connectionId: connection.id, sql: "SELECT 1 AS n" };
+  const launched = await request("POST", "/api/query-runs", source);
+  expect(launched.statusCode, launched.body).toBe(202);
+  let run = launched.json();
+  for (let i = 0; i < 100 && run.status === "running"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    run = (await request("GET", `/api/query-runs/${run.id}`)).json();
+  }
+  expect(run.status, JSON.stringify(run)).toBe("completed");
+  const result: ResultSet = (
+    await request("GET", `/api/result-sets/${run.resultSetId}`)
+  ).json();
+  const metricId = result.columns[0].id;
+  const colorKey = chartSeriesColorKey(metricId, undefined, undefined);
+  const chart: ChartSpec = {
+    kind: "bar",
+    x: metricId,
+    y: [metricId],
+    legend: true,
+    showXAxis: false,
+    showYAxis: false,
+    showGrid: true,
+    showLabels: true,
+    labelPosition: "inside",
+    palette: "warm",
+    seriesColors: { [colorKey]: "#c46d42" },
+  };
+  const document = (settings: ChartSpec) => ({
+    schemaVersion: 1,
+    nodes: [
+      {
+        id: "appearance",
+        type: "artifact",
+        position: { x: 0, y: 0 },
+        data: {
+          kind: "result",
+          title: "Chart appearance",
+          resultSetId: result.id,
+          source: result.source,
+          view: "chart",
+          chart: settings,
+        },
+      },
+    ],
+    edges: [],
+  });
+  const created = await request("POST", "/api/boards", {
+    name: "Chart appearance",
+    document: document(chart),
+  });
+  expect(created.statusCode, created.body).toBe(201);
+  const url = `/api/boards/${created.json().id}`;
+  expect((await request("GET", url)).json().document).toEqual(document(chart));
+
+  const revised: ChartSpec = {
+    ...chart,
+    showXAxis: true,
+    showYAxis: true,
+    showGrid: false,
+    showLabels: false,
+    labelPosition: "outside",
+    palette: "vivid",
+    seriesColors: {},
+  };
+  const updated = await request("PATCH", url, {
+    baseRevision: created.json().revision,
+    document: document(revised),
+  });
+  expect(updated.statusCode, updated.body).toBe(200);
+  const revision = updated.json().revision;
+  expect((await request("GET", url)).json().document).toEqual(
+    document(revised),
+  );
+
+  const rejected = await request("PATCH", url, {
+    baseRevision: revision,
+    document: document({ ...revised, seriesColors: { [colorKey]: "red" } }),
+  });
+  expect(rejected.statusCode, rejected.body).toBe(400);
+  const saved = (await request("GET", url)).json();
+  expect(saved.revision).toBe(revision);
+  expect(saved.document).toEqual(document(revised));
 });
 it("rejects malformed multibyte CSRF tokens without server errors", async () => {
   const res = await app.inject({

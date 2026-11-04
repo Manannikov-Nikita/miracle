@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   ArrowClockwise,
+  CaretRight,
   ClockCounterClockwise,
   Code,
   Database,
@@ -24,6 +25,8 @@ import { api } from "../api";
 import { ErrorBox, IconButton } from "./UI";
 import type { MetadataStore } from "../metadata-store";
 import SourceSchemaTree, { type ExplorerSourceView } from "./SourceSchemaTree";
+import ProjectFileTree from "./ProjectFileTree";
+import type { ProjectTextFile } from "../../shared/project-files";
 export type { ExplorerSourceView } from "./SourceSchemaTree";
 export type ExplorerKind = "sources" | "queries" | "history";
 export default function Explorer({
@@ -39,6 +42,9 @@ export default function Explorer({
   queryRevision,
   onNotify,
   onClose,
+  workspaceId = "",
+  onOpenFile,
+  fileRevision = 0,
 }: {
   kind: ExplorerKind;
   connections: Connection[];
@@ -48,10 +54,13 @@ export default function Explorer({
   sourceViews?: Map<string, ExplorerSourceView>;
   onOpenConnections: () => void;
   onOpenQuery: (q: QueryDocument) => void;
-  onOpenSource: (q: QuerySource) => void;
+  onOpenSource: (q: QuerySource, run?: QueryRun) => void;
   queryRevision: number;
   onNotify: (m: string, t?: "error" | "success" | "info") => void;
   onClose?: () => void;
+  workspaceId?: string;
+  onOpenFile?: (file: ProjectTextFile) => void;
+  fileRevision?: number;
 }) {
   const [filters, setFilters] = useState<Record<ExplorerKind, string>>({
     sources: "",
@@ -63,6 +72,8 @@ export default function Explorer({
     setFilters((current) => ({ ...current, [kind]: value }));
   const searchInput = useRef<HTMLInputElement>(null);
   const [queries, setQueries] = useState<QueryDocument[]>([]);
+  const [treeRevision, setTreeRevision] = useState(0);
+  const [savedExpanded, setSavedExpanded] = useState(false);
   const [history, setHistory] = useState<QueryRun[]>([]);
   const localViews = useRef(new Map<string, ExplorerSourceView>());
   const views = sourceViews || localViews.current;
@@ -84,6 +95,7 @@ export default function Explorer({
       return;
     }
     setLoading(true);
+    if (kind === "queries") setTreeRevision((value) => value + 1);
     setError(null);
     try {
       if (kind === "queries")
@@ -127,7 +139,7 @@ export default function Explorer({
     kind === "sources"
       ? "Источники данных"
       : kind === "queries"
-        ? "SQL-файлы"
+        ? "Проводник проекта"
         : "История запросов";
   const search = filter.trim().toLowerCase();
   const visibleQueries = queries.filter((q) =>
@@ -197,7 +209,7 @@ export default function Explorer({
             error={error}
             title={
               kind === "queries"
-                ? "Не удалось загрузить SQL-файлы."
+                ? "Не удалось загрузить сохранённые запросы."
                 : "Не удалось загрузить историю запросов."
             }
             actions={
@@ -251,36 +263,50 @@ export default function Explorer({
         )}
         {kind === "queries" && (
           <>
-            <div className="explorer-section-label">
-              SQL-ФАЙЛЫ <span>{queries.length}</span>
-            </div>
-            {visibleQueries.map((q) => (
+            {!onOpenFile && (
+              <div className="explorer-section-label">ФАЙЛЫ ПРОЕКТА</div>
+            )}
+            {onOpenFile && (
+              <ProjectFileTree
+                workspaceId={workspaceId}
+                filter={filter}
+                revision={treeRevision + fileRevision}
+                onOpenFile={onOpenFile}
+                onNotify={onNotify}
+                onClearFilter={() => setFilter("")}
+              />
+            )}
+            {queries.length > 0 && (
               <button
-                key={q.id}
-                className="saved-query-item"
-                title={q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
-                onClick={() => onOpenQuery(q)}
+                type="button"
+                className="explorer-section-label project-saved-heading"
+                aria-expanded={savedExpanded || !!search}
+                onClick={() => setSavedExpanded((value) => !value)}
               >
-                <Code size={15} />
-                <span>
-                  {q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
-                </span>
+                <CaretRight
+                  size={12}
+                  style={{
+                    transform:
+                      savedExpanded || search ? "rotate(90deg)" : undefined,
+                  }}
+                />
+                Сохранённые SQL <span>{queries.length}</span>
               </button>
-            ))}
-            {!loading && !error && search && !visibleQueries.length && (
-              <p className="explorer-empty-search" role="status">
-                Файлы не найдены
-              </p>
             )}
-            {!loading && !error && !search && !queries.length && (
-              <div className="explorer-placeholder">
-                <Code size={24} />
-                <p>
-                  Сохраните запрос —<br />
-                  он появится здесь.
-                </p>
-              </div>
-            )}
+            {(savedExpanded || !!search) &&
+              visibleQueries.map((q) => (
+                <button
+                  key={q.id}
+                  className="saved-query-item"
+                  title={q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
+                  onClick={() => onOpenQuery(q)}
+                >
+                  <Code size={15} />
+                  <span>
+                    {q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
+                  </span>
+                </button>
+              ))}
           </>
         )}
         {kind === "history" && (
@@ -290,7 +316,7 @@ export default function Explorer({
               <button
                 key={r.id}
                 className="history-item"
-                onClick={() => onOpenSource(r.source)}
+                onClick={() => onOpenSource(r.source, r)}
               >
                 <span className={`history-dot ${r.status}`} />
                 <div>
@@ -310,15 +336,17 @@ export default function Explorer({
                     ·{" "}
                     {r.status === "completed"
                       ? "Выполнен"
-                      : r.status === "failed"
-                        ? "Ошибка"
-                        : r.status === "cancelled"
-                          ? "Отменён"
-                          : r.status === "running"
-                            ? "Выполняется"
-                            : r.status === "cancelling"
-                              ? "Отмена"
-                              : "Прерван"}
+                      : r.status === "paused"
+                        ? "Приостановлен"
+                        : r.status === "failed"
+                          ? "Ошибка"
+                          : r.status === "cancelled"
+                            ? "Отменён"
+                            : r.status === "running"
+                              ? "Выполняется"
+                              : r.status === "cancelling"
+                                ? "Отмена"
+                                : "Прерван"}
                   </small>
                 </div>
               </button>
