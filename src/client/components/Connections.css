@@ -1,0 +1,23 @@
+.connection-password-field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.connection-password {
+  display: flex;
+  gap: 6px;
+}
+.connection-password input {
+  flex: 1;
+  min-width: 0;
+}
+.connection-login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.connection-browser-login {
+  padding-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}

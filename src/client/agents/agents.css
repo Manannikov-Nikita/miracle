@@ -1015,6 +1015,10 @@
   }
 }
 @media (prefers-reduced-motion: no-preference) {
+  .agent-activity-icon[data-state="running"] {
+    animation: spin 1s linear infinite;
+    transform-origin: center;
+  }
   .agent-panel {
     animation: agent-appear 180ms ease-out;
   }

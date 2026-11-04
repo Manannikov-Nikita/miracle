@@ -186,6 +186,7 @@ export function redactConnectionText(
     tls?.clientCert,
     tls?.clientKey,
     connection.trino?.tls?.caCert,
+    connection.trinoAuth?.getToken(),
     Buffer.from(`${connection.username}:${connection.password}`).toString(
       "base64",
     ),

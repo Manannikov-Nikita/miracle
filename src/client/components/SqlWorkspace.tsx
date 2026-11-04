@@ -108,7 +108,13 @@ monaco.editor.defineTheme("miracle-dark", {
     "editorWidget.background": "#2b2d31",
     "editorWidget.border": "#45484e",
     "editorSuggestWidget.background": "#2b2d31",
-    "editorSuggestWidget.selectedBackground": "#3b3e43",
+    "editorSuggestWidget.border": "#45484e",
+    "editorSuggestWidget.foreground": "#eeeff0",
+    "editorSuggestWidget.selectedBackground": "#35443c",
+    "editorSuggestWidget.selectedForeground": "#eeeff0",
+    "editorSuggestWidget.selectedIconForeground": "#b9d3c5",
+    "editorSuggestWidget.highlightForeground": "#b9d3c5",
+    "editorSuggestWidget.focusHighlightForeground": "#b9d3c5",
     "editorIndentGuide.background1": "#303338",
   },
 });
@@ -172,6 +178,18 @@ export default function SqlWorkspace(p: Props) {
   return <LoadedSqlWorkspace {...p} documents={documents} />;
 }
 function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
+  const [editorOverlays, setEditorOverlays] = useState<HTMLDivElement | null>(
+    null,
+  );
+  useEffect(() => {
+    // Monaco reads this host at construction. Keep floating widgets outside the
+    // clipped resizable panels, while retaining Monaco's theme/style ancestor.
+    const host = document.createElement("div");
+    host.className = "monaco-editor vs-dark miracle-editor-overlays";
+    document.body.append(host);
+    setEditorOverlays(host);
+    return () => host.remove();
+  }, []);
   const storage = `miracle:sql-tabs:${p.workspaceId}`;
   const [tabs, setTabs] = useState<Tab[]>(() => {
     let initial = p.documents.map(documentToTab);
@@ -1226,45 +1244,51 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       >
         <Panel id="editor" defaultSize="55%" minSize="100px" collapsible>
           <div className="editor-area">
-            <Editor
-              path={`miracle-query://${p.workspaceId}/${active.id}.sql`}
-              defaultValue={active.sql}
-              onChange={(value) => patch(active.id, { sql: value || "" })}
-              language={sqlLanguageForEngine(connection?.engine)}
-              theme="miracle-dark"
-              onMount={mount}
-              saveViewState
-              keepCurrentModel
-              loading={
-                <div className="editor-loading">
-                  <Spinner />
-                  Открываем редактор…
-                </div>
-              }
-              options={{
-                fontSize: 13,
-                fontFamily:
-                  '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
-                lineHeight: 23,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                padding: { top: 18, bottom: 14 },
-                lineNumbersMinChars: 3,
-                renderLineHighlight: "line",
-                automaticLayout: true,
-                wordWrap: "off",
-                tabSize: 4,
-                ariaLabel: "Редактор SQL",
-                quickSuggestions: true,
-                overviewRulerLanes: 0,
-                hideCursorInOverviewRuler: true,
-                scrollbar: {
-                  verticalScrollbarSize: 7,
-                  horizontalScrollbarSize: 7,
-                },
-                stickyScroll: { enabled: false },
-              }}
-            />
+            {editorOverlays && (
+              <Editor
+                path={`miracle-query://${p.workspaceId}/${active.id}.sql`}
+                defaultValue={active.sql}
+                onChange={(value) => patch(active.id, { sql: value || "" })}
+                language={sqlLanguageForEngine(connection?.engine)}
+                theme="miracle-dark"
+                onMount={mount}
+                saveViewState
+                keepCurrentModel
+                loading={
+                  <div className="editor-loading">
+                    <Spinner />
+                    Открываем редактор…
+                  </div>
+                }
+                options={{
+                  overflowWidgetsDomNode: editorOverlays,
+                  fixedOverflowWidgets: true,
+                  fontSize: 13,
+                  fontFamily:
+                    '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
+                  lineHeight: 23,
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  padding: { top: 18, bottom: 14 },
+                  lineNumbersMinChars: 3,
+                  renderLineHighlight: "line",
+                  automaticLayout: true,
+                  wordWrap: "off",
+                  tabSize: 4,
+                  ariaLabel: "Редактор SQL",
+                  quickSuggestions: true,
+                  suggestFontSize: 13,
+                  suggestLineHeight: 28,
+                  overviewRulerLanes: 0,
+                  hideCursorInOverviewRuler: true,
+                  scrollbar: {
+                    verticalScrollbarSize: 7,
+                    horizontalScrollbarSize: 7,
+                  },
+                  stickyScroll: { enabled: false },
+                }}
+              />
+            )}
             <div className="editor-status">
               <span>
                 {!connection

@@ -340,7 +340,10 @@ try {
         ...plain,
         clickhouse: { settings: { join_use_nulls: "1" } },
       }),
-      /readonly|read.only|READONLY|setting|ClickHouse HTTP/i,
+      {
+        code: "CONNECTION_HTTP",
+        details: /\bCode: 164\b[\s\S]*\bjoin_use_nulls\b[\s\S]*\(READONLY\)/,
+      },
     );
     console.log(
       "PASS existing synthetic readonly HTTP baseline and server settings constraints",

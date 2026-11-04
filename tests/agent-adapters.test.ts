@@ -238,7 +238,7 @@ describe("native agent adapters", () => {
     const f = setup("claude", "old-cli");
     await expect(
       validateAgentCommand("claude", f.command, f.cwd),
-    ).rejects.toThrow(/does not support/);
+    ).rejects.toThrow(/stream-json structured protocol/);
   });
   it("rejects incompatible Codex handshake before starting a thread", async () => {
     const f = setup("codex", "bad-handshake");

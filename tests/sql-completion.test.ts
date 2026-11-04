@@ -171,6 +171,7 @@ describe("lazy schema suggestions", () => {
       label: "lake.analytics",
       insertText: "lake.analytics",
       kind: "schema",
+      sortText: expect.any(String),
     });
   });
   it("keeps schemas and SQL keywords when hundreds of tables share their prefix", () => {

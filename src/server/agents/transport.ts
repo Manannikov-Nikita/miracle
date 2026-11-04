@@ -2,7 +2,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   buildAgentCommand,
   childAgentEnvironment,
-  parseAgentCommand,
   type AgentProvider,
 } from "./command.js";
 
@@ -169,6 +168,7 @@ async function probe(
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
+  compatibilityHint: string,
   signal?: AbortSignal,
 ) {
   if (signal?.aborted)
@@ -220,7 +220,7 @@ async function probe(
         `Agent capability check failed (${result.code}): ${sanitizeAgentText(
           stderr,
           Object.values(env).filter((v): v is string => !!v && v.length > 12),
-        )}`,
+        )}\n${compatibilityHint}`,
       );
     return output;
   } finally {
@@ -235,25 +235,34 @@ export async function checkAgentCommand(
   cwd: string,
   signal?: AbortSignal,
 ) {
-  const built = buildAgentCommand(provider, command),
-    parsed = parseAgentCommand(command);
-  const env = childAgentEnvironment(process.env, parsed.env);
-  // Keep wrapper arguments, but omit user flags for generic version/help capability probes.
-  const prefix: string[] = [];
-  for (const arg of parsed.args) {
-    if (arg.startsWith("-")) break;
-    prefix.push(arg);
-  }
+  const built = buildAgentCommand(provider, command);
+  const env = childAgentEnvironment(process.env, built.env);
+  const providerName = provider === "claude" ? "Claude Code" : "Codex";
+  const protocol = provider === "claude" ? "stream-json" : "app-server";
+  const compatibilityHint =
+    `Miracle requires the ${providerName} ${protocol} structured protocol. ` +
+    `A command that rejects the managed protocol arguments is incompatible with this chat. ` +
+    `Use a compatible ${providerName} CLI directly or a wrapper that forwards all managed protocol arguments.`;
+  // Version checks keep the complete launcher. Help also validates the actual
+  // provider settings and protocol options used by the turn.
   const version = (
-    await probe(parsed.executable, [...prefix, "--version"], cwd, env, signal)
+    await probe(
+      built.executable,
+      [...built.prefixArgs, "--version"],
+      cwd,
+      env,
+      compatibilityHint,
+      signal,
+    )
   ).trim();
   if (!version || version.length > 500)
     throw agentError("The configured executable did not report a CLI version");
   const help = await probe(
-    parsed.executable,
-    [...prefix, ...(provider === "codex" ? ["app-server"] : []), "--help"],
+    built.executable,
+    [...built.args, "--help"],
     cwd,
     env,
+    compatibilityHint,
     signal,
   );
   const required =
@@ -270,7 +279,7 @@ export async function checkAgentCommand(
   const missing = required.filter((flag) => !help.includes(flag));
   if (missing.length)
     throw agentError(
-      `Installed ${provider} CLI (${version}) does not support ${missing.join(", ")}; update the CLI or configure a compatible wrapper`,
+      `The configured ${providerName} command (${version}) does not advertise ${missing.join(", ")}. ${compatibilityHint}`,
     );
   return {
     version,

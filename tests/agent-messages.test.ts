@@ -47,6 +47,7 @@ describe("agent transcript", () => {
   const render = async (
     messages: AgentMessage[],
     status: AgentTurn["status"] = "running",
+    turns: AgentTurn[] = [turn(status)],
   ) => {
     const state = {
       conversation: {
@@ -57,7 +58,7 @@ describe("agent transcript", () => {
           profileId: "profile",
         },
         messages,
-        turns: [turn(status)],
+        turns,
       },
       active: ["running", "waiting"].includes(status) ? turn(status) : null,
       resolvedApprovals: new Map(),
@@ -86,15 +87,20 @@ describe("agent transcript", () => {
     expect(user.querySelectorAll("button")).toHaveLength(0);
   });
 
-  it("keeps one reserved activity row and the same answer element when hundreds of tool events arrive", async () => {
+  it("keeps activity visible before an answer and below the same answer element as it streams and tool events arrive", async () => {
     const conversation = [
       message("user", "user", "Count trips"),
       message("answer", "assistant", "Checking the data"),
     ];
-    await render(conversation);
-    const answer = host.querySelector("article.assistant")!;
+    await render(conversation.slice(0, 1));
     const activity = host.querySelector(".agent-activity-summary")!;
     expect(activity).not.toBeNull();
+    expect(activity.textContent).toContain("Думает");
+    expect(host.querySelector("article.assistant")).toBeNull();
+    await render(conversation);
+    const answer = host.querySelector("article.assistant")!;
+    expect(host.querySelector(".agent-activity-summary")).toBe(activity);
+    expect(answer.nextElementSibling).toBe(activity);
     const position = Array.from(answer.parentElement!.children).indexOf(answer);
     const actions = Array.from({ length: 200 }, (_, i) =>
       message(`event-${i}`, "action", "read_result", {
@@ -102,15 +108,63 @@ describe("agent transcript", () => {
         phase: "started",
       }),
     );
-    await render([...conversation, ...actions]);
+    await render([
+      conversation[0]!,
+      { ...conversation[1]!, content: "Checking the data: 200 results" },
+      ...actions,
+    ]);
     expect(host.querySelectorAll(".agent-activity-summary")).toHaveLength(1);
     expect(host.querySelector(".agent-activity-summary")).toBe(activity);
     expect(host.querySelector("article.assistant")).toBe(answer);
+    expect(answer.textContent).toContain("Checking the data: 200 results");
+    expect(answer.nextElementSibling).toBe(activity);
+    expect(activity.textContent).toContain("Работает");
     expect(Array.from(answer.parentElement!.children).indexOf(answer)).toBe(
       position,
     );
     expect(host.querySelectorAll("article.action")).toHaveLength(0);
     expect(host.textContent).not.toContain("read_result");
+  });
+
+  it("places each completed turn's activity below its own replies", async () => {
+    const previousTurn = { ...turn("completed"), id: "previous" };
+    const previousMessages = [
+      message("previous-user", "user", "Read the board"),
+      message("previous-tool", "action", "read_board", {
+        id: "previous-call",
+        result: "earlier receipt",
+      }),
+      message("previous-answer", "assistant", "The board is ready"),
+      message("previous-summary", "assistant", "There are three charts"),
+    ].map((item) => ({ ...item, turnId: previousTurn.id }));
+    await render(
+      [
+        ...previousMessages,
+        message("user", "user", "Read the schema"),
+        message("tool", "action", "read_schema", {
+          id: "current-call",
+          result: "latest receipt",
+        }),
+        message("answer", "assistant", "The schema is ready"),
+      ],
+      "completed",
+      [previousTurn, turn("completed")],
+    );
+    const sections = host.querySelectorAll(".agent-turn");
+    expect(sections).toHaveLength(2);
+    for (const section of sections) {
+      const replies = section.querySelectorAll("article.assistant");
+      expect(replies[replies.length - 1]!.nextElementSibling).toBe(
+        section.querySelector(".agent-activity-summary"),
+      );
+    }
+    const previous = host.querySelector('[data-turn-id="previous"]')!;
+    await act(async () =>
+      previous.querySelector<HTMLButtonElement>("button")!.click(),
+    );
+    const dialog = host.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("earlier receipt");
+    expect(dialog.textContent).not.toContain("latest receipt");
   });
 
   it("opens details outside the transcript and combines phases only for the same native call", async () => {
@@ -164,6 +218,9 @@ describe("agent transcript", () => {
     )!;
     expect(allow).toBeDefined();
     expect(allow.closest(".agent-message.approval")).not.toBeNull();
+    expect(allow.closest(".agent-message.approval")!.nextElementSibling).toBe(
+      host.querySelector(".agent-activity-summary"),
+    );
     await act(async () => allow.click());
     expect(approve).toHaveBeenCalledWith("approve-1", "allow");
     await render(

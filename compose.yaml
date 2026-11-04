@@ -25,7 +25,7 @@ services:
       - ./infra/trino/access-control.properties:/etc/trino/access-control.properties:ro
       - ./infra/trino/rules.json:/etc/trino/rules.json:ro
     healthcheck:
-      test: [CMD-SHELL, "curl -fsS http://localhost:8080/v1/info >/dev/null"]
+      test: [CMD, /usr/lib/trino/bin/health-check]
       interval: 5s
       timeout: 5s
       retries: 60

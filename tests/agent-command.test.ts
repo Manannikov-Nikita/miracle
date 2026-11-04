@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   parseAgentCommand,
   buildAgentCommand,
@@ -90,4 +92,72 @@ describe("agent command", () => {
       ).args,
     ).toContain("mcp_servers.other.url=https://example.test/mcp");
   });
+
+  it.each([
+    ["npx -y @openai/codex", ["-y", "@openai/codex"]],
+    [
+      "npx --package=@openai/codex -- codex",
+      ["--package=@openai/codex", "--", "codex"],
+    ],
+    [
+      "node --no-warnings '/tmp/агент cli.mjs'",
+      ["--no-warnings", "/tmp/агент cli.mjs"],
+    ],
+    [
+      "node --import /tmp/register.mjs /tmp/cli.mjs",
+      ["--import", "/tmp/register.mjs", "/tmp/cli.mjs"],
+    ],
+    [
+      "env -u CLAUDECODE MODE=local node --no-warnings /tmp/cli.mjs",
+      [
+        "-u",
+        "CLAUDECODE",
+        "MODE=local",
+        "node",
+        "--no-warnings",
+        "/tmp/cli.mjs",
+      ],
+    ],
+    [
+      "env -- MODE=local node --no-warnings /tmp/cli.mjs",
+      ["--", "MODE=local", "node", "--no-warnings", "/tmp/cli.mjs"],
+    ],
+  ])(
+    "keeps the launcher prefix before Codex transport arguments: %s",
+    (launcher, prefix) => {
+      expect(
+        buildAgentCommand("codex", `${launcher} --model custom -a on-request`)
+          .args,
+      ).toEqual([
+        ...prefix,
+        "app-server",
+        "-c",
+        'model="custom"',
+        "-c",
+        'approval_policy="on-request"',
+      ]);
+    },
+  );
+
+  it("expands the executable home directory without evaluating shell expressions", () => {
+    expect(buildAgentCommand("codex", "'~/my cli/codex'").executable).toBe(
+      join(homedir(), "my cli/codex"),
+    );
+  });
+
+  it.each([
+    "npx --call codex",
+    "node --eval code",
+    "node --import",
+    "npx -y",
+    "env --split-string 'codex --model custom'",
+    "env -i codex",
+  ])(
+    "rejects unsupported or incomplete launchers with a wrapper instruction: %s",
+    (command) => {
+      expect(() => buildAgentCommand("codex", command)).toThrow(
+        /wrapper script/i,
+      );
+    },
+  );
 });
