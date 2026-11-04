@@ -163,9 +163,6 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
                 <MessageContent content={message.content} />
               </article>
             ))}
-            {hasActivity && (
-              <AgentActivity messages={group.messages} turn={group.turn} />
-            )}
             {replyMessages.map((message) =>
               message.role === "approval" ? (
                 <Approval key={message.id} message={message} state={state} />
@@ -190,6 +187,9 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
                   <MessageContent content={message.content} />
                 </article>
               ),
+            )}
+            {hasActivity && (
+              <AgentActivity messages={group.messages} turn={group.turn} />
             )}
           </section>
         );
