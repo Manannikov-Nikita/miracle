@@ -32,9 +32,11 @@ export interface ClickHousePublicOptions {
   };
 }
 export interface TrinoOptions {
+  externalAuthentication?: boolean;
   tls?: { caCert?: string | null } | null;
 }
 export interface TrinoPublicOptions {
+  externalAuthentication?: boolean;
   tls?: { hasCaCert: boolean };
 }
 export interface Connection {

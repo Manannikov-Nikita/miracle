@@ -42,6 +42,7 @@ import {
   validateTrinoConnection,
 } from "./trinoOptions.js";
 import { assertReadOnly } from "./sql.js";
+import { TrinoAuthManager } from "./trinoAuth.js";
 import { registerMetadataRoutes, readPage } from "./metadata.js";
 import { AgentManager } from "./agents/manager.js";
 import { registerAgentRoutes } from "./agents/routes.js";
@@ -234,6 +235,7 @@ export async function buildApp(
   const initialFiles = existsSync(dataDir) ? readdirSync(dataDir) : [];
   // The exclusive connection owns even interrupted initialization recovery.
   const db = new Database(dataDir);
+  const trinoAuth = new TrinoAuthManager();
   try {
     const schemaVersion = Number(
       db.sqlite.prepare("PRAGMA user_version").get()!.user_version,
@@ -476,12 +478,14 @@ export async function buildApp(
     async function connection(id: string): Promise<EngineConnection> {
       const r = db.query("SELECT * FROM connections WHERE id=?1", [id]).rows[0];
       if (!r) throw err(404, "Подключение не найдено");
-      return {
+      const c: EngineConnection = {
         ...connectionDto(r),
         password: r.password_encrypted ? box.decrypt(r.password_encrypted) : "",
         clickhouse: savedClickHouseOptions(r),
         trino: savedTrinoOptions(r),
       };
+      c.trinoAuth = trinoAuth.context(c, `saved:${id}`);
+      return c;
     }
     app.get("/api/connections", async (req) => {
       need(req);
@@ -528,9 +532,53 @@ export async function buildApp(
       c.clickhouse ? box.encrypt(JSON.stringify(c.clickhouse)) : null;
     const encryptedTrinoOptions = (c: EngineConnection) =>
       c.trino ? box.encrypt(JSON.stringify(c.trino)) : null;
+    const connectionWriteSchema = connectionSchema.extend({
+      authSessionId: z.uuid().optional(),
+    });
+    const authInputSchema = connectionSchema.extend({
+      id: z.uuid().optional(),
+      authSessionId: z.uuid().optional(),
+    });
+    function attachAuthentication(
+      c: EngineConnection,
+      id?: string,
+      authSessionId?: string,
+    ) {
+      if (authSessionId)
+        c.trinoAuth = trinoAuth.sessionContext(
+          c,
+          authSessionId,
+          id ? `saved:${id}` : undefined,
+        );
+      else if (id) c.trinoAuth = trinoAuth.context(c, `saved:${id}`);
+      return c;
+    }
+    app.post("/api/connections/auth/start", async (req) => {
+      need(req);
+      const {
+        id,
+        authSessionId: _,
+        ...input
+      } = authInputSchema.parse(req.body);
+      const c = id
+        ? mergedConnection(await connection(id), input)
+        : validateConnection(input);
+      return trinoAuth.start(c, id ? `saved:${id}` : undefined);
+    });
+    app.post("/api/connections/auth/:id/poll", async (req) => {
+      need(req);
+      return trinoAuth.poll(uuid(req));
+    });
+    app.delete("/api/connections/auth/:id", async (req) => {
+      need(req);
+      trinoAuth.cancel(uuid(req));
+      return { ok: true };
+    });
     app.post("/api/connections", async (req, reply) => {
       need(req);
-      const b = validateConnection(req.body);
+      const { authSessionId, ...input } = connectionWriteSchema.parse(req.body);
+      const b = validateConnection(input);
+      if (authSessionId) trinoAuth.sessionContext(b, authSessionId);
       const r = db.query(
         "INSERT INTO connections(id,name,engine,url,username,password_encrypted,database_name,catalog,schema_name,clickhouse_options_encrypted,trino_options_encrypted) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) RETURNING *",
         [
@@ -547,14 +595,20 @@ export async function buildApp(
           encryptedTrinoOptions(b),
         ],
       ).rows[0];
+      if (authSessionId) trinoAuth.promote(b, authSessionId, `saved:${r.id}`);
       reply.code(201);
       return connectionDto(r);
     });
     app.patch("/api/connections/:id", async (req) => {
       need(req);
       const id = uuid(req);
-      const patch = connectionSchema.partial().parse(req.body);
-      const b = mergedConnection(await connection(id), patch);
+      const { authSessionId, ...patch } = connectionWriteSchema
+        .partial()
+        .parse(req.body);
+      const old = await connection(id);
+      const b = mergedConnection(old, patch);
+      if (authSessionId)
+        trinoAuth.sessionContext(b, authSessionId, `saved:${id}`);
       const r = db.query(
         "UPDATE connections SET name=?2,engine=?3,url=?4,username=?5,password_encrypted=?6,database_name=?7,catalog=?8,schema_name=?9,clickhouse_options_encrypted=?10,trino_options_encrypted=?11 WHERE id=?1 RETURNING *",
         [
@@ -571,17 +625,21 @@ export async function buildApp(
           encryptedTrinoOptions(b),
         ],
       ).rows[0];
+      if (trinoAuth.changed(old, b))
+        trinoAuth.invalidate(`saved:${id}`, authSessionId);
+      if (authSessionId) trinoAuth.promote(b, authSessionId, `saved:${id}`);
       return connectionDto(r);
     });
     app.post("/api/connections/test", async (req) => {
       need(req);
-      const body = connectionSchema
-        .extend({ id: z.uuid().optional() })
-        .parse(req.body);
-      const { id, ...input } = body;
-      const c = id
-        ? mergedConnection(await connection(id), input)
-        : validateConnection(input);
+      const { id, authSessionId, ...input } = authInputSchema.parse(req.body);
+      const c = attachAuthentication(
+        id
+          ? mergedConnection(await connection(id), input)
+          : validateConnection(input),
+        id,
+        authSessionId,
+      );
       try {
         const result = await engineMetadata(c, "SELECT version()");
         return { ok: true, version: String(result.rows[0]?.[0] || "") };
@@ -592,10 +650,10 @@ export async function buildApp(
     });
     app.delete("/api/connections/:id", async (req) => {
       need(req);
-      if (
-        !db.query("DELETE FROM connections WHERE id=?1", [uuid(req)]).rowCount
-      )
+      const id = uuid(req);
+      if (!db.query("DELETE FROM connections WHERE id=?1", [id]).rowCount)
         throw err(404, "Подключение не найдено");
+      trinoAuth.invalidate(`saved:${id}`);
       return { ok: true };
     });
     app.post("/api/connections/:id/test", async (req) => {
@@ -1124,6 +1182,7 @@ export async function buildApp(
     }, 3600000);
     cleaner.unref();
     app.addHook("onClose", async () => {
+      trinoAuth.close();
       clearInterval(cleaner);
       await closeRuns();
       projectStore.close();

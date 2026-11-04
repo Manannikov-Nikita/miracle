@@ -1,8 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   CheckCircle,
   Database,
+  Eye,
+  EyeSlash,
   PencilSimple,
   Plus,
   Trash,
@@ -10,6 +12,7 @@ import {
   ShieldCheck,
 } from "@phosphor-icons/react";
 import type { Connection, ConnectionInput } from "../../shared/types";
+import { parseTrinoJdbcUrl } from "../../shared/trino-url";
 import { api, json } from "../api";
 import { describeError } from "../error-message";
 import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
@@ -19,6 +22,8 @@ import ClickHouseConnectionOptions, {
 import TrinoConnectionOptions, {
   trinoFormError,
 } from "./TrinoConnectionOptions";
+import { useTrinoLogin } from "./useTrinoLogin";
+import "./Connections.css";
 const blank: ConnectionInput = {
   name: "",
   engine: "clickhouse",
@@ -49,6 +54,18 @@ export default function Connections({
 }) {
   const [editing, setEditing] = useState<Connection | null | undefined>();
   const [form, setForm] = useState<ConnectionInput>(blank);
+  const passwordId = useId();
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [jdbcUrl, setJdbcUrl] = useState("");
+  const [jdbcError, setJdbcError] = useState<unknown>();
+  const login = useTrinoLogin(
+    form,
+    editing?.id,
+    open &&
+      editing !== undefined &&
+      form.engine === "trino" &&
+      !!form.trino?.externalAuthentication,
+  );
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState("");
   const [saveError, setSaveError] = useState<{
@@ -69,6 +86,9 @@ export default function Connections({
     if (!open) {
       setEditing(undefined);
       setSaveError(undefined);
+      setPasswordVisible(false);
+      setJdbcUrl("");
+      setJdbcError(undefined);
     }
   }, [open]);
   function edit(c?: Connection) {
@@ -95,18 +115,53 @@ export default function Connections({
                     : undefined,
                 }
               : undefined,
-            trino: c.trino ? {} : undefined,
+            trino: c.trino
+              ? { externalAuthentication: c.trino.externalAuthentication }
+              : undefined,
           }
         : { ...blank },
     );
     setSaveError(undefined);
     setDraftStatus(undefined);
     setReadingCertificate(false);
+    setPasswordVisible(false);
+    setJdbcUrl("");
+    setJdbcError(undefined);
+  }
+  function importJdbc() {
+    try {
+      const imported = parseTrinoJdbcUrl(jdbcUrl);
+      setForm((current) => ({
+        ...current,
+        url: imported.url,
+        username: imported.username ?? current.username,
+        password: imported.password ?? current.password,
+        catalog: imported.catalog ?? "",
+        schema: imported.schema ?? "",
+        trino: {
+          ...current.trino,
+          externalAuthentication: imported.externalAuthentication,
+        },
+      }));
+      setPasswordVisible(false);
+      setJdbcUrl("");
+      setJdbcError(undefined);
+    } catch (error) {
+      setJdbcError(error);
+    }
   }
   function validate() {
     return form.engine === "clickhouse"
       ? clickhouseFormError(form.url, form.clickhouse, editing?.clickhouse)
       : trinoFormError(form.url, form.trino, editing?.trino);
+  }
+  function resetExpiredLogin(error: unknown) {
+    if (
+      /^TRINO_AUTH_(?:REQUIRED|EXPIRED)$/.test(
+        (error as { code?: string })?.code ?? "",
+      )
+    )
+      login.cancel();
   }
   async function testDraft() {
     setSaveError(undefined);
@@ -126,6 +181,7 @@ export default function Connections({
             ...form,
             password: form.password || undefined,
             id: editing?.id,
+            authSessionId: login.authSessionId,
           }),
         },
       );
@@ -135,6 +191,7 @@ export default function Connections({
         ok: true,
       });
     } catch (error) {
+      resetExpiredLogin(error);
       setDraftStatus({ form, error, ok: false });
     } finally {
       setDraftTesting(false);
@@ -151,7 +208,11 @@ export default function Connections({
     setBusy(true);
     setSaveError(undefined);
     try {
-      const body = { ...form, password: form.password || undefined };
+      const body = {
+        ...form,
+        password: form.password || undefined,
+        authSessionId: login.authSessionId,
+      };
       await api(`/api/connections${editing ? "/" + editing.id : ""}`, {
         method: editing ? "PATCH" : "POST",
         body: json(body),
@@ -162,6 +223,7 @@ export default function Connections({
       onChanged(editing?.id);
       onNotify("Подключение сохранено", "success");
     } catch (e) {
+      resetExpiredLogin(e);
       setSaveError({ form, error: e });
     } finally {
       setBusy(false);
@@ -287,6 +349,36 @@ export default function Connections({
                   ))}
                 </div>
               )}
+              {form.engine === "trino" && (
+                <details className="connection-options">
+                  <summary>Импорт JDBC URL</summary>
+                  <div className="connection-options-body">
+                    <label>
+                      JDBC URL Trino
+                      <input
+                        aria-label="JDBC URL Trino"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={jdbcUrl}
+                        onChange={(event) => {
+                          setJdbcUrl(event.target.value);
+                          setJdbcError(undefined);
+                        }}
+                        placeholder="jdbc:trino://host:8443/catalog/schema?SSL=true"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="button small"
+                      disabled={!jdbcUrl.trim()}
+                      onClick={importJdbc}
+                    >
+                      Импортировать JDBC URL
+                    </button>
+                    {jdbcError !== undefined && <ErrorBox error={jdbcError} />}
+                  </div>
+                </details>
+              )}
               <label>
                 Название
                 <input
@@ -333,7 +425,10 @@ export default function Connections({
                 <label>
                   Пользователь
                   <input
-                    required
+                    required={
+                      form.engine !== "trino" ||
+                      !form.trino?.externalAuthentication
+                    }
                     autoComplete="off"
                     value={form.username}
                     onChange={(e) =>
@@ -342,26 +437,51 @@ export default function Connections({
                     placeholder="readonly"
                   />
                 </label>
-                <label>
-                  Пароль
-                  <input
-                    type="password"
-                    disabled={
-                      form.engine === "clickhouse" &&
-                      Boolean(form.clickhouse?.tls?.certificateAuth)
-                    }
-                    autoComplete="new-password"
-                    value={form.password || ""}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, password: e.target.value }))
-                    }
-                    placeholder={
-                      editing?.hasPassword
-                        ? "Сохранён · оставьте пустым"
-                        : "Пароль подключения"
-                    }
-                  />
-                </label>
+                <div className="connection-password-field">
+                  <label htmlFor={passwordId}>Пароль</label>
+                  <div className="connection-password">
+                    <input
+                      id={passwordId}
+                      type={passwordVisible ? "text" : "password"}
+                      disabled={
+                        form.engine === "clickhouse" &&
+                        Boolean(form.clickhouse?.tls?.certificateAuth)
+                      }
+                      autoComplete="new-password"
+                      value={form.password || ""}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, password: e.target.value }))
+                      }
+                      placeholder={
+                        editing?.hasPassword
+                          ? "Сохранён · оставьте пустым"
+                          : "Пароль подключения"
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="button"
+                      aria-label={
+                        passwordVisible ? "Скрыть пароль" : "Показать пароль"
+                      }
+                      title={
+                        passwordVisible ? "Скрыть пароль" : "Показать пароль"
+                      }
+                      aria-pressed={passwordVisible}
+                      disabled={
+                        form.engine === "clickhouse" &&
+                        !!form.clickhouse?.tls?.certificateAuth
+                      }
+                      onClick={() => setPasswordVisible((visible) => !visible)}
+                    >
+                      {passwordVisible ? (
+                        <EyeSlash size={17} />
+                      ) : (
+                        <Eye size={17} />
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
               {form.engine === "clickhouse" ? (
                 <label>
@@ -396,6 +516,96 @@ export default function Connections({
                       placeholder="tiny"
                     />
                   </label>
+                </div>
+              )}
+              {form.engine === "trino" && (
+                <div className="connection-options-body connection-browser-login">
+                  <label className="connection-checkbox">
+                    <input
+                      type="checkbox"
+                      aria-label="Вход через браузер"
+                      checked={!!form.trino?.externalAuthentication}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          trino: {
+                            ...current.trino,
+                            externalAuthentication: event.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    Вход через браузер
+                  </label>
+                  {form.trino?.externalAuthentication && (
+                    <>
+                      <p className="muted connection-option-hint">
+                        Войдите через корпоративную страницу авторизации. После
+                        перезапуска Miracle вход потребуется повторить.
+                      </p>
+                      <div className="connection-login-actions">
+                        {login.pending ? (
+                          <button
+                            type="button"
+                            className="button small"
+                            onClick={login.cancel}
+                          >
+                            Отменить вход
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="button small"
+                            onClick={(event) => {
+                              if (!event.currentTarget.form?.reportValidity())
+                                return;
+                              const validation = validate();
+                              if (validation) {
+                                setDraftStatus({
+                                  form,
+                                  error: validation,
+                                  ok: false,
+                                });
+                                return;
+                              }
+                              void login.start();
+                            }}
+                          >
+                            Войти через браузер
+                          </button>
+                        )}
+                        {login.state.status === "pending" &&
+                          login.state.redirectUrl && (
+                            <a
+                              className="button small"
+                              href={login.state.redirectUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              Открыть страницу входа
+                            </a>
+                          )}
+                      </div>
+                      {login.state.status === "starting" && (
+                        <span role="status">Подготовка входа…</span>
+                      )}
+                      {login.state.status === "pending" && (
+                        <span role="status">Ожидаем вход в браузере…</span>
+                      )}
+                      {login.state.status === "authenticated" && (
+                        <span role="status" className="success-text">
+                          Вход выполнен
+                        </span>
+                      )}
+                      {login.state.status === "error" && (
+                        <ErrorBox
+                          error={login.state.error}
+                          context="connection"
+                          engine="trino"
+                        />
+                      )}
+                    </>
+                  )}
                 </div>
               )}
               {form.engine === "clickhouse" ? (
@@ -479,7 +689,12 @@ export default function Connections({
                   <button
                     type="button"
                     className="button"
-                    disabled={busy || draftTesting || readingCertificate}
+                    disabled={
+                      busy ||
+                      draftTesting ||
+                      readingCertificate ||
+                      login.pending
+                    }
                     onClick={(event) => {
                       if (event.currentTarget.form?.reportValidity())
                         void testDraft();
@@ -490,7 +705,12 @@ export default function Connections({
                   </button>
                   <button
                     className="button primary"
-                    disabled={busy || draftTesting || readingCertificate}
+                    disabled={
+                      busy ||
+                      draftTesting ||
+                      readingCertificate ||
+                      login.pending
+                    }
                   >
                     {busy && <Spinner />}
                     Сохранить

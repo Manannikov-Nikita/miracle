@@ -1,11 +1,13 @@
 import { clickhouseRequest } from "./clickhouseTransport.js";
 import { createTrinoTransport, type TrinoResponse } from "./trinoTransport.js";
+import type { TrinoAuthContext } from "./trinoAuth.js";
 import {
   CONNECTION_ERROR_MAX_BYTES,
   CONNECTION_ERROR_TOO_LARGE,
   ConnectionDiagnosticError,
   connectionHttpError,
   connectionTransportError,
+  redactConnectionText,
   trinoQueryError,
 } from "./connectionErrors.js";
 import { CLICKHOUSE_REQUEST_TIMEOUT_DEFAULT } from "../shared/clickhouse-options.js";
@@ -19,6 +21,8 @@ import type {
 } from "../shared/types.js";
 export interface EngineConnection extends ConnectionInput {
   password: string;
+  /** Runtime-only credentials; never part of a connection DTO or persisted input. */
+  trinoAuth?: TrinoAuthContext;
 }
 export interface QueryLimits {
   timeoutMs: number;
@@ -297,13 +301,29 @@ async function trino(
   signal: AbortSignal,
   onCancel: (c: () => Promise<void>) => void,
 ): Promise<EngineResult> {
+  // Retain only the token used by this operation for diagnostics and cancellation.
+  // A concurrent settings edit or rejected request may clear the shared cache.
+  const authContext = c.trinoAuth;
+  const token = c.trino?.externalAuthentication
+    ? authContext?.getToken()
+    : undefined;
+  if (token && authContext)
+    c = {
+      ...c,
+      trinoAuth: {
+        getToken: () => token,
+        rejectToken: authContext.rejectToken,
+      },
+    };
   const headers: Record<string, string> = {
-    "X-Trino-User": c.username || "miracle",
     "X-Trino-Source": "miracle",
     "X-Trino-Time-Zone": "UTC",
     "X-Trino-Session": `query_max_run_time=${Math.ceil(l.timeoutMs / 1000)}s`,
   };
-  if (c.password) headers.Authorization = auth(c);
+  if (c.username || !c.trino?.externalAuthentication)
+    headers["X-Trino-User"] = c.username || "miracle";
+  if (c.password && !c.trino?.externalAuthentication)
+    headers.Authorization = auth(c);
   if (s.catalog || c.catalog)
     headers["X-Trino-Catalog"] = s.catalog || c.catalog!;
   if (s.schema || c.schema) headers["X-Trino-Schema"] = s.schema || c.schema!;
@@ -359,6 +379,15 @@ async function trino(
       );
     }
     return { columns, rows: result.rows, byteCount: result.byteCount };
+  } catch (error) {
+    if (error instanceof ConnectionDiagnosticError) throw error;
+    throw new ConnectionDiagnosticError(
+      redactConnectionText(
+        error instanceof Error ? error.message : "Ошибка запроса Trino",
+        c,
+      ),
+      "ENGINE_QUERY_ERROR",
+    );
   } finally {
     await transport.close();
   }

@@ -9,6 +9,7 @@ import type {
 
 export const trinoOptionsSchema = z
   .object({
+    externalAuthentication: z.boolean().optional(),
     tls: z
       .object({
         caCert: z
@@ -45,6 +46,11 @@ export function validateTrinoConnection(connection: ConnectionInput) {
   const options = trinoOptionsSchema.optional().parse(connection.trino);
   if (connection.engine !== "trino" && options)
     throw new Error("Параметры Trino недоступны для ClickHouse");
+  if (
+    options?.externalAuthentication &&
+    new URL(connection.url).protocol !== "https:"
+  )
+    throw new Error("Внешняя авторизация Trino требует URL https://");
   const ca = options?.tls?.caCert;
   if (!ca) return;
   if (new URL(connection.url).protocol !== "https:")
@@ -67,5 +73,10 @@ export function publicTrinoOptions(
   options: TrinoOptions | null | undefined,
 ): TrinoPublicOptions | undefined {
   if (!options) return undefined;
-  return options.tls ? { tls: { hasCaCert: !!options.tls.caCert } } : {};
+  return {
+    ...(options.externalAuthentication === undefined
+      ? {}
+      : { externalAuthentication: options.externalAuthentication }),
+    ...(options.tls ? { tls: { hasCaCert: !!options.tls.caCert } } : {}),
+  };
 }

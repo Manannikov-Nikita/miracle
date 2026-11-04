@@ -147,7 +147,9 @@ describe("Trino connection CA", () => {
   });
 
   it("requires HTTPS for retained CA and only removes it explicitly", async () => {
-    await click('.connection-checkbox input[type="checkbox"]');
+    await click(
+      '.connection-options .connection-checkbox input[type="checkbox"]',
+    );
     expect(
       (document.querySelector('input[type="url"]') as HTMLInputElement).value,
     ).toBe("http://warehouse.test:8443/trino");
@@ -163,12 +165,16 @@ describe("Trino connection CA", () => {
 
   it("keeps Trino ports and paths when enabling HTTPS", async () => {
     await input('input[type="url"]', "http://gateway.test:8080/trino");
-    await click('.connection-checkbox input[type="checkbox"]');
+    await click(
+      '.connection-options .connection-checkbox input[type="checkbox"]',
+    );
     expect(
       (document.querySelector('input[type="url"]') as HTMLInputElement).value,
     ).toBe("https://gateway.test:8080/trino");
     await input('input[type="url"]', "http://gateway.test/trino");
-    await click('.connection-checkbox input[type="checkbox"]');
+    await click(
+      '.connection-options .connection-checkbox input[type="checkbox"]',
+    );
     expect(
       (document.querySelector('input[type="url"]') as HTMLInputElement).value,
     ).toBe("https://gateway.test/trino");
