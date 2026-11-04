@@ -73,24 +73,42 @@ export class AgentTransport {
       this.child.stdin.write(JSON.stringify(value) + "\n");
   }
   json(onMessage: (message: any) => void, onError: (error: Error) => void) {
-    let pending = "";
+    let parts: string[] = [];
+    let pendingBytes = 0;
+    let failed = false;
+    const fail = (error: Error) => {
+      if (failed) return;
+      failed = true;
+      parts = [];
+      pendingBytes = 0;
+      onError(error);
+      void this.stop();
+    };
     this.child.stdout.setEncoding("utf8");
     this.child.stdout.on("data", (chunk: string) => {
-      pending += chunk;
-      if (Buffer.byteLength(pending) > this.maxMessageBytes) {
-        onError(
-          agentError(
-            `Provider output exceeded the ${this.maxMessageBytes / 1024 / 1024} MiB protocol message limit`,
-            "AGENT_PROTOCOL_MESSAGE_LIMIT",
-          ),
-        );
-        void this.stop();
-        return;
-      }
-      let newline: number;
-      while ((newline = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
+      if (failed) return;
+      let offset = 0;
+      while (offset < chunk.length) {
+        // Scan and count only new input; a large line may span thousands of reads.
+        const newline = chunk.indexOf("\n", offset);
+        const end = newline < 0 ? chunk.length : newline + 1;
+        const part = chunk.slice(offset, end);
+        pendingBytes += Buffer.byteLength(part);
+        if (pendingBytes > this.maxMessageBytes) {
+          fail(
+            agentError(
+              `Provider output exceeded the ${this.maxMessageBytes / 1024 / 1024} MiB protocol message limit`,
+              "AGENT_PROTOCOL_MESSAGE_LIMIT",
+            ),
+          );
+          return;
+        }
+        parts.push(part);
+        if (newline < 0) return;
+        const line = parts.join("").slice(0, -1);
+        parts = [];
+        pendingBytes = 0;
+        offset = end;
         if (!line.trim()) continue;
         try {
           const message = JSON.parse(line);
@@ -98,21 +116,18 @@ export class AgentTransport {
             throw new Error();
           onMessage(message);
         } catch {
-          onError(
+          fail(
             agentError(
               "Provider returned invalid structured JSON; check the configured CLI command",
             ),
           );
-          void this.stop();
           return;
         }
       }
     });
     this.child.stdout.once("end", () => {
-      if (pending.trim())
-        onError(
-          agentError("Provider closed with an incomplete protocol message"),
-        );
+      if (!failed && parts.join("").trim())
+        fail(agentError("Provider closed with an incomplete protocol message"));
     });
   }
   signal(signal: NodeJS.Signals) {
