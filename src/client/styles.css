@@ -999,6 +999,8 @@ svg {
   box-shadow: 0 15px 40px #0007;
 }
 .miracle-editor-overlays .suggest-details {
+  /* Monaco sizes the content separately from its border. */
+  box-sizing: content-box;
   /* Match Monaco's initial width before it measures the text in our zero-width
      overlay host. Subsequent layout/resizing uses Monaco's inline dimensions. */
   width: 330px;
