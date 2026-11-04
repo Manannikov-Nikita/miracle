@@ -347,15 +347,20 @@ it("binds draft login to its settings, expires pending login and rejects unbound
     ).toBe("TRINO_AUTH_PROTOCOL");
   }
   mode = "pending";
-  const original = globalThis.setTimeout;
-  const timer = vi
-    .spyOn(globalThis, "setTimeout")
-    .mockImplementation(((fn: any, ms: number, ...args: any[]) =>
-      original(fn, ms === 300000 ? 100 : ms, ...args)) as typeof setTimeout);
+  const timer = vi.spyOn(globalThis, "setTimeout");
   try {
     const start = await request("POST", "/api/connections/auth/start", input());
     expect(start.statusCode, start.body).toBe(200);
-    await new Promise((resolve) => original(resolve, 150));
+    const pending = await request(
+      "POST",
+      `/api/connections/auth/${start.json().id}/poll`,
+    );
+    expect(pending.statusCode, pending.body).toBe(200);
+    expect(pending.json()).toEqual({ status: "pending" });
+    const expiration = timer.mock.calls.filter(([, ms]) => ms === 300000);
+    expect(expiration).toHaveLength(1);
+    const [expire, , ...args] = expiration[0]!;
+    expire(...args);
     expect(
       (
         await request("POST", `/api/connections/auth/${start.json().id}/poll`)
