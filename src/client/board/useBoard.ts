@@ -42,6 +42,7 @@ export function useBoard(
   const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
   const current = useRef<Board | null>(null);
+  const creationEvents = useRef(new Set<Map<string, Board>>());
   const saved = useRef("");
   const history = useRef<BoardDocument[]>([]);
   const future = useRef<BoardDocument[]>([]);
@@ -318,6 +319,11 @@ export function useBoard(
   useEffect(() => {
     if (!projectSync) return;
     const receive = (value: Board) => {
+      for (const events of creationEvents.current) {
+        const previous = events.get(value.id);
+        if (!previous || previous.revision < value.revision)
+          events.set(value.id, value);
+      }
       setList((items) =>
         items.some((b) => b.id === value.id)
           ? items.map((b) =>
@@ -471,14 +477,36 @@ export function useBoard(
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
   const create = async (name: string, document = emptyDocument()) => {
-    const value = await api<Board>("/api/boards", {
-      method: "POST",
-      body: JSON.stringify({ name, document }),
-    });
+    // The new ID is known only after POST returns. Retain events observed while
+    // it is pending so a later edit cannot be replaced by the creation snapshot.
+    const events = new Map<string, Board>();
+    creationEvents.current.add(events);
+    let value: Board;
+    try {
+      const created = await api<Board>("/api/boards", {
+        method: "POST",
+        body: JSON.stringify({ name, document }),
+      });
+      const observed = events.get(created.id);
+      value =
+        observed && observed.revision > created.revision ? observed : created;
+    } finally {
+      creationEvents.current.delete(events);
+    }
     // The original conflicting draft remains recoverable after creating a copy.
     ++loadSequence.current;
     setLoading(false);
-    setList((items) => [value, ...items]);
+    // The creation event can arrive before its HTTP response. Keep one entry
+    // per board and do not replace a newer event with the creation revision.
+    setList((items) =>
+      items.some((item) => item.id === value.id)
+        ? items.map((item) =>
+            item.id === value.id && item.revision < value.revision
+              ? value
+              : item,
+          )
+        : [value, ...items],
+    );
     saved.current = contentKey(value.document);
     setConflict(false);
     history.current = [];
