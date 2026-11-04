@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="docs/assets/miracle-banner.svg" alt="Miracle — от запроса к ясной картине. SQL, данные и мысли — рядом." width="1280" />
+  <img src="docs/assets/miracle-preview.gif" alt="Miracle: подключение к ClickHouse, запуск SQL, перемещение блока на доске и интерактивный кастомный график. Обзор за 14 секунд." width="1200" />
 </p>
 
 <p align="center"><strong>Личный SQL-редактор и аналитическая доска.</strong><br />ClickHouse · Trino · SQLite · Apache-2.0</p>
+
+<p align="center"><a href="docs/assets/miracle-preview.mp4">Смотреть видео с управлением воспроизведением</a> · <a href="docs/motion-preview.md">О демонстрации</a></p>
 
 [Выпуски](https://github.com/Manannikov-Nikita/miracle/releases) · [Установка](docs/local-installation.md) · [Руководство](docs/usage.md) · [Что проверено](docs/release-validation.md)
 
