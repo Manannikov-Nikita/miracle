@@ -356,19 +356,28 @@ describe("board inspector settings integration", () => {
     await render(node);
     const placement = () =>
       container.querySelector('[aria-label="Положение легенды"]');
-    const alignment = () =>
-      container.querySelector('[aria-label="Выравнивание легенды"]');
-    expect(placement()?.textContent).toBe("Справа");
-    expect(alignment()?.textContent).toBe("По нижнему краю");
+    const bottomRight = () =>
+      placement()?.querySelector<HTMLInputElement>(
+        'input[type="radio"][aria-label="Снизу справа"]',
+      );
+    expect(bottomRight()?.checked).toBe(true);
+    expect(changes).toEqual([]);
     await click(checkbox("Легенда"));
     expect(placement()).toBeNull();
     expect(current.data.chart).toEqual({ ...node.data.chart, legend: false });
     await click(button("Таблица"));
     await click(button("График"));
     await click(checkbox("Легенда"));
-    expect(placement()?.textContent).toBe("Справа");
-    expect(alignment()?.textContent).toBe("По нижнему краю");
+    expect(bottomRight()?.checked).toBe(true);
     expect(current.data.chart).toEqual(node.data.chart);
+    // A legacy vertical corner stays untouched until the user explicitly picks
+    // its visually equivalent horizontal position, even if already selected.
+    await click(bottomRight()!);
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      legendPosition: "bottom",
+      legendAlign: "end",
+    });
     expect(current.data.table).toBe(table);
     expect(uncaught).toEqual([]);
   });
@@ -458,6 +467,11 @@ describe("board inspector settings integration", () => {
           container.querySelector('[aria-label="Ось X"]')?.matches(":disabled"),
         ).toBe(true);
         expect(checkbox("Легенда").matches(":disabled")).toBe(true);
+        const legendPosition = container.querySelector<HTMLInputElement>(
+          'input[type="radio"][aria-label="Снизу справа"]',
+        );
+        expect(legendPosition?.matches(":disabled")).toBe(true);
+        await click(legendPosition!);
         await click(checkbox("Легенда"));
       } else {
         await click(button("Вид"));

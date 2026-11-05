@@ -11,6 +11,7 @@ import ChartTypePicker from "./ChartTypePicker";
 import type { CustomChartSpec } from "../../shared/custom-charts";
 import CustomChart from "./CustomChart";
 import ChartColors from "./ChartColors";
+import LegendPositionPicker from "./LegendPositionPicker";
 
 function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
   const [rows, setRows] = useState<Cell[][] | null>(null);
@@ -98,8 +99,6 @@ export function ChartSettings({
   const categoryAxis = horizontal ? "Ось Y" : "Ось X";
   const metricAxis = horizontal ? "Ось X" : "Ось Y";
   const sortLabel = horizontal ? "Порядок Y" : "Порядок X";
-  const verticalLegend =
-    spec.legendPosition === "left" || spec.legendPosition === "right";
   return (
     <fieldset className="board-chart-settings" disabled={disabled}>
       <legend>Настройки графика · весь снимок</legend>
@@ -273,53 +272,12 @@ export function ChartSettings({
             Легенда
           </label>
           {spec.legend && (
-            <>
-              <label>
-                Положение легенды
-                <Select
-                  aria-label="Положение легенды"
-                  disabled={disabled}
-                  value={spec.legendPosition ?? "top"}
-                  onValueChange={(value) =>
-                    set({
-                      legendPosition: value as ChartSpec["legendPosition"],
-                    })
-                  }
-                  options={[
-                    { value: "top", label: "Сверху" },
-                    { value: "bottom", label: "Снизу" },
-                    { value: "left", label: "Слева" },
-                    { value: "right", label: "Справа" },
-                  ]}
-                />
-              </label>
-              <label>
-                Выравнивание легенды
-                <Select
-                  aria-label="Выравнивание легенды"
-                  disabled={disabled}
-                  value={spec.legendAlign ?? "center"}
-                  onValueChange={(value) =>
-                    set({ legendAlign: value as ChartSpec["legendAlign"] })
-                  }
-                  options={[
-                    {
-                      value: "start",
-                      label: verticalLegend
-                        ? "По верхнему краю"
-                        : "По левому краю",
-                    },
-                    { value: "center", label: "По центру" },
-                    {
-                      value: "end",
-                      label: verticalLegend
-                        ? "По нижнему краю"
-                        : "По правому краю",
-                    },
-                  ]}
-                />
-              </label>
-            </>
+            <LegendPositionPicker
+              position={spec.legendPosition}
+              align={spec.legendAlign}
+              disabled={disabled}
+              onChange={set}
+            />
           )}
           <ChartColors
             key={result.id}
