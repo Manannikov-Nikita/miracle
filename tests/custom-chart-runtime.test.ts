@@ -128,6 +128,44 @@ describe("custom chart sandbox protocol", () => {
     }
   });
 
+  it("exposes formatted table labels and colors separately from exact raw values", () => {
+    const parent = { postMessage() {} };
+    const dom = new JSDOM(customChartShell(), {
+      runScripts: "dangerously",
+      beforeParse(window) {
+        Object.defineProperty(window, "parent", { value: parent });
+      },
+    });
+    const send = (data: unknown) =>
+      dom.window.dispatchEvent(
+        new dom.window.MessageEvent("message", { data, source: parent as any }),
+      );
+    send({ channel: "miracle-custom-chart", type: "connect", ...identity });
+    send({
+      channel: "miracle-custom-chart",
+      type: "render",
+      ...identity,
+      spec: {
+        ...spec,
+        javascript:
+          "api.root.textContent = JSON.stringify([api.rows, api.displayRows, api.cellColors]);",
+      },
+      data: {
+        columns: [],
+        rows: [["9007199254740993"]],
+        displayRows: [["9M"]],
+        cellColors: [["red"]],
+      },
+      width: 300,
+      height: 200,
+      theme: "dark",
+    });
+    expect(dom.window.document.getElementById("chart-root")?.textContent).toBe(
+      '[[["9007199254740993"]],[["9M"]],[["red"]]]',
+    );
+    dom.window.close();
+  });
+
   it("replaces a navigating frame with an error and ignores later status messages", () => {
     const dom = new JSDOM('<div id="host"></div>');
     const host = dom.window.document.getElementById("host")!;
@@ -135,7 +173,12 @@ describe("custom chart sandbox protocol", () => {
     const dispose = mountCustomChartFrame({
       host,
       spec,
-      data: { columns: [], rows: [] },
+      data: {
+        columns: [],
+        rows: [],
+        displayRows: [["9M"]],
+        cellColors: [["red"]],
+      },
       width: 300,
       height: 200,
       theme: "dark",
@@ -156,6 +199,12 @@ describe("custom chart sandbox protocol", () => {
         }),
       );
     message("ready");
+    expect((post.mock.calls.at(-1)![0] as any).data).toEqual({
+      columns: [],
+      rows: [],
+      displayRows: [["9M"]],
+      cellColors: [["red"]],
+    });
     message("rendered");
     expect(statuses.at(-1).status).toBe("rendered");
     frame.dispatchEvent(new dom.window.Event("load"));

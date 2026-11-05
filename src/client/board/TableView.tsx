@@ -64,11 +64,13 @@ export default function TableView({
   initialRows,
   spec: savedSpec,
   visibleColumns,
+  onChange,
 }: {
   result: ResultSet;
   initialRows: Cell[][];
   spec?: TableSpec;
   visibleColumns?: string[];
+  onChange?: (spec: TableSpec) => void;
 }) {
   const authoredSpec = useMemo(
     () => savedSpec ?? createTableSpec(result.columns, visibleColumns),
@@ -245,15 +247,17 @@ export default function TableView({
   const sort = (column: TableViewColumn) => {
     const previous =
       spec.sort?.column === column.id ? spec.sort.direction : undefined;
+    const next: TableSpec["sort"] =
+      previous === "desc"
+        ? undefined
+        : { column: column.id, direction: previous === "asc" ? "desc" : "asc" };
+    if (onChange) {
+      onChange({ ...authoredSpec, sort: next });
+      return;
+    }
     setLocalSort({
       scope: sortScope,
-      sort:
-        previous === "desc"
-          ? undefined
-          : {
-              column: column.id,
-              direction: previous === "asc" ? "desc" : "asc",
-            },
+      sort: next,
     });
   };
   const failure = error || prepared?.error;
@@ -334,7 +338,11 @@ export default function TableView({
                     >
                       <button
                         className="table-header-sort"
-                        title="Сортировать для просмотра"
+                        title={
+                          onChange
+                            ? "Сортировать таблицу"
+                            : "Сортировать для просмотра"
+                        }
                         onClick={() => sort(column)}
                       >
                         <span>{column.options.label || column.name}</span>

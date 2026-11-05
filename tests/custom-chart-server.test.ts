@@ -12,6 +12,8 @@ import {
   serializeCustomChart,
   type CustomChartSpec,
 } from "../src/shared/custom-charts";
+import { createTableSpec } from "../src/client/board/tableModel";
+import type { Column, Cell } from "../src/shared/types";
 
 let directory: string,
   db: Database,
@@ -62,6 +64,11 @@ const node = (resultSetId: string, id = "chart", chart = spec) => ({
   },
 });
 const document = (nodes: unknown[]) => ({ schemaVersion: 1, nodes, edges: [] });
+function tableSnapshot(columns: Column[], rows: Cell[][]) {
+  const id = snapshot(rows.length, columns.length, rows);
+  db.query("UPDATE result_sets SET columns=?2 WHERE id=?1", [id, columns]);
+  return id;
+}
 
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "miracle-custom-server-"));
@@ -323,6 +330,225 @@ it("rejects exact serialized byte overflow, actual cell overflow and incomplete 
     expect(response.statusCode, response.body).toBe(422);
     expect(response.json()).not.toHaveProperty("rows");
   }
+});
+
+it("prepares custom chart rows with table filtering, melt, ordering, labels and separate display values", async () => {
+  const columns: Column[] = [
+    { id: "account", name: "Счёт", type: "String" },
+    { id: "revenue", name: "Выручка", type: "Decimal(38, 2)" },
+    { id: "cost", name: "Расход", type: "Decimal(38, 2)" },
+    { id: "hidden", name: "Секрет", type: "String" },
+  ];
+  const id = tableSnapshot(columns, [
+    ["B", "12.50", "4.00", "hidden"],
+    ["A", "2", "1", "hidden"],
+    ["B", "9.25", null, "hidden"],
+  ]);
+  const table = {
+    ...createTableSpec(columns),
+    filters: [{ column: "account", op: "eq", value: "B" }],
+    reshape: { kind: "melt", columns: ["revenue", "cost"] },
+    sort: { column: "reshape:melt:value", direction: "asc" },
+    order: ["reshape:melt:value", "account", "reshape:melt:key"],
+    columns: {
+      hidden: { hidden: true },
+      "reshape:melt:key": { label: "Метрика" },
+      "reshape:melt:value": {
+        label: "Сумма",
+        format: "currency",
+        currency: "USD",
+        decimals: 2,
+        thresholds: [{ value: "10", color: "red" }],
+        mappings: [{ value: null, text: "Нет", color: "blue" }],
+      },
+    },
+  };
+  const { app, headers } = await api();
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/result-sets/${id}/custom-chart`,
+    headers,
+    payload: { table },
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json()).toEqual({
+    columns: [
+      { id: "reshape:melt:value", name: "Сумма", type: "Decimal(38, 2)" },
+      { id: "account", name: "Счёт", type: "String" },
+      { id: "reshape:melt:key", name: "Метрика", type: "String" },
+    ],
+    rows: [
+      ["4.00", "B", "Расход"],
+      ["9.25", "B", "Выручка"],
+      ["12.50", "B", "Выручка"],
+      [null, "B", "Расход"],
+    ],
+    displayRows: [
+      ["$4.00", "B", "Расход"],
+      ["$9.25", "B", "Выручка"],
+      ["$12.50", "B", "Выручка"],
+      ["Нет", "B", "Расход"],
+    ],
+    cellColors: [
+      [null, null, null],
+      [null, null, null],
+      ["red", null, null],
+      ["blue", null, null],
+    ],
+  });
+});
+
+it("applies custom chart output limits after filters and allows bounded larger source attachments", async () => {
+  const columns = [{ id: "c0", name: "value0", type: "String" }];
+  const id = tableSnapshot(
+    columns,
+    Array.from({ length: 5001 }, (_, i) => [String(i)]),
+  );
+  const table = {
+    ...createTableSpec(columns),
+    filters: [{ column: "c0", op: "eq", value: "0" }],
+  };
+  const custom = node(id);
+  const board = operations.createBoard({
+    name: "Filtered custom",
+    document: document([{ ...custom, data: { ...custom.data, table } }]),
+  });
+  expect(board.document.nodes[0].data.table).toEqual(table);
+  const { app, headers } = await api();
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/result-sets/${id}/custom-chart`,
+    headers,
+    payload: { table },
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().rows).toEqual([["0"]]);
+  expect(
+    (await app.inject({ url: `/api/result-sets/${id}/custom-chart`, headers }))
+      .statusCode,
+  ).toBe(422);
+});
+
+it("rejects custom chart expansion and ambiguous raw pivots instead of truncating or aggregating", async () => {
+  const columns = [
+    { id: "key", name: "Ключ", type: "String" },
+    { id: "value", name: "Число", type: "Int64" },
+  ];
+  const id = tableSnapshot(
+    columns,
+    Array.from({ length: 3000 }, () => ["A", "1"]),
+  );
+  const { app, headers } = await api();
+  for (const reshape of [
+    { kind: "melt", columns: ["key", "value"] },
+    { kind: "pivot", rows: [], column: "key", value: "value" },
+  ]) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/result-sets/${id}/custom-chart`,
+      headers,
+      payload: { table: { ...createTableSpec(columns), reshape } },
+    });
+    expect(response.statusCode, response.body).toBe(422);
+    expect(response.json()).not.toHaveProperty("rows");
+  }
+});
+
+it("invalidates custom chart diagnostics when the table presentation changes", () => {
+  const board = operations.createBoard({
+    name: "Custom",
+    document: document([node(snapshot())]),
+  });
+  const report = {
+    browserId: randomUUID(),
+    sequence: 1,
+    sentAt: Date.now(),
+    resultSetId: board.document.nodes[0].data.resultSetId,
+    specHash: createHash("sha256")
+      .update(serializeCustomChart(spec))
+      .digest("hex"),
+    status: "rendered",
+  };
+  operations.reportCustomChartStatus(board.id, "chart", report);
+  operations.patchBoard(board.id, {
+    baseRevision: board.revision,
+    mutationId: randomUUID(),
+    operations: [
+      {
+        type: "update_node",
+        id: "chart",
+        patch: { data: { visibleColumns: [] } },
+      },
+    ],
+  });
+  expect(operations.customChartStatus(board.id, "chart").status).toBe(
+    "not_observed",
+  );
+  expect(() =>
+    operations.reportCustomChartStatus(board.id, "chart", {
+      ...report,
+      sequence: 2,
+    }),
+  ).toThrow(/измен/);
+  operations.reportCustomChartStatus(board.id, "chart", {
+    ...report,
+    sequence: 3,
+    specHash: createHash("sha256")
+      .update(JSON.stringify([serializeCustomChart(spec), null, []]))
+      .digest("hex"),
+  });
+  expect(operations.customChartStatus(board.id, "chart").status).toBe(
+    "rendered",
+  );
+});
+
+it("authenticates prepared chart reads and honors legacy visibility with no table configuration", async () => {
+  const id = snapshot(1, 2, [["keep", "private"]]);
+  const { app, headers } = await api();
+  const url = `/api/result-sets/${id}/custom-chart`;
+  expect(
+    (
+      await app.inject({
+        method: "POST",
+        url,
+        payload: {},
+        headers: { host: headers.host },
+      })
+    ).statusCode,
+  ).toBe(401);
+  expect(
+    (
+      await app.inject({
+        method: "POST",
+        url,
+        payload: {},
+        headers: { ...headers, "x-csrf-token": "bad" },
+      })
+    ).statusCode,
+  ).toBe(403);
+  const response = await app.inject({
+    method: "POST",
+    url,
+    headers,
+    payload: { visibleColumns: ["c0"] },
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().columns.map((column: Column) => column.id)).toEqual([
+    "c0",
+  ]);
+  expect(response.json().rows).toEqual([["keep"]]);
+  expect(response.body).not.toContain("private");
+  const large = snapshot(50001, 1);
+  expect(
+    (
+      await app.inject({
+        method: "POST",
+        url: `/api/result-sets/${large}/custom-chart`,
+        headers,
+        payload: {},
+      })
+    ).statusCode,
+  ).toBe(422);
 });
 
 it("uses browser auth and CSRF protection for diagnostics GET/POST", async () => {

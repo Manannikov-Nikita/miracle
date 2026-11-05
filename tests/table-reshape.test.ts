@@ -34,6 +34,28 @@ const pivot = (columns = long): TableSpec => ({
 });
 
 describe("table reshape without aggregation", () => {
+  it("keeps mixed numeric source types usable as one numeric value column without coercion", () => {
+    const columns = [
+      wide[0],
+      { ...wide[2], type: "Int64" },
+      { ...wide[3], type: "Nullable(Decimal(38, 8))" },
+    ];
+    const result = buildTable(
+      columns,
+      [
+        ["A", "9007199254740993", "1.2300"],
+        ["B", 2, null],
+      ],
+      melt(columns),
+    );
+    expect(result.columns[2].type).toBe("Nullable(Decimal)");
+    expect(result.rows).toEqual([
+      ["A", "January", "9007199254740993"],
+      ["A", "February", "1.2300"],
+      ["B", "January", 2],
+      ["B", "February", null],
+    ]);
+  });
   it("melts source columns in order and preserves every raw value and duplicate row", () => {
     const result = buildTable(
       wide,

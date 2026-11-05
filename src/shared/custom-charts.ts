@@ -1,4 +1,5 @@
 import type { Cell, Column } from "./types.js";
+import type { TableColor, TableSpec } from "./tableTypes.js";
 
 export const CUSTOM_CHART_LIMITS = {
   description: 4000,
@@ -26,6 +27,8 @@ export interface CustomChartSpec {
 export interface CustomChartData {
   columns: Column[];
   rows: Cell[][];
+  displayRows?: string[][];
+  cellColors?: (TableColor | null)[][];
 }
 
 export type CustomChartRenderState = "rendering" | "rendered" | "error";
@@ -60,4 +63,25 @@ export function serializeCustomChart(spec: CustomChartSpec): string {
     spec.css,
     spec.javascript,
   ]);
+}
+
+/** A render identity also includes the table presentation consumed by the chart. */
+export function serializeCustomChartPresentation(
+  spec: CustomChartSpec,
+  table?: TableSpec,
+  visibleColumns?: string[],
+): string {
+  if (table === undefined && visibleColumns === undefined)
+    return serializeCustomChart(spec);
+  return JSON.stringify(
+    [serializeCustomChart(spec), table, visibleColumns],
+    (_key, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, value[key]]),
+          )
+        : value,
+  );
 }

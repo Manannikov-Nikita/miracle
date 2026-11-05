@@ -1,3 +1,5 @@
+import { isNumericColumn } from "../../shared/column-types";
+export { isNumericColumn } from "../../shared/column-types";
 import type {
   BoardDocument,
   BoardNode,
@@ -74,11 +76,6 @@ export function applyRefresh(
     ),
   };
 }
-const numericType =
-  /^(?:(?:Nullable|LowCardinality)\(\s*)*(?:U?Int\d+|Float\d+|Decimal(?:32|64|128|256)?|DOUBLE(?: PRECISION)?|REAL|NUMERIC|BIGINT|SMALLINT|TINYINT|INTEGER|INT)(?=\s*(?:[(),]|$))/i;
-export function isNumericColumn(column: Column) {
-  return numericType.test(column.type);
-}
 export function chartNumber(value: Cell, column: Column): number | null {
   if (!isNumericColumn(column))
     throw new Error(
@@ -123,10 +120,31 @@ export function defaultChart(columns: Column[]): ChartSpec {
     sort: "none",
   };
 }
+export interface ChartPointDisplay {
+  x: string;
+  value: string;
+  color?: string;
+}
+export interface ChartSeriesItem {
+  metricId?: string;
+  colorKey?: string;
+  xCategories?: string[];
+  name: string;
+  data: [string | number | null, number | null][];
+  displayData?: ChartPointDisplay[];
+  categoryLabels?: Record<string, string>;
+}
+export type ChartCellFormatter = (
+  value: Cell,
+  column: Column,
+  role: "category" | "metric" | "series",
+) => { text: string; color?: string };
+
 export function chartSeries(
   columns: Column[],
   rows: Cell[][],
   spec: ChartSpec,
+  formatCell?: ChartCellFormatter,
 ) {
   const categoryAxis =
     spec.kind === "bar" && spec.orientation === "horizontal" ? "Y" : "X";
@@ -139,16 +157,10 @@ export function chartSeries(
     throw new Error(
       "График ограничен 5 000 точками во всём сохранённом результате. Агрегируйте данные в SQL.",
     );
-  const groups = new Map<
-    string,
-    {
-      metricId?: string;
-      colorKey?: string;
-      xCategories?: string[];
-      name: string;
-      data: [string | number | null, number | null][];
-    }
-  >();
+  const groups = new Map<string, ChartSeriesItem>();
+  const categoryLabels: Record<string, string> | undefined = formatCell
+    ? Object.create(null)
+    : undefined;
   const stacked =
     spec.kind !== "scatter" && spec.stacked && Boolean(spec.series);
   const stackedCategories = new Map<string, Set<string | number | null>>();
@@ -161,6 +173,12 @@ export function chartSeries(
       spec.kind === "scatter"
         ? chartNumber(rawX, columns[xi])
         : String(rawX ?? "NULL");
+    const displayX = formatCell?.(
+      rawX,
+      columns[xi],
+      spec.kind === "scatter" ? "metric" : "category",
+    ).text;
+    if (categoryLabels) categoryLabels[String(x)] = displayX!;
     if (stacked) xCategories.add(String(x));
     for (const yi of ys) {
       const rawGroup = si < 0 ? undefined : row[si];
@@ -173,9 +191,11 @@ export function chartSeries(
       const group =
         rawGroup === undefined
           ? ""
-          : rawGroup === null
-            ? "∅ NULL"
-            : String(rawGroup);
+          : formatCell
+            ? formatCell(rawGroup, columns[si], "series").text
+            : rawGroup === null
+              ? "∅ NULL"
+              : String(rawGroup);
       const key = `${columns[yi].id}\u0000${JSON.stringify(rawGroup)}`;
       if (stacked) {
         const categories = stackedCategories.get(key) ?? new Set();
@@ -192,21 +212,40 @@ export function chartSeries(
           colorKey: chartSeriesColorKey(columns[yi].id, spec.series, rawGroup),
           name: `${columns[yi].name}${group ? ` · ${group}` : ""}`,
           data: [],
+          ...(formatCell ? { displayData: [], categoryLabels } : {}),
         });
-      groups.get(key)!.data.push([x, chartNumber(row[yi], columns[yi])]);
+      const series = groups.get(key)!;
+      series.data.push([x, chartNumber(row[yi], columns[yi])]);
+      if (formatCell) {
+        const display = formatCell(row[yi], columns[yi], "metric");
+        series.displayData!.push({
+          x: displayX!,
+          value: display.text,
+          color: display.color,
+        });
+      }
     }
   }
   const result = [...groups.values()];
   if (spec.sort && spec.sort !== "none")
-    for (const series of result)
-      series.data.sort(
-        (a, b) =>
-          (typeof a[0] === "number" && typeof b[0] === "number"
-            ? a[0] - b[0]
-            : String(a[0]).localeCompare(String(b[0]), undefined, {
-                numeric: true,
-              })) * (spec.sort === "desc" ? -1 : 1),
-      );
+    for (const series of result) {
+      const ordered = series.data
+        .map((point, index) => ({
+          point,
+          display: series.displayData?.[index],
+        }))
+        .sort(
+          ({ point: a }, { point: b }) =>
+            (typeof a[0] === "number" && typeof b[0] === "number"
+              ? a[0] - b[0]
+              : String(a[0]).localeCompare(String(b[0]), undefined, {
+                  numeric: true,
+                })) * (spec.sort === "desc" ? -1 : 1),
+        );
+      series.data = ordered.map(({ point }) => point);
+      if (series.displayData)
+        series.displayData = ordered.map(({ display }) => display!);
+    }
   if (stacked) {
     // A sparse first series may not contain the globally first category.
     // Keep one shared union in source order, or sort the whole union together.
@@ -227,6 +266,21 @@ export function chartSeries(
         // Line/area paths must follow the shared axis order. Explicit nulls
         // also prevent a lower band from bridging a missing breakdown value.
         const byCategory = new Map(series.data);
+        if (formatCell && series.displayData) {
+          const displayByCategory = new Map(
+            series.data.map(([x], index) => [x, series.displayData![index]]),
+          );
+          const metric = columns.find(
+            (column) => column.id === series.metricId,
+          )!;
+          series.displayData = categories.map(
+            (x) =>
+              displayByCategory.get(x) ?? {
+                x: categoryLabels?.[x] ?? x,
+                value: formatCell(null, metric, "metric").text,
+              },
+          );
+        }
         series.data = categories.map((x) => [x, byCategory.get(x) ?? null]);
       }
     }

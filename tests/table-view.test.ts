@@ -107,6 +107,38 @@ describe("table snapshot rendering", () => {
     return bodyRows().map((row) => row.querySelector("td")?.textContent);
   }
 
+  it("persists editable header sorting so another view can use the same order", async () => {
+    const result = resultSet();
+    const rows: Cell[][] = [
+      ["B", "2"],
+      ["A", "1"],
+    ];
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    let saved = createTableSpec(result.columns);
+    const mount = () =>
+      root.render(
+        createElement(TableView, {
+          result,
+          initialRows: rows,
+          spec: saved,
+          onChange: (next: TableSpec) => {
+            saved = next;
+            mount();
+          },
+        }),
+      );
+    await act(async () => mount());
+    await sortBy("Название");
+    expect(saved.sort).toEqual({ column: "name", direction: "asc" });
+    expect(names()).toEqual(["A", "B"]);
+    await act(async () => root.render(null));
+    await act(async () => mount());
+    expect(names()).toEqual(["A", "B"]);
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "ascending",
+    );
+  });
+
   it("omits pagination for a single page while keeping its row range", async () => {
     const result = resultSet();
     await render(

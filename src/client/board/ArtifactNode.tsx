@@ -205,6 +205,11 @@ export default function ArtifactNode({
             visibleColumns={data.visibleColumns}
             table={data.table}
             onMetadata={actions.metadata}
+            onTableChange={
+              actions.editable
+                ? (table) => actions.update(id, { table })
+                : undefined
+            }
           />
         )}
         {data.kind === "note" && (

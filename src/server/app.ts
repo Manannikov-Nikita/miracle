@@ -1,7 +1,10 @@
 import {
   checkCustomChartMetadata,
   customChartData,
+  checkTableSourceMetadata,
+  preparedCustomChartData,
 } from "./custom-chart-data.js";
+import { tableSpecSchema } from "../shared/table-schema.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
@@ -1139,6 +1142,34 @@ export async function buildApp(
       checkCustomChartMetadata(result.rowCount, result.columns.length);
       const data = result.rowCount ? await rows(id, 0, result.rowCount) : [];
       return customChartData(result.columns, data, result.rowCount);
+    });
+    app.post("/api/result-sets/:id/custom-chart", async (req) => {
+      need(req);
+      const input = z
+        .object({
+          table: tableSpecSchema.optional(),
+          visibleColumns: z
+            .array(z.string().min(1).max(10000))
+            .max(2000)
+            .optional(),
+        })
+        .strict()
+        .parse(req.body);
+      const id = uuid(req);
+      const result = await getResult(id);
+      checkTableSourceMetadata(
+        result.rowCount,
+        result.columns.length,
+        result.byteCount,
+      );
+      const data = result.rowCount ? await rows(id, 0, result.rowCount) : [];
+      return preparedCustomChartData(
+        result.columns,
+        data,
+        result.rowCount,
+        input.table,
+        input.visibleColumns,
+      );
     });
     app.get("/api/result-sets/:id/table", async (req) => {
       need(req);

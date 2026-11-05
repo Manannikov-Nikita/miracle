@@ -10,6 +10,18 @@ import {
 import type { BoardNode, ResultSet, TableSpec } from "../src/shared/types";
 import type { TableColumnOptions } from "../src/shared/tableTypes";
 
+// Chart settings read the full saved table to discover columns produced by pivot.
+vi.mock("../src/client/api", () => ({
+  api: vi.fn(async () => ({
+    result,
+    rows: [
+      ["2026-09-01", 10],
+      ["2026-10-01", 20],
+    ],
+  })),
+  getResultRows: vi.fn(),
+}));
+
 const result: ResultSet = {
   id: "result-inspector",
   columns: [

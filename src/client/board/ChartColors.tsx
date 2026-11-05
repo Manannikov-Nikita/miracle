@@ -84,11 +84,13 @@ export default function ChartColors({
   spec,
   disabled,
   onChange,
+  preparedSeries,
 }: {
   result: ResultSet;
   spec: ChartSpec;
   disabled: boolean;
   onChange: (patch: Partial<ChartSpec>) => void;
+  preparedSeries?: ReturnType<typeof chartSeries>;
 }) {
   const [open, setOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<{ id: string; rows: Cell[][] }>();
@@ -96,7 +98,8 @@ export default function ChartColors({
   const [retry, setRetry] = useState(0);
   const [filter, setFilter] = useState("");
   const [limit, setLimit] = useState(30);
-  const needsRows = open && Boolean(spec.series);
+  const needsRows =
+    preparedSeries === undefined && open && Boolean(spec.series);
   useEffect(() => {
     if (!needsRows || snapshot?.id === result.id) return;
     const controller = new AbortController();
@@ -118,6 +121,7 @@ export default function ChartColors({
     return () => controller.abort();
   }, [needsRows, result.id, snapshot?.id, retry]);
   const prepared = useMemo(() => {
+    if (preparedSeries !== undefined) return { series: preparedSeries };
     if (!spec.series)
       return {
         series: spec.y.flatMap((id) => {
@@ -138,7 +142,7 @@ export default function ChartColors({
     } catch (cause) {
       return { series: [], error: (cause as Error).message };
     }
-  }, [result.id, result.columns, snapshot, spec]);
+  }, [result.id, result.columns, snapshot, spec, preparedSeries]);
   const series = prepared.series
     .filter(
       (item): item is typeof item & { colorKey: string } =>
@@ -154,10 +158,14 @@ export default function ChartColors({
   const colors = spec.seriesColors ?? {};
   const atColorLimit = Object.keys(colors).length >= CHART_SERIES_COLOR_LIMIT;
   const message =
-    (spec.series && error?.id === result.id ? error.message : undefined) ??
-    prepared.error;
+    (preparedSeries === undefined && spec.series && error?.id === result.id
+      ? error.message
+      : undefined) ?? prepared.error;
   const loading =
-    Boolean(spec.series) && snapshot?.id !== result.id && !message;
+    preparedSeries === undefined &&
+    Boolean(spec.series) &&
+    snapshot?.id !== result.id &&
+    !message;
   const palette =
     CHART_PALETTES.find((item) => item.id === (spec.palette ?? "default")) ??
     CHART_PALETTES[0];
