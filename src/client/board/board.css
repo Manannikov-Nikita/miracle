@@ -392,7 +392,10 @@
   background: transparent;
   color: #382f16;
   padding: 0;
-  outline-offset: -3px !important;
+}
+.board-workspace textarea.board-note-text:focus-visible {
+  /* The sticky card's :focus-within border already indicates editor focus. */
+  outline: none;
 }
 .board-note-text::placeholder {
   color: #75632f;
