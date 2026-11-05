@@ -12,6 +12,7 @@ import type {
 import { createTableSpec, tableSourceSchema } from "./tableModel";
 import { Select } from "../components/Select";
 import { isNumericColumn } from "./model";
+import { TableMappingColor, TableMappingSource } from "./TableMappingControls";
 import "./table-settings.css";
 
 type Option = { value: string; label: string; disabled?: boolean };
@@ -195,7 +196,22 @@ function ConditionalSettings({
   disabled: boolean;
 }) {
   const thresholds = options.thresholds ?? [];
-  const mappings = options.mappings ?? [];
+  // Keep the legacy fallback last: explicit NULL mappings take precedence.
+  const mappings: NonNullable<TableColumnOptions["mappings"]> = [
+    ...(options.mappings ?? []),
+    ...(options.nullText !== undefined
+      ? [{ value: null, text: options.nullText }]
+      : []),
+  ];
+  const setMappings = (next: NonNullable<TableColumnOptions["mappings"]>) => {
+    if (next.length > 20) {
+      // A legacy column may already have twenty rules plus its NULL fallback.
+      // Keep that fallback editable without exceeding the persisted rule limit.
+      set({ mappings: next.slice(0, -1), nullText: next.at(-1)!.text });
+    } else {
+      set({ mappings: next, nullText: undefined });
+    }
+  };
   return (
     <>
       <details className="table-setting-details">
@@ -285,9 +301,26 @@ function ConditionalSettings({
           Заменяет отображение точного значения. Исходные данные сохраняются.
         </p>
         {mappings.map((mapping, index) => (
-          <div className="table-setting-rule" key={index}>
+          <div
+            className="table-setting-rule"
+            key={index}
+            role="group"
+            aria-label={`Подстановка ${index + 1}`}
+          >
             <div className="table-setting-rule-heading">
               <span>Подстановка {index + 1}</span>
+              <TableMappingColor
+                value={mapping.color}
+                disabled={
+                  disabled ||
+                  (mappings.length > 20 && index === mappings.length - 1)
+                }
+                onChange={(color) =>
+                  setMappings(
+                    mappings.map((m, i) => (i === index ? { ...m, color } : m)),
+                  )
+                }
+              />
               <button
                 type="button"
                 className="table-setting-remove"
@@ -295,82 +328,46 @@ function ConditionalSettings({
                 aria-label={`Удалить подстановку ${index + 1}`}
                 title={`Удалить подстановку ${index + 1}`}
                 onClick={() =>
-                  set({ mappings: mappings.filter((_, i) => i !== index) })
+                  setMappings(mappings.filter((_, i) => i !== index))
                 }
               >
                 <Trash size={16} aria-hidden="true" />
               </button>
             </div>
-            <label className="table-setting-check">
-              <input
-                type="checkbox"
-                disabled={disabled}
-                checked={mapping.value === null}
-                onChange={(e) =>
-                  set({
-                    mappings: mappings.map((m, i) =>
-                      i === index
-                        ? { ...m, value: e.target.checked ? null : "" }
-                        : m,
-                    ),
-                  })
-                }
-              />
-              NULL · подстановка {index + 1}
-            </label>
-            {mapping.value !== null && (
-              <Draft
-                label={`Исходное значение ${index + 1}`}
-                maxLength={2000}
-                value={mapping.value}
-                disabled={disabled}
-                change={(value) =>
-                  set({
-                    mappings: mappings.map((m, i) =>
-                      i === index ? { ...m, value } : m,
-                    ),
-                  })
-                }
-              />
-            )}
+            <TableMappingSource
+              value={mapping.value}
+              disabled={
+                disabled ||
+                (mappings.length > 20 && index === mappings.length - 1)
+              }
+              onChange={(value) =>
+                setMappings(
+                  mappings.map((m, i) => (i === index ? { ...m, value } : m)),
+                )
+              }
+            />
             <Draft
-              label={`Отображать вместо значения ${index + 1}`}
+              label="Отображать вместо значения"
               value={mapping.text}
               disabled={disabled}
               change={(text) =>
-                set({
-                  mappings: mappings.map((m, i) =>
-                    i === index ? { ...m, text } : m,
-                  ),
-                })
+                setMappings(
+                  mappings.map((m, i) => (i === index ? { ...m, text } : m)),
+                )
               }
             />
-            <Choice
-              label={`Цвет подстановки ${index + 1}`}
-              value={mapping.color ?? ""}
-              disabled={disabled}
-              options={[{ value: "", label: "Без цвета" }, ...colors]}
-              change={(color) =>
-                set({
-                  mappings: mappings.map((m, i) =>
-                    i === index
-                      ? {
-                          ...m,
-                          color: (color || undefined) as TableColor | undefined,
-                        }
-                      : m,
-                  ),
-                })
-              }
-            />
+            {mappings.length > 20 && index === mappings.length - 1 && (
+              <p className="table-setting-help">
+                Чтобы изменить исходное значение или цвет, удалите одну
+                подстановку.
+              </p>
+            )}
           </div>
         ))}
         <button
           type="button"
           disabled={disabled || mappings.length >= 20}
-          onClick={() =>
-            set({ mappings: [...mappings, { value: "", text: "" }] })
-          }
+          onClick={() => setMappings([...mappings, { value: null, text: "" }])}
         >
           <Plus size={16} aria-hidden="true" /> Подстановка
         </button>
@@ -549,13 +546,6 @@ function ColumnSettings({
             change={(suffix) => change({ suffix })}
           />
         </div>
-        <Draft
-          label="Вместо NULL"
-          value={options.nullText ?? ""}
-          placeholder="—"
-          disabled={disabled}
-          change={(nullText) => change({ nullText: nullText || undefined })}
-        />
         <Choice
           label="Итог столбца"
           value={options.summary ?? "none"}

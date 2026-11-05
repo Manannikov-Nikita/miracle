@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Inspector from "../src/client/board/Inspector";
+import { formatTableCell } from "../src/client/board/tableModel";
 import type { BoardNode, ResultSet, TableSpec } from "../src/shared/types";
+import type { TableColumnOptions } from "../src/shared/tableTypes";
 
 const result: ResultSet = {
   id: "result-inspector",
@@ -106,6 +108,50 @@ describe("board inspector settings integration", () => {
   async function click(element: HTMLElement) {
     await act(async () => element.click());
   }
+  function withColumnOptions(options: TableColumnOptions): BoardNode {
+    const node = fixture("table");
+    node.data.table = {
+      ...table,
+      columns: { ...table.columns, month: options },
+    };
+    return node;
+  }
+  function mappingRules(): HTMLElement[] {
+    const disclosure = [...container.querySelectorAll("details")].find((item) =>
+      item
+        .querySelector("summary")
+        ?.textContent?.startsWith("Подстановка значений"),
+    );
+    expect(disclosure).toBeDefined();
+    return [
+      ...disclosure!.querySelectorAll<HTMLElement>(".table-setting-rule"),
+    ];
+  }
+  function input(
+    label: string,
+    scope: ParentNode = container,
+  ): HTMLInputElement {
+    const found = scope.querySelector<HTMLInputElement>(
+      `input[aria-label="${label}"]`,
+    );
+    expect(found, `input ${label}`).not.toBeNull();
+    return found!;
+  }
+  async function edit(field: HTMLInputElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+  }
+  const currentColumn = () => current.data.table!.columns!.month;
+  const formatted = (value: string | null) =>
+    formatTableCell(value, result.columns[0], currentColumn());
 
   it("switches custom charts to tables and back without losing their source", async () => {
     const customChart = {
@@ -253,6 +299,172 @@ describe("board inspector settings integration", () => {
     expect(current.data.chart).toEqual({ ...node.data.chart, legend: false });
     expect(current.data.table).toBe(table);
     expect(current.data.visibleColumns).toEqual(["month"]);
+    expect(uncaught).toEqual([]);
+  });
+
+  it("adds a NULL mapping that can be edited into literal NULL and an empty string", async () => {
+    await render(withColumnOptions({}));
+    await click(button(" Подстановка"));
+    expect(currentColumn().mappings).toEqual([{ value: null, text: "" }]);
+    const rule = mappingRules()[0];
+    const source = input("Исходное значение", rule);
+    expect(source.value).toBe("");
+    expect(source.placeholder).toBe("NULL");
+    expect(rule.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Вместо NULL"]')).toBeNull();
+    await act(async () => source.focus());
+    await act(async () => source.blur());
+    expect(currentColumn().mappings![0].value).toBeNull();
+    await edit(input("Отображать вместо значения", rule), "замена");
+    expect(formatted(null)).toEqual({ text: "замена" });
+    expect(formatted("")).toEqual({ text: "" });
+    await edit(source, "NULL");
+    expect(currentColumn().mappings![0].value).toBe("NULL");
+    expect(formatted("NULL")).toEqual({ text: "замена" });
+    expect(formatted(null)).toEqual({ text: "—" });
+    await edit(source, "");
+    expect(currentColumn().mappings![0].value).toBe("");
+    expect(source.placeholder).not.toBe("NULL");
+    expect(formatted("")).toEqual({ text: "замена" });
+    expect(formatted(null)).toEqual({ text: "—" });
+    await click(
+      rule.querySelector<HTMLButtonElement>(
+        '[aria-label="Использовать NULL"]',
+      )!,
+    );
+    expect(currentColumn().mappings![0].value).toBeNull();
+    expect(source.placeholder).toBe("NULL");
+    expect(formatted(null)).toEqual({ text: "замена" });
+    expect(formatted("")).toEqual({ text: "" });
+    expect(uncaught).toEqual([]);
+  });
+
+  it.each(["Нет данных", ""])(
+    "exposes legacy NULL replacement %j without rewriting it until the mapping changes",
+    async (nullText) => {
+      const node = withColumnOptions({ nullText, suffix: "!" });
+      await render(node);
+      expect(mappingRules()).toHaveLength(1);
+      expect(input("Исходное значение", mappingRules()[0]).placeholder).toBe(
+        "NULL",
+      );
+      expect(input("Отображать вместо значения", mappingRules()[0]).value).toBe(
+        nullText,
+      );
+      expect(changes).toEqual([]);
+      expect(formatted(null)).toEqual({ text: nullText });
+      await edit(input("Перед значением"), "~");
+      expect(currentColumn()).toEqual({ nullText, suffix: "!", prefix: "~" });
+      await edit(
+        input("Отображать вместо значения", mappingRules()[0]),
+        "Пусто",
+      );
+      expect(currentColumn()).toEqual({
+        nullText: undefined,
+        suffix: "!",
+        prefix: "~",
+        mappings: [{ value: null, text: "Пусто" }],
+      });
+      expect(formatted(null)).toEqual({ text: "Пусто" });
+      expect(current.data.table!.columns!.revenue).toEqual(
+        table.columns!.revenue,
+      );
+      expect(uncaught).toEqual([]);
+    },
+  );
+
+  it("deletes a virtual legacy mapping without leaving its NULL fallback active", async () => {
+    await render(
+      withColumnOptions({ nullText: "Старое значение", prefix: "~" }),
+    );
+    expect(mappingRules()).toHaveLength(1);
+    await click(
+      mappingRules()[0].querySelector<HTMLButtonElement>(
+        '[aria-label="Удалить подстановку 1"]',
+      )!,
+    );
+    expect(mappingRules()).toHaveLength(0);
+    expect(currentColumn().nullText).toBeUndefined();
+    expect(currentColumn().prefix).toBe("~");
+    expect(formatted(null)).toEqual({ text: "—" });
+  });
+
+  it("keeps NULL mapping priority ahead of the legacy fallback while editing other values", async () => {
+    await render(
+      withColumnOptions({
+        nullText: "Резерв",
+        mappings: [
+          { value: null, text: "Первый", color: "red" },
+          { value: "NULL", text: "Строка" },
+        ],
+      }),
+    );
+    expect(mappingRules()).toHaveLength(3);
+    expect(input("Отображать вместо значения", mappingRules()[2]).value).toBe(
+      "Резерв",
+    );
+    expect(formatted(null)).toEqual({ text: "Первый", color: "red" });
+    await edit(
+      input("Отображать вместо значения", mappingRules()[1]),
+      "Новая строка",
+    );
+    expect(formatted(null)).toEqual({ text: "Первый", color: "red" });
+    expect(formatted("NULL")).toEqual({ text: "Новая строка" });
+    await click(
+      mappingRules()[0].querySelector<HTMLButtonElement>(
+        '[aria-label="Удалить подстановку 1"]',
+      )!,
+    );
+    expect(formatted(null)).toEqual({ text: "Резерв" });
+    expect(formatted("NULL")).toEqual({ text: "Новая строка" });
+  });
+
+  it("prevents viewers from editing or deleting value mappings", async () => {
+    const node = withColumnOptions({ nullText: "Нет данных" });
+    await render(node, { editable: false });
+    expect(mappingRules()).toHaveLength(1);
+    const controls = [
+      ...mappingRules()[0].querySelectorAll<
+        HTMLInputElement | HTMLButtonElement
+      >("input, button"),
+    ];
+    expect(controls.length).toBeGreaterThan(2);
+    for (const control of controls) {
+      expect(control.matches(":disabled")).toBe(true);
+      if (control instanceof HTMLButtonElement) await click(control);
+    }
+    expect(changes).toEqual([]);
+    expect(current).toEqual(node);
+  });
+
+  it("keeps a full set of mappings and its editable legacy fallback within the save limit", async () => {
+    const mappings = Array.from({ length: 20 }, (_, index) => ({
+      value: String(index),
+      text: `Значение ${index}`,
+    }));
+    await render(withColumnOptions({ mappings, nullText: "Резерв" }));
+    expect(mappingRules()).toHaveLength(21);
+    expect(button(" Подстановка").disabled).toBe(true);
+    const legacy = mappingRules()[20];
+    expect(input("Исходное значение", legacy).disabled).toBe(true);
+    expect(input("Отображать вместо значения", legacy).disabled).toBe(false);
+    await edit(input("Отображать вместо значения", legacy), "Пусто");
+    expect(currentColumn().mappings).toEqual(mappings);
+    expect(currentColumn().nullText).toBe("Пусто");
+    expect(formatted(null)).toEqual({ text: "Пусто" });
+    await click(
+      mappingRules()[0].querySelector<HTMLButtonElement>(
+        '[aria-label="Удалить подстановку 1"]',
+      )!,
+    );
+    expect(mappingRules()).toHaveLength(20);
+    expect(currentColumn().mappings).toEqual([
+      ...mappings.slice(1),
+      { value: null, text: "Пусто" },
+    ]);
+    expect(currentColumn().nullText).toBeUndefined();
+    expect(formatted(null)).toEqual({ text: "Пусто" });
+    expect(button(" Подстановка").disabled).toBe(true);
     expect(uncaught).toEqual([]);
   });
 

@@ -105,6 +105,92 @@
   color: var(--board-muted);
   font-size: 12px;
 }
+.table-setting-rule-heading > .table-setting-remove {
+  margin-left: auto;
+}
+.board-workspace .table-setting-rule-heading .table-mapping-color {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 4px;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+}
+.board-workspace .table-mapping-color:hover {
+  border-color: var(--board-muted);
+}
+.table-mapping-swatch {
+  display: inline-block;
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--mapping-color);
+  background: var(--mapping-color);
+}
+.table-mapping-swatch[data-empty] {
+  color: var(--muted);
+}
+.table-mapping-swatch[data-empty]::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 1px;
+  width: 12px;
+  height: 1px;
+  background: currentColor;
+  transform: rotate(-45deg);
+}
+.table-mapping-color-menu {
+  min-width: 170px;
+}
+.table-mapping-color-option {
+  gap: 10px;
+}
+.table-mapping-color-check {
+  display: flex;
+  margin-left: auto;
+}
+.table-mapping-source {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.table-mapping-source-control {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--board-border);
+  border-radius: 4px;
+  background: var(--board-control);
+}
+.table-mapping-source-control:focus-within {
+  border-color: var(--board-accent);
+  box-shadow: inset 0 0 0 1px var(--board-accent);
+}
+.table-settings .table-mapping-source-control > input {
+  border: 0;
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+.board-workspace .table-mapping-source-control > .table-mapping-null {
+  width: 26px;
+  min-height: 24px;
+  padding: 0;
+  margin-right: 2px;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--board-muted);
+}
 .board-workspace .table-setting-rule-heading .table-setting-remove,
 .board-workspace .table-setting-order > button {
   width: 30px;
