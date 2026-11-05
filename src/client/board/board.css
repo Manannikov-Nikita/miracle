@@ -340,13 +340,13 @@
   border-color: var(--board-accent);
 }
 .board-artifact-note .board-node-header {
+  height: 32px;
+  min-height: 32px;
+  justify-content: flex-end;
   background: transparent;
   border-bottom: 0;
   color: #6a592a;
   border-radius: 3px 3px 0 0;
-}
-.board-artifact-note .board-node-kind {
-  color: inherit;
 }
 .board-workspace .board-artifact-note .board-node-toolbar button {
   color: #55451e;

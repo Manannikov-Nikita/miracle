@@ -21,7 +21,6 @@ import {
   ChartLine,
   Code,
   FileMd,
-  Note,
   SlidersHorizontal,
   Table,
   Trash,
@@ -131,28 +130,30 @@ export default function ArtifactNode({
         />
       ))}
       <header className="board-node-header">
-        <span className="board-node-kind" aria-hidden="true">
-          {data.kind === "result" ? (
-            data.view === "chart" || data.view === "custom" ? (
-              <ChartLine size={16} />
-            ) : (
-              <Table size={16} />
-            )
-          ) : data.kind === "markdown" ? (
-            <FileMd size={16} />
-          ) : (
-            <Note size={16} />
-          )}
-        </span>
-        <strong title={data.title}>{data.title}</strong>
+        {data.kind !== "note" && (
+          <>
+            <span className="board-node-kind" aria-hidden="true">
+              {data.kind === "markdown" ? (
+                <FileMd size={16} />
+              ) : data.view === "chart" || data.view === "custom" ? (
+                <ChartLine size={16} />
+              ) : (
+                <Table size={16} />
+              )}
+            </span>
+            <strong title={data.title}>{data.title}</strong>
+          </>
+        )}
         <span className="board-node-toolbar nodrag nopan">
-          <button
-            title="Свойства блока"
-            aria-label={`Свойства: ${data.title}`}
-            onClick={() => actions.inspect(id)}
-          >
-            <SlidersHorizontal size={16} aria-hidden="true" />
-          </button>
+          {data.kind !== "note" && (
+            <button
+              title="Свойства блока"
+              aria-label={`Свойства: ${data.title}`}
+              onClick={() => actions.inspect(id)}
+            >
+              <SlidersHorizontal size={16} aria-hidden="true" />
+            </button>
+          )}
           {data.source && (
             <button
               title="Открыть закреплённый SQL"

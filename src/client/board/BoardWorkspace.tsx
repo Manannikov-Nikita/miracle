@@ -961,6 +961,8 @@ function Workspace({
     });
   };
   const selectedNode = board?.document.nodes.find((n) => n.id === selected);
+  const canInspectSelected =
+    !!selectedNode && selectedNode.data.kind !== "note";
   const updateEdge = (
     boardId: string,
     id: string,
@@ -1077,6 +1079,10 @@ function Workspace({
       if (node?.data.source) onOpenSource(node.data.source, node.data.title);
     },
     inspect: (id: string) => {
+      const node = store.current.current?.document.nodes.find(
+        (n) => n.id === id,
+      );
+      if (!node || node.data.kind === "note") return;
       setSelected(id);
       selectNodes(new Set([id]));
       setInspecting(true);
@@ -1320,11 +1326,11 @@ function Workspace({
             <ArrowClockwise size={16} aria-hidden="true" />
           </button>
           <button
-            disabled={!selectedNode}
+            disabled={!canInspectSelected}
             onClick={() => setInspecting((value) => !value)}
             className="board-tools-icon"
             aria-label="Свойства"
-            aria-pressed={inspecting && !!selectedNode}
+            aria-pressed={inspecting && canInspectSelected}
             title="Свойства выбранного блока"
           >
             <SlidersHorizontal size={16} aria-hidden="true" />
@@ -1636,7 +1642,7 @@ function Workspace({
         {editable && selectedIds.size >= 2 && (
           <AlignmentToolbar count={selectedIds.size} onAlign={alignSelection} />
         )}
-        {selectedNode && inspecting && board && (
+        {selectedNode && canInspectSelected && inspecting && board && (
           <Inspector
             boardId={board.id}
             node={selectedNode}
