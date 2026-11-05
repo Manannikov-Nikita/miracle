@@ -68,6 +68,44 @@ describe("shared Markdown editor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("renders math locally and reveals editable source when a formula is clicked", async () => {
+    const source = "Inline $x^2$\n\n$$\n\\frac{1}{2}\n$$";
+    await render({ value: source });
+    expect(container.querySelectorAll(".katex")).toHaveLength(2);
+    expect(container.querySelectorAll(".katex-display")).toHaveLength(1);
+    expect(view().state.doc.toString()).toBe(source);
+    const formula = container.querySelector(".md-preview-math")!;
+    await act(async () =>
+      formula.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+    );
+    expect(view().state.selection.main.head).toBe(7);
+    expect(container.querySelectorAll(".katex")).toHaveLength(1);
+    expect(view().contentDOM.textContent).toContain("$x^2$");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps invalid formulas readable and forbids math links or embedded HTML", async () => {
+    await render({
+      value:
+        "$\\frac{$\n\n$\\href{javascript:alert(1)}{bad}$\n\n$\\htmlClass{injected}{x}$",
+    });
+    expect(container.querySelector(".katex-error")).not.toBeNull();
+    expect(container.querySelector("a, .injected")).toBeNull();
+    expect(view().state.doc.toString()).toBe(props.value);
+  });
+
+  it("renders formulas inside table cells without replacing the table source twice", async () => {
+    await render({ value: "| Formula |\n| --- |\n| $x^2$ |" });
+    expect(container.querySelectorAll("table .katex")).toHaveLength(1);
+    expect(view().state.doc.toString()).toBe(props.value);
+    const formula = container.querySelector("table .katex")!;
+    await act(async () =>
+      formula.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+    );
+    expect(container.querySelector("table")).toBeNull();
+    expect(view().contentDOM.textContent).toContain("$x^2$");
+  });
+
   it("uses the file label and latest save callback without recreating the editor", async () => {
     const first = vi.fn(),
       latest = vi.fn();

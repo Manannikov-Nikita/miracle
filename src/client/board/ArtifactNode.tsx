@@ -29,6 +29,7 @@ import {
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
 import MarkdownEditor from "./MarkdownEditor";
+import StickyNoteEditor from "./StickyNoteEditor";
 import { boardHandleOptions } from "./connection-sides";
 import type { ResizeSides } from "./resize-snapping";
 const handlePositions = {
@@ -206,14 +207,10 @@ export default function ArtifactNode({
           />
         )}
         {data.kind === "note" && (
-          <textarea
-            maxLength={200000}
-            aria-label="Текст заметки"
+          <StickyNoteEditor
             value={data.text ?? ""}
             readOnly={!actions.editable}
-            onChange={(e) => actions.update(id, { text: e.target.value })}
-            placeholder="Запишите наблюдение…"
-            className="board-note-text"
+            onChange={(text) => actions.update(id, { text })}
           />
         )}
         {data.kind === "markdown" && (

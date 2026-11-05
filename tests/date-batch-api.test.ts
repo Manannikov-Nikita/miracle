@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import type { QueryRun } from "../src/shared/types.js";
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
+  vi.restoreAllMocks();
 });
 const dates = {
   startDate: "2026-01-01",
@@ -339,6 +340,37 @@ it("retains Sunday weeks in saved queries, editor documents, result snapshots an
     "2026-01-04",
     "2026-01-11",
   ]);
+});
+
+it("persists per-date active timing across pause and resume without including paused time", async () => {
+  let now = Date.now();
+  const fixture = await setup((date, attempt) => {
+    now +=
+      date === "2026-01-01"
+        ? 1000
+        : date === "2026-01-02"
+          ? attempt === 1
+            ? 2000
+            : 3000
+          : 4000;
+    return date === "2026-01-02" && attempt === 1 ? { error: "offline" } : {};
+  });
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const run = await fixture.start();
+  const paused = await fixture.wait(run.id);
+  expect(paused.status).toBe("paused");
+  expect(paused.batch!.items[0]!.elapsedMs).toBe(1000);
+  expect(paused.batch!.items[1]!.elapsedMs).toBe(2000);
+  expect(paused.batch!.items[1]!.activeStartedAt).toBeUndefined();
+  now += 60000;
+  await fixture.request("POST", `/api/query-runs/${run.id}/resume`, {});
+  const done = await fixture.wait(run.id);
+  expect(done.status).toBe("completed");
+  expect(done.batch!.items.map((item) => item.elapsedMs)).toEqual([
+    1000, 5000, 4000,
+  ]);
+  expect(done.batch!.items.every((item) => !item.activeStartedAt)).toBe(true);
+  expect(done.elapsedMs).toBe(10000);
 });
 
 it("pauses after exhausted attempts and resumes the same date with a fresh retry budget", async () => {

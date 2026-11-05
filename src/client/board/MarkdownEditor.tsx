@@ -1,7 +1,12 @@
 import { useLayoutEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  markdownRemarkPlugins,
+  markdownRehypePlugins,
+  renderMath,
+} from "../markdown-math";
+import "katex/dist/katex.min.css";
 import {
   Annotation,
   Compartment,
@@ -114,6 +119,42 @@ class ImageWidget extends WidgetType {
 }
 
 const tableRoots = new WeakMap<HTMLElement, Root>();
+class MathWidget extends WidgetType {
+  constructor(
+    readonly source: string,
+    readonly display: boolean,
+    readonly from: number,
+  ) {
+    super();
+  }
+  eq(other: MathWidget) {
+    return (
+      this.source === other.source &&
+      this.display === other.display &&
+      this.from === other.from
+    );
+  }
+  toDOM(view: EditorView) {
+    const dom = document.createElement("span");
+    dom.className = `md-preview-math${this.display ? " md-preview-math-display" : ""}`;
+    dom.innerHTML = renderMath(this.source, this.display);
+    dom.addEventListener("mousedown", (event) => {
+      if (view.state.readOnly || event.button !== 0) return;
+      event.preventDefault();
+      view.dispatch({
+        selection: { anchor: this.from },
+        effects: focusPreview.of(true),
+        scrollIntoView: true,
+      });
+      view.focus();
+    });
+    return dom;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
 class TableWidget extends WidgetType {
   constructor(
     readonly source: string,
@@ -146,7 +187,8 @@ class TableWidget extends WidgetType {
     const from = this.from;
     root.render(
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={markdownRemarkPlugins}
+        rehypePlugins={markdownRehypePlugins}
         components={{
           th: ({ node, ...props }) => (
             <th
@@ -200,6 +242,11 @@ function decorationsFor(
       return Decoration.line({ class: part.className }).range(part.from);
     if (part.kind === "hide")
       return Decoration.replace({}).range(part.from, part.to);
+    if (part.kind === "math")
+      return Decoration.replace({
+        block: part.block,
+        widget: new MathWidget(part.text ?? "", !!part.display, part.from),
+      }).range(part.from, part.to);
     if (part.kind === "image")
       return Decoration.replace({
         widget: new ImageWidget(part.href, part.text ?? "", part.from),

@@ -65,6 +65,7 @@ import { useProjectSync } from "../agents/ProjectSync";
 import { hasDatePlaceholder } from "../../shared/date-batch";
 import DateBatchDialog from "./DateBatchDialog";
 import DateBatchProgress from "./DateBatchProgress";
+import { QueryDuration } from "./QueryTiming";
 import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
 import ResultTable from "./ResultTable";
 import { Select } from "./Select";
@@ -943,7 +944,6 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             ? p.metadata.getTables(connectionId)
             : [];
           let functions: SqlFunctionCatalog | undefined;
-          let metadataReady = true;
           if (connectionId) {
             const requests = [
               completionMetadata
@@ -966,7 +966,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             let timer: ReturnType<typeof setTimeout> | undefined;
             const ready = Promise.allSettled(requests).then(() => true);
             try {
-              metadataReady = await Promise.race([
+              await Promise.race([
                 ready,
                 new Promise<false>((resolve) => {
                   timer = setTimeout(() => resolve(false), 300);
@@ -1010,13 +1010,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             function: monaco.languages.CompletionItemKind.Function,
           };
           return {
-            // ClickHouse combinators are generated from the growing function
-            // prefix; ask Monaco to refresh instead of filtering the first list.
-            incomplete:
-              !metadataReady ||
-              !snapshot?.complete ||
-              suggestions.length >= 200 ||
-              context.engine === "clickhouse",
+            // Recompute substring matches and prefix ranking on each keystroke,
+            // including when an earlier query produced no suggestions.
+            incomplete: true,
             suggestions: suggestions.map((suggestion) => ({
               ...suggestion,
               kind: kinds[suggestion.kind],
@@ -1842,13 +1838,18 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                           {running
                             ? "Выполняется"
                             : activeRun.status === "completed"
-                              ? `${((activeRun.elapsedMs ?? new Date(activeRun.finishedAt || 0).getTime() - new Date(activeRun.startedAt).getTime()) / 1000).toFixed(2)} с`
+                              ? activeRun.batch
+                                ? `${((activeRun.elapsedMs ?? new Date(activeRun.finishedAt || 0).getTime() - new Date(activeRun.startedAt).getTime()) / 1000).toFixed(2)} с`
+                                : "Выполнен"
                               : paused
                                 ? "Приостановлен"
                                 : activeRun.status === "cancelled"
                                   ? "Отменён"
-                                  : "Ошибка"}
+                                  : activeRun.status === "interrupted"
+                                    ? "Прерван"
+                                    : "Ошибка"}
                         </span>
+                        {!activeRun.batch && <QueryDuration run={activeRun} />}
                       </span>
                     )}
                     {result && (

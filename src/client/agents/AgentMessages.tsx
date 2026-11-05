@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { markdownRemarkPlugins, markdownRehypePlugins } from "../markdown-math";
+import "katex/dist/katex.min.css";
 import { CaretRight, ShieldCheck } from "@phosphor-icons/react";
 import type { AgentMessage } from "../../shared/agents";
 import type { AgentChatState } from "./useAgentChat";
@@ -32,7 +33,8 @@ function MessageContent({ content }: { content: string }) {
   return (
     <div className="agent-markdown">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={markdownRemarkPlugins}
+        rehypePlugins={markdownRehypePlugins}
         components={{
           img: ({ alt }) => <span>{alt || "Изображение"}</span>,
           a: ({ children, href }) => (

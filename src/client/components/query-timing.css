@@ -1,0 +1,10 @@
+.query-duration {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.batch-time-estimate {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

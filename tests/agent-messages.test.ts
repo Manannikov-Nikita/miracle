@@ -68,6 +68,26 @@ describe("agent transcript", () => {
     await act(async () => root.render(createElement(AgentMessages, { state })));
   };
 
+  it("renders safe inline and display math while preserving Markdown code examples", async () => {
+    await render(
+      [
+        message(
+          "answer",
+          "assistant",
+          "Inline $x^2$\n\n$$y^2$$\n\n$$\n\\frac{1}{2}\n$$\n\n`$code$`\n\n```math\n$example$\n```\n\n$\\frac{$\n\n$\\href{javascript:alert(1)}{bad}$",
+        ),
+      ],
+      "completed",
+    );
+    expect(host.querySelectorAll(".katex-display")).toHaveLength(2);
+    expect(host.querySelectorAll(".katex")).toHaveLength(4);
+    expect(host.querySelector(".katex-error")).not.toBeNull();
+    expect(host.querySelector("a")).toBeNull();
+    expect(
+      [...host.querySelectorAll("code")].map((code) => code.textContent),
+    ).toEqual(["$code$", "$example$\n"]);
+  });
+
   it("keeps file and chart references visible in saved user messages without removal controls", async () => {
     await render(
       [

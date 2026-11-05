@@ -8,6 +8,61 @@ import {
 } from "../src/client/board/markdown-live-preview";
 
 describe("Markdown live preview", () => {
+  it("previews inline and display math with original source ranges", () => {
+    const source =
+      "Total $x_1 + x_2$\n\n$$\\frac{1}{2}$$\n\n$$\na^2+b^2=c^2\n$$";
+    const math = planMarkdownPreview(source, new Set()).filter(
+      (p) => p.kind === "math",
+    );
+    expect(math.map((p) => source.slice(p.from, p.to))).toEqual([
+      "$x_1 + x_2$",
+      "$$\\frac{1}{2}$$",
+      "$$\na^2+b^2=c^2\n$$",
+    ]);
+    expect(math.map((p) => p.display)).toEqual([false, true, true]);
+    expect(
+      planMarkdownPreview(source, new Set([6])).filter(
+        (p) => p.kind === "math",
+      ),
+    ).toHaveLength(2);
+    expect(planMarkdownPreview(source, new Set([1, 3, 6]))).toEqual([]);
+  });
+
+  it("does not parse math in code, escaped dollars, or link destinations", () => {
+    const source =
+      "`$code$` \\$escaped\\$ [link](https://x.test/$path$)\n\n```math\n$x$\n```\n\n    $indented$\n\n$real$";
+    const math = planMarkdownPreview(source, new Set()).filter(
+      (p) => p.kind === "math",
+    );
+    expect(math.map((p) => source.slice(p.from, p.to))).toEqual(["$real$"]);
+  });
+
+  it("preserves surrounding emphasis and links while leaving incomplete inline math editable", () => {
+    const source =
+      "**Value $x$** and [formula $y$](https://example.com)\n\n$unfinished";
+    const parts = planMarkdownPreview(source, new Set());
+    expect(parts.filter((p) => p.kind === "math")).toHaveLength(2);
+    expect(
+      parts.find((p) => p.className === "md-preview-strong"),
+    ).toMatchObject({ from: 0, to: 13 });
+    expect(parts.find((p) => p.kind === "link")).toMatchObject({
+      href: "https://example.com",
+    });
+    expect(parts.some((p) => p.from >= source.indexOf("$unfinished"))).toBe(
+      false,
+    );
+  });
+
+  it("does not hide formula punctuation or create overlapping table widgets", () => {
+    const source = "$a_1 * b_2* + `x`$\n\n| Formula |\n| --- |\n| $x$ |";
+    const parts = planMarkdownPreview(source, new Set());
+    expect(parts.filter((p) => p.from < 18)).toMatchObject([
+      { kind: "math", from: 0, to: 18 },
+    ]);
+    expect(parts.filter((p) => p.kind === "math")).toHaveLength(1);
+    expect(parts.filter((p) => p.kind === "table")).toHaveLength(1);
+  });
+
   it("reveals only cursor lines and all lines covered by a selection", () => {
     const state = EditorState.create({
       doc: "# One\n\n**two**\nthree",

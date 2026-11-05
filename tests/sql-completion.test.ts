@@ -171,6 +171,7 @@ describe("lazy schema suggestions", () => {
       label: "lake.analytics",
       insertText: "lake.analytics",
       kind: "schema",
+      filterText: "anal",
       sortText: expect.any(String),
     });
   });
@@ -727,9 +728,12 @@ describe("ClickHouse SQL completion", () => {
     );
     expect(sqlSuggestions(sql, sql, [], ch)).toEqual([]);
   });
-  it("does not eagerly expand aggregate combinators for a blank or broad prefix", () => {
+  it("keeps aggregate combinators lazy for a blank prefix and bounded for broad search", () => {
     expect(names("SELECT ")).not.toContain("sumArrayIfState");
-    expect(names("SELECT u")).not.toContain("uniqArrayIfState");
+    expect(names("SELECT u")).toContain("uniqArrayIfState");
+    expect(
+      names("SELECT u").length - names("SELECT ").length,
+    ).toBeLessThanOrEqual(120);
     expect(names("SELECT uniq").length).toBeLessThan(500);
   });
 });

@@ -328,19 +328,75 @@
   overflow: hidden;
   border-radius: 0 0 6px 6px;
 }
-.board-note-text {
+.board-artifact-note {
+  background: #f4df88;
+  border-color: #d4b951;
+  border-radius: 3px;
+  color: #382f16;
+  box-shadow: 0 5px 10px #0002;
+}
+.board-artifact-note.board-artifact-selected,
+.board-artifact-note:focus-within {
+  border-color: var(--board-accent);
+}
+.board-artifact-note .board-node-header {
+  background: transparent;
+  border-bottom: 0;
+  color: #6a592a;
+  border-radius: 3px 3px 0 0;
+}
+.board-artifact-note .board-node-kind {
+  color: inherit;
+}
+.board-workspace .board-artifact-note .board-node-toolbar button {
+  color: #55451e;
+}
+.board-workspace .board-artifact-note .board-node-toolbar button:hover {
+  background: #382f1614;
+}
+.board-sticky-editor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   height: 100%;
+  padding: 20px;
+  overflow: hidden;
+}
+.board-note-text,
+.board-note-measure {
+  font-family: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+.board-note-measure {
+  position: absolute;
+  top: 0;
+  left: 20px;
+  visibility: hidden;
+  pointer-events: none;
+}
+.board-note-text {
+  width: 100%;
+  min-height: 0;
+  flex-shrink: 0;
   resize: none;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--board-text);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.6;
-  padding: 14px;
+  color: #382f16;
+  padding: 0;
   outline-offset: -3px !important;
+}
+.board-note-text::placeholder {
+  color: #75632f;
+  opacity: 1;
 }
 .board-artifact-markdown {
   background: var(--board-bg);
