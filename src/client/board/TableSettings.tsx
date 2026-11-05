@@ -9,10 +9,15 @@ import type {
   TableFormat,
   TableSpec,
 } from "../../shared/tableTypes";
-import { createTableSpec, tableSourceSchema } from "./tableModel";
+import {
+  createTableSpec,
+  tableReshapeIds,
+  tableSourceSchema,
+} from "./tableModel";
 import { Select } from "../components/Select";
 import { isNumericColumn } from "./model";
 import { TableMappingColor, TableMappingSource } from "./TableMappingControls";
+import TableReshapeSettings from "./TableReshapeSettings";
 import "./table-settings.css";
 
 type Option = { value: string; label: string; disabled?: boolean };
@@ -602,37 +607,19 @@ function DataSettings({
       ),
     });
   const pivot = spec.pivot;
-  const enablePivot = () => {
-    const row =
-      result.columns.find((c) => !isNumericColumn(c)) ?? result.columns[0];
-    const column =
-      result.columns.find((c) => !isNumericColumn(c) && c.id !== row?.id) ??
-      result.columns.find((c) => c.id !== row?.id);
-    const numericValue = result.columns.find(
-      (c) => isNumericColumn(c) && c.id !== row?.id && c.id !== column?.id,
-    );
-    const value =
-      numericValue ??
-      result.columns.find((c) => c.id !== row?.id && c.id !== column?.id);
-    if (!row || !column || !value) return;
-    set({
-      pivot: {
-        row: row.id,
-        column: column.id,
-        value: value.id,
-        aggregate: numericValue ? "sum" : "count",
-      },
-      sort: undefined,
-    });
-  };
-  const pivotValid =
-    !pivot ||
-    Boolean(
-      pivot.row &&
-      pivot.column &&
-      pivot.value &&
-      new Set([pivot.row, pivot.column, pivot.value]).size === 3,
-    );
+  const reshape = spec.reshape;
+  const ids = tableReshapeIds(result.columns);
+  const sortColumns = pivot
+    ? columns.filter((c) => c.value === pivot.row)
+    : reshape?.kind === "pivot"
+      ? columns.filter((c) => reshape.rows.includes(c.value))
+      : reshape?.kind === "melt"
+        ? [
+            ...columns.filter((c) => !reshape.columns.includes(c.value)),
+            { value: ids.key, label: reshape.keyName ?? "Ключ" },
+            { value: ids.value, label: reshape.valueName ?? "Значение" },
+          ]
+        : columns;
   return (
     <>
       <p className="table-setting-help">
@@ -702,10 +689,10 @@ function DataSettings({
           label="Сортировать по"
           value={spec.sort?.column ?? ""}
           disabled={disabled}
-          placeholder={pivot ? "По заголовку сводной" : undefined}
+          placeholder={pivot || reshape ? "По заголовку таблицы" : undefined}
           options={[
-            { value: "", label: pivot ? "Нет" : "Как в SQL" },
-            ...(pivot ? columns.filter((c) => c.value === pivot.row) : columns),
+            { value: "", label: pivot || reshape ? "Нет" : "Как в SQL" },
+            ...sortColumns,
           ]}
           change={(column) =>
             set({
@@ -735,95 +722,12 @@ function DataSettings({
           />
         )}
       </>
-      <div className="table-setting-section">
-        <label className="table-setting-check">
-          <input
-            type="checkbox"
-            checked={Boolean(pivot)}
-            disabled={disabled || (!pivot && result.columns.length < 3)}
-            onChange={(e) =>
-              e.target.checked
-                ? enablePivot()
-                : set({ pivot: undefined, sort: undefined })
-            }
-          />
-          Сводная таблица · pivot
-        </label>
-        {result.columns.length < 3 && !pivot && (
-          <p className="table-setting-help">
-            Для сводной нужны три разных столбца.
-          </p>
-        )}
-        {pivot && (
-          <>
-            <Choice
-              label="Строки сводной"
-              value={pivot.row}
-              options={columns}
-              disabled={disabled}
-              change={(row) =>
-                set({ pivot: { ...pivot, row }, sort: undefined })
-              }
-            />
-            <Choice
-              label="Столбцы сводной"
-              value={pivot.column}
-              options={columns}
-              disabled={disabled}
-              change={(column) =>
-                set({ pivot: { ...pivot, column }, sort: undefined })
-              }
-            />
-            <Choice
-              label="Значение сводной"
-              value={pivot.value}
-              options={columns}
-              disabled={disabled}
-              change={(value) => {
-                const numeric = isNumericColumn(
-                  result.columns.find((c) => c.id === value)!,
-                );
-                set({
-                  pivot: {
-                    ...pivot,
-                    value,
-                    aggregate: numeric ? pivot.aggregate : "count",
-                  },
-                  sort: undefined,
-                });
-              }}
-            />
-            <Choice
-              label="Расчёт сводной"
-              value={pivot.aggregate}
-              options={aggregates.map((a) => ({
-                ...a,
-                disabled:
-                  a.value !== "count" &&
-                  !result.columns.some(
-                    (c) => c.id === pivot.value && isNumericColumn(c),
-                  ),
-              }))}
-              disabled={disabled}
-              change={(aggregate) =>
-                set({
-                  pivot: { ...pivot, aggregate: aggregate as TableAggregate },
-                })
-              }
-            />
-            {!pivotValid && (
-              <p className="table-setting-warning" role="status">
-                Выберите три разных столбца: строки, столбцы и значение.
-              </p>
-            )}
-            <p className="table-setting-help">
-              Повторы объединяются выбранным расчётом. Пустые пересечения —
-              NULL. Среднее: до 12 знаков после запятой. Сортировка — по
-              заголовкам сводной таблицы.
-            </p>
-          </>
-        )}
-      </div>
+      <TableReshapeSettings
+        columns={result.columns}
+        spec={spec}
+        set={set}
+        disabled={disabled}
+      />
     </>
   );
 }

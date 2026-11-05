@@ -43,6 +43,9 @@ export interface TableFilter {
     | "notNull";
   value?: string;
 }
+export type TableReshape =
+  | { kind: "melt"; columns: string[]; keyName?: string; valueName?: string }
+  | { kind: "pivot"; rows: string[]; column: string; value: string };
 export interface TableSpec {
   version: 1;
   sourceSchema: string;
@@ -56,6 +59,7 @@ export interface TableSpec {
     value: string;
     aggregate: TableAggregate;
   };
+  reshape?: TableReshape;
   density?: "compact" | "comfortable";
   frozenColumns?: number;
   wrap?: boolean;

@@ -5,6 +5,7 @@ import type {
   TableColor,
   TableColumnOptions,
   TableFilter,
+  TableReshape,
   TableSpec,
   TableViewColumn,
   TableViewData,
@@ -91,6 +92,23 @@ export function createTableSpec(
             ]),
           ),
         }),
+  };
+}
+
+/** A source-schema-derived namespace keeps generated ids stable and collision-free. */
+export function tableReshapeIds(columns: Column[]): {
+  key: string;
+  value: string;
+  pivotPrefix: string;
+} {
+  let prefix = "reshape:",
+    suffix = 0;
+  while (columns.some((column) => column.id.startsWith(prefix)))
+    prefix = `reshape:${++suffix}:`;
+  return {
+    key: `${prefix}melt:key`,
+    value: `${prefix}melt:value`,
+    pivotPrefix: `${prefix}pivot:`,
   };
 }
 
@@ -272,12 +290,86 @@ function validateSpec(columns: Column[], spec: TableSpec): void {
     if (p.aggregate !== "count" && !isNumericColumn(value))
       fail("для агрегации выберите числовой столбец.");
   }
+  if (spec.reshape !== undefined) {
+    if (spec.pivot)
+      fail(
+        "нельзя одновременно использовать сводную таблицу и изменение формы.",
+      );
+    validateReshape(columns, spec.reshape);
+  }
   if (
     spec.sort &&
     (!["asc", "desc"].includes(spec.sort.direction) ||
       typeof spec.sort.column !== "string")
   )
     fail("недопустимая сортировка.");
+}
+function validateReshape(columns: Column[], reshape: TableReshape): void {
+  if (
+    !reshape ||
+    typeof reshape !== "object" ||
+    !["melt", "pivot"].includes(reshape.kind)
+  )
+    fail("неизвестное изменение формы таблицы.");
+  const selected = reshape.kind === "melt" ? reshape.columns : reshape.rows;
+  if (
+    !Array.isArray(selected) ||
+    selected.length > 2000 ||
+    selected.some((id) => typeof id !== "string") ||
+    new Set(selected).size !== selected.length
+  )
+    fail("выберите неповторяющиеся столбцы для изменения формы.");
+  for (const id of selected) sourceColumn(columns, id);
+  if (reshape.kind === "melt") {
+    if (!selected.length)
+      fail("выберите столбцы значений для длинной таблицы.");
+    if (
+      Object.keys(reshape).some(
+        (key) => !["kind", "columns", "keyName", "valueName"].includes(key),
+      )
+    )
+      fail("неизвестная настройка длинной таблицы.");
+    for (const name of [reshape.keyName, reshape.valueName])
+      if (
+        name !== undefined &&
+        (typeof name !== "string" || !name.trim() || name.trim().length > 200)
+      )
+        fail("имена столбцов должны содержать от 1 до 200 символов.");
+    const valueNames = selected.map((id) => sourceColumn(columns, id).name);
+    if (new Set(valueNames).size !== valueNames.length)
+      fail(
+        "имена столбцов значений повторяются. Задайте уникальные имена в запросе.",
+      );
+    const keyName = reshape.keyName?.trim() ?? "Ключ",
+      valueName = reshape.valueName?.trim() ?? "Значение";
+    const retainedNames = columns
+      .filter((column) => !selected.includes(column.id))
+      .map((column) => column.name);
+    if (
+      keyName === valueName ||
+      retainedNames.includes(keyName) ||
+      retainedNames.includes(valueName)
+    )
+      fail(
+        "имена ключа и значения должны различаться и не повторять имена остальных столбцов.",
+      );
+  } else {
+    if (
+      Object.keys(reshape).some(
+        (key) => !["kind", "rows", "column", "value"].includes(key),
+      )
+    )
+      fail("неизвестная настройка широкой таблицы.");
+    sourceColumn(columns, reshape.column);
+    sourceColumn(columns, reshape.value);
+    if (
+      new Set([...selected, reshape.column, reshape.value]).size !==
+      selected.length + 2
+    )
+      fail(
+        "ключи строк, столбец и значение широкой таблицы должны различаться.",
+      );
+  }
 }
 function matches(value: Cell, column: Column, filter: TableFilter): boolean {
   if (filter.op === "isNull") return value === null;
@@ -456,6 +548,118 @@ function pivotTable(
     ]),
   };
 }
+function reshapeTable(
+  columns: Column[],
+  rows: Cell[][],
+  spec: TableSpec,
+): { columns: TableViewColumn[]; rows: Cell[][] } {
+  const reshape = spec.reshape!;
+  const ids = tableReshapeIds(columns);
+  const sourceView = (column: Column): TableViewColumn => ({
+    ...column,
+    sourceId: column.id,
+    options: spec.columns?.[column.id] ?? {},
+  });
+  if (reshape.kind === "melt") {
+    const selection = new Set(reshape.columns);
+    const indexed = columns.map((column, index) => ({ column, index }));
+    const values = indexed.filter(({ column }) => selection.has(column.id));
+    const identifiers = indexed.filter(
+      ({ column }) => !selection.has(column.id),
+    );
+    if (rows.length * values.length * (identifiers.length + 2) > 1_000_000)
+      fail(
+        "длинная таблица превышает 1 000 000 ячеек. Выберите меньше столбцов или добавьте фильтр.",
+      );
+    const type = values.every(
+      ({ column }) => column.type === values[0].column.type,
+    )
+      ? values[0].column.type
+      : "Mixed";
+    return {
+      columns: [
+        ...identifiers.map(({ column }) => sourceView(column)),
+        {
+          id: ids.key,
+          name: reshape.keyName?.trim() ?? "Ключ",
+          type: "String",
+          sourceId: ids.key,
+          options: spec.columns?.[ids.key] ?? {},
+        },
+        {
+          id: ids.value,
+          name: reshape.valueName?.trim() ?? "Значение",
+          type,
+          sourceId: ids.value,
+          options: spec.columns?.[ids.value] ?? {},
+        },
+      ],
+      rows: rows.flatMap((row) => {
+        const keys = identifiers.map(({ index }) => row[index] ?? null);
+        return values.map(({ column, index }) => [
+          ...keys,
+          column.name,
+          row[index] ?? null,
+        ]);
+      }),
+    };
+  }
+  const rowColumns = reshape.rows.map((id) => sourceColumn(columns, id));
+  const rowIndexes = rowColumns.map((column) => columns.indexOf(column));
+  const keyIndex = columns.findIndex((column) => column.id === reshape.column);
+  const valueIndex = columns.findIndex((column) => column.id === reshape.value);
+  const pivotKeys = new Map<string, Cell>();
+  const groups = new Map<
+    string,
+    { labels: Cell[]; values: Map<string, Cell> }
+  >();
+  for (const row of rows) {
+    const labels = rowIndexes.map((index) => row[index] ?? null);
+    const rowKey = typedKey(labels),
+      caption = row[keyIndex] ?? null,
+      key = typedKey(caption);
+    if (rowKey.length > 10000 || ids.pivotPrefix.length + key.length > 10000)
+      fail("ключ широкой таблицы слишком длинный (максимум 10000 символов).");
+    if (!pivotKeys.has(key)) {
+      if (pivotKeys.size === 200)
+        fail("широкая таблица поддерживает максимум 200 столбцов значений.");
+      pivotKeys.set(key, caption);
+    }
+    let group = groups.get(rowKey);
+    if (!group) {
+      group = { labels, values: new Map() };
+      groups.set(rowKey, group);
+    }
+    if (groups.size * (rowColumns.length + pivotKeys.size) > 1_000_000)
+      fail("широкая таблица превышает 1 000 000 ячеек. Добавьте фильтр.");
+    if (group.values.has(key))
+      fail(
+        "конфликт широкой таблицы: несколько значений для одной пары ключей строки и столбца. Добавьте ещё один ключ строки или уточните фильтр.",
+      );
+    group.values.set(key, row[valueIndex] ?? null);
+  }
+  const valueColumn = columns[valueIndex];
+  const { label: _label, ...inherited } = spec.columns?.[valueColumn.id] ?? {};
+  return {
+    columns: [
+      ...rowColumns.map(sourceView),
+      ...Array.from(pivotKeys, ([key, caption]): TableViewColumn => {
+        const id = `${ids.pivotPrefix}${key}`;
+        return {
+          id,
+          name: caption === null ? "NULL" : rawText(caption),
+          type: valueColumn.type,
+          sourceId: valueColumn.id,
+          options: { ...inherited, ...spec.columns?.[id] },
+        };
+      }),
+    ],
+    rows: Array.from(groups.values(), (group) => [
+      ...group.labels,
+      ...Array.from(pivotKeys.keys(), (key) => group.values.get(key) ?? null),
+    ]),
+  };
+}
 export function buildTable(
   columns: Column[],
   rows: Cell[][],
@@ -475,27 +679,34 @@ export function buildTable(
   );
   const transformed = spec.pivot
     ? pivotTable(columns, filtered, spec)
-    : {
-        columns: columns.map((c) => ({
-          ...c,
-          sourceId: c.id,
-          options: spec.columns?.[c.id] ?? {},
-        })),
-        rows: filtered.map((row) => columns.map((_, i) => row[i] ?? null)),
-      };
+    : spec.reshape
+      ? reshapeTable(columns, filtered, spec)
+      : {
+          columns: columns.map((c) => ({
+            ...c,
+            sourceId: c.id,
+            options: spec.columns?.[c.id] ?? {},
+          })),
+          rows: filtered.map((row) => columns.map((_, i) => row[i] ?? null)),
+        };
+  const reshapePivotPrefix =
+    spec.reshape?.kind === "pivot"
+      ? tableReshapeIds(columns).pivotPrefix
+      : undefined;
+  const dynamicPivotReference = (id: string) =>
+    id.length <= 10000 &&
+    ((!!spec.pivot && id.startsWith("pivot:")) ||
+      (reshapePivotPrefix !== undefined && id.startsWith(reshapePivotPrefix)));
   const validReference = (id: string) =>
     columns.some((c) => c.id === id) ||
     transformed.columns.some((c) => c.id === id) ||
-    (!!spec.pivot && id.startsWith("pivot:") && id.length <= 10000);
+    dynamicPivotReference(id);
   for (const id of [...Object.keys(spec.columns ?? {}), ...(spec.order ?? [])])
     if (!validReference(id)) fail(`неизвестный столбец «${id}» в настройках.`);
   if (spec.sort) {
     const { column: id, direction } = spec.sort,
       index = transformed.columns.findIndex((c) => c.id === id);
-    if (
-      index < 0 &&
-      !(spec.pivot && id.startsWith("pivot:") && validReference(id))
-    )
+    if (index < 0 && !dynamicPivotReference(id))
       fail(`столбец сортировки «${id}» отсутствует после преобразования.`);
     if (index >= 0) {
       const column = transformed.columns[index],

@@ -203,6 +203,25 @@
   flex-direction: column;
   gap: 12px;
 }
+.table-reshape-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  color: var(--board-muted);
+  font-size: 13px;
+}
+.table-reshape-columns .table-setting-check {
+  align-items: flex-start;
+}
+.table-reshape-columns input {
+  margin-top: 2px;
+}
+.table-reshape-columns label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .table-settings button {
   font-size: 13px;
 }

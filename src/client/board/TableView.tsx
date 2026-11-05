@@ -80,6 +80,7 @@ export default function TableView({
     authoredSpec.sort?.direction,
     authoredSpec.sourceSchema,
     authoredSpec.pivot,
+    authoredSpec.reshape,
   ]);
   const [localSort, setLocalSort] = useState<{
     scope: string;
@@ -99,6 +100,7 @@ export default function TableView({
   const pageKey = contentKey([result.id, spec]);
   const full = Boolean(
     spec.pivot ||
+    spec.reshape ||
     spec.sort ||
     spec.filters?.length ||
     Object.values(spec.columns ?? {}).some(
@@ -268,12 +270,16 @@ export default function TableView({
           title={
             error
               ? "Не удалось загрузить таблицу."
-              : "Не удалось подготовить таблицу."
+              : spec.reshape
+                ? "Не удалось изменить форму таблицы."
+                : "Не удалось подготовить таблицу."
           }
           hint={
             error
               ? "Повторите загрузку сохранённого снимка."
-              : "Проверьте настройки таблицы в свойствах блока. Если изменились столбцы, сбросьте настройки таблицы."
+              : spec.reshape && prepared?.error
+                ? prepared.error.replace(/^Таблица: /, "")
+                : "Проверьте настройки таблицы в свойствах блока. Если изменились столбцы, сбросьте настройки таблицы."
           }
           actions={
             error ? (
@@ -466,7 +472,11 @@ export default function TableView({
               {total ? safeOffset + 1 : 0}–
               {Math.min(safeOffset + pageRows.length, total)} из{" "}
               {total.toLocaleString("ru-RU")}
-              {spec.pivot ? " · pivot" : ""}
+              {spec.pivot
+                ? " · сводная"
+                : spec.reshape
+                  ? ` · ${spec.reshape.kind}`
+                  : ""}
               {spec.filters?.length
                 ? ` · от ${result.rowCount.toLocaleString("ru-RU")}`
                 : ""}

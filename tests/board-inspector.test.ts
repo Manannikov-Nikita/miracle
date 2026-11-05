@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Inspector from "../src/client/board/Inspector";
-import { formatTableCell } from "../src/client/board/tableModel";
+import {
+  createTableSpec,
+  formatTableCell,
+} from "../src/client/board/tableModel";
 import type { BoardNode, ResultSet, TableSpec } from "../src/shared/types";
 import type { TableColumnOptions } from "../src/shared/tableTypes";
 
@@ -53,6 +56,10 @@ describe("board inspector settings integration", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     uncaught = [];
@@ -64,19 +71,26 @@ describe("board inspector settings integration", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     vi.unstubAllGlobals();
   });
 
   async function render(
     node: BoardNode,
-    options: { editable?: boolean; missingMetadata?: boolean } = {},
+    options: {
+      editable?: boolean;
+      missingMetadata?: boolean;
+      result?: ResultSet;
+    } = {},
   ) {
     function Board() {
       const [value, setValue] = useState(node);
       current = value;
       return createElement(Inspector, {
         node: value,
-        result: options.missingMetadata ? undefined : result,
+        result: options.missingMetadata
+          ? undefined
+          : (options.result ?? result),
         editable: options.editable ?? true,
         change(next) {
           changes.push(next);
@@ -108,6 +122,50 @@ describe("board inspector settings integration", () => {
   async function click(element: HTMLElement) {
     await act(async () => element.click());
   }
+  function select(label: string) {
+    const found = container.querySelector<HTMLButtonElement>(
+      `button[role="combobox"][aria-label="${label}"]`,
+    );
+    expect(found, `select ${label}`).not.toBeNull();
+    return found!;
+  }
+  async function choose(label: string, text: string) {
+    const trigger = select(label);
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    const option = [
+      ...document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ].find((item) => item.textContent?.trim() === text);
+    expect(option, `option ${text}`).toBeDefined();
+    await act(async () => {
+      option!.focus();
+      option!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  }
+  const reshapeResult: ResultSet = {
+    ...result,
+    columns: [
+      result.columns[0],
+      { id: "category", name: "Категория", type: "String" },
+      result.columns[1],
+      { id: "cost", name: "Расход", type: "Float64" },
+    ],
+  };
   function withColumnOptions(options: TableColumnOptions): BoardNode {
     const node = fixture("table");
     node.data.table = {
@@ -301,6 +359,183 @@ describe("board inspector settings integration", () => {
     expect(current.data.visibleColumns).toEqual(["month"]);
     expect(uncaught).toEqual([]);
   });
+
+  it("switches table forms without losing source formatting or filters", async () => {
+    const node = fixture("table");
+    node.data.table = {
+      ...createTableSpec(reshapeResult.columns),
+      columns: {
+        revenue: { format: "currency", currency: "RUB" },
+        "pivot:string:West": { label: "Устаревший итог" },
+      },
+      order: ["pivot:string:West", "revenue", "month"],
+      filters: [{ column: "month", op: "notNull" }],
+      pivot: {
+        row: "month",
+        column: "category",
+        value: "revenue",
+        aggregate: "sum",
+      },
+      sort: { column: "pivot:string:West", direction: "desc" },
+    };
+    await render(node, { result: reshapeResult });
+    await click(button("Данные"));
+    expect(select("Форма таблицы").textContent).toBe("Сводная с расчётом");
+    await choose("Форма таблицы", "В длинную · melt");
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(current.data.table?.sort).toBeUndefined();
+    expect(current.data.table?.reshape?.kind).toBe("melt");
+    expect(current.data.table?.columns).toEqual({
+      revenue: { format: "currency", currency: "RUB" },
+    });
+    expect(current.data.table?.order).toEqual(["revenue", "month"]);
+    expect(current.data.table?.filters).toEqual([
+      { column: "month", op: "notNull" },
+    ]);
+    await click(input("В строки: Расход"));
+    await edit(input("Название столбца ключей"), "Показатель");
+    await edit(input("Название столбца значений"), "Сумма");
+    expect(current.data.table?.reshape).toEqual({
+      kind: "melt",
+      columns: ["revenue"],
+      keyName: "Показатель",
+      valueName: "Сумма",
+    });
+    expect(container.querySelector('[aria-label="Расчёт сводной"]')).toBeNull();
+    await choose("Форма таблицы", "В широкую · pivot");
+    expect(current.data.table?.reshape?.kind).toBe("pivot");
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(container.querySelector('[aria-label="Расчёт сводной"]')).toBeNull();
+    await choose("Форма таблицы", "Сводная с расчётом");
+    expect(current.data.table?.reshape).toBeUndefined();
+    expect(current.data.table?.pivot?.aggregate).toBe("sum");
+    expect(
+      container.querySelector('[aria-label="Расчёт сводной"]'),
+    ).not.toBeNull();
+    await choose("Форма таблицы", "Как в SQL");
+    expect(current.data.table?.reshape).toBeUndefined();
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(current.data.table?.columns).toEqual({
+      revenue: { format: "currency", currency: "RUB" },
+    });
+    expect(current.data.table?.filters).toEqual([
+      { column: "month", op: "notNull" },
+    ]);
+    expect(current.data.chart).toEqual(node.data.chart);
+    expect(uncaught).toEqual([]);
+  });
+
+  it("edits raw pivot row keys, headings and string values without introducing aggregation", async () => {
+    const node = fixture("table");
+    node.data.table = {
+      ...createTableSpec(reshapeResult.columns),
+      reshape: {
+        kind: "pivot",
+        rows: ["month"],
+        column: "category",
+        value: "revenue",
+      },
+      sort: { column: "month", direction: "desc" },
+    };
+    await render(node, { result: reshapeResult });
+    await click(button("Данные"));
+    expect(select("Форма таблицы").textContent).toBe("В широкую · pivot");
+    expect(input("Ключ строки: Месяц").checked).toBe(true);
+    await click(input("Ключ строки: Месяц"));
+    expect(current.data.table?.reshape).toEqual({
+      kind: "pivot",
+      rows: [],
+      column: "category",
+      value: "revenue",
+    });
+    expect(current.data.table?.sort).toBeUndefined();
+    await click(input("Ключ строки: Месяц"));
+    await choose("Заголовки столбцов", "Расход");
+    await choose("Значения", "Категория");
+    expect(current.data.table?.reshape).toEqual({
+      kind: "pivot",
+      rows: ["month"],
+      column: "cost",
+      value: "category",
+    });
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(container.querySelector('[aria-label="Расчёт сводной"]')).toBeNull();
+    expect(uncaught).toEqual([]);
+  });
+
+  it("preserves generated column formatting and order when renaming melted fields", async () => {
+    const node = fixture("table");
+    node.data.table = {
+      ...createTableSpec(reshapeResult.columns),
+      reshape: { kind: "melt", columns: ["revenue"], keyName: "Показатель" },
+      columns: {
+        "reshape:melt:value": { format: "currency", currency: "USD" },
+      },
+      order: ["reshape:melt:value", "month", "reshape:melt:key"],
+    };
+    await render(node, { result: reshapeResult });
+    await click(button("Данные"));
+    await edit(input("Название столбца ключей"), "Метрика");
+    expect(current.data.table?.reshape).toEqual({
+      kind: "melt",
+      columns: ["revenue"],
+      keyName: "Метрика",
+    });
+    expect(current.data.table?.columns).toEqual({
+      "reshape:melt:value": { format: "currency", currency: "USD" },
+    });
+    expect(current.data.table?.order).toEqual([
+      "reshape:melt:value",
+      "month",
+      "reshape:melt:key",
+    ]);
+    await choose("Форма таблицы", "Как в SQL");
+    expect(current.data.table?.columns).toEqual({});
+    expect(current.data.table?.order).toEqual(["month"]);
+    expect(uncaught).toEqual([]);
+  });
+
+  it.each(["melt", "pivot"] as const)(
+    "prevents a viewer changing the %s configuration",
+    async (kind) => {
+      const node = fixture("table");
+      node.data.table = {
+        ...createTableSpec(reshapeResult.columns),
+        reshape:
+          kind === "melt"
+            ? {
+                kind,
+                columns: ["revenue"],
+                keyName: "Показатель",
+                valueName: "Сумма",
+              }
+            : { kind, rows: ["month"], column: "category", value: "revenue" },
+      };
+      await render(node, { result: reshapeResult, editable: false });
+      await click(button("Данные"));
+      expect(select("Форма таблицы").matches(":disabled")).toBe(true);
+      await click(select("Форма таблицы"));
+      expect(document.querySelector('[role="listbox"]')).toBeNull();
+      if (kind === "melt") {
+        expect(input("В строки: Выручка").matches(":disabled")).toBe(true);
+        expect(input("Название столбца ключей").matches(":disabled")).toBe(
+          true,
+        );
+        expect(input("Название столбца значений").matches(":disabled")).toBe(
+          true,
+        );
+        await click(input("В строки: Выручка"));
+      } else {
+        expect(input("Ключ строки: Месяц").matches(":disabled")).toBe(true);
+        expect(select("Заголовки столбцов").matches(":disabled")).toBe(true);
+        expect(select("Значения").matches(":disabled")).toBe(true);
+        await click(input("Ключ строки: Месяц"));
+      }
+      expect(changes).toEqual([]);
+      expect(current).toEqual(node);
+      expect(uncaught).toEqual([]);
+    },
+  );
 
   it("adds a NULL mapping that can be edited into literal NULL and an empty string", async () => {
     await render(withColumnOptions({}));
