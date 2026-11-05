@@ -16,6 +16,7 @@ import {
   type SchemaMetadata,
 } from "../metadata-store";
 import { ErrorBox, Spinner } from "./UI";
+import SearchHighlight from "./SearchHighlight";
 
 export interface ExplorerSourceView {
   expandedSchemas: Set<string>;
@@ -196,7 +197,11 @@ export default function SourceSchemaTree({
           <div className="schema-tree-group" key={key}>
             {catalogHeading && (
               <div className="schema-catalog" title={scope.catalog}>
-                {scope.catalog}
+                <SearchHighlight
+                  text={scope.catalog!}
+                  query={filter}
+                  searchText={label}
+                />
               </div>
             )}
             <button
@@ -208,7 +213,14 @@ export default function SourceSchemaTree({
             >
               {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
               <Database size={14} />
-              <span>{scope.schema}</span>
+              <span>
+                <SearchHighlight
+                  text={scope.schema}
+                  query={filter}
+                  searchText={label}
+                  textOffset={label.length - scope.schema.length}
+                />
+              </span>
               <small>
                 {scope.status === "idle"
                   ? ""
@@ -305,7 +317,16 @@ export default function SourceSchemaTree({
                           )}
                         </span>
                         <Table size={14} />
-                        <span>{table.name}</span>
+                        <span>
+                          <SearchHighlight
+                            text={table.name}
+                            query={filter}
+                            searchText={tableLabel(table)}
+                            textOffset={
+                              tableLabel(table).length - table.name.length
+                            }
+                          />
+                        </span>
                       </button>
                       {(tableExpanded || matchingColumns.length > 0) && (
                         <div className="columns-tree">
@@ -313,6 +334,7 @@ export default function SourceSchemaTree({
                             visibleColumns!.map((column, columnIndex) => (
                               <div
                                 key={`${column.name}-${columnIndex}`}
+                                className="source-column"
                                 title={`${column.name}: ${column.type}`}
                               >
                                 <span>
@@ -324,8 +346,21 @@ export default function SourceSchemaTree({
                                     <TextT size={12} />
                                   )}
                                 </span>
-                                <span>{column.name}</span>
-                                <small>{column.type}</small>
+                                <span>
+                                  <SearchHighlight
+                                    text={column.name}
+                                    query={filter}
+                                    searchText={`${column.name} ${column.type}`}
+                                  />
+                                </span>
+                                <small>
+                                  <SearchHighlight
+                                    text={column.type}
+                                    query={filter}
+                                    searchText={`${column.name} ${column.type}`}
+                                    textOffset={column.name.length + 1}
+                                  />
+                                </small>
                               </div>
                             ))
                           ) : !columnError ? (

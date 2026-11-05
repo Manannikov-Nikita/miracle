@@ -468,6 +468,10 @@ svg {
   width: 28px;
   height: 28px;
 }
+.explorer-heading .icon-button[aria-pressed="true"] {
+  color: var(--accent-hover);
+  background: var(--hover);
+}
 .explorer-search {
   display: flex;
   align-items: center;
@@ -684,6 +688,45 @@ svg {
 }
 .schema-tables .columns-tree {
   padding-left: 48px;
+}
+.explorer-search-match {
+  background: transparent;
+  color: #b5f0d0;
+  font-weight: 600;
+}
+.explorer-full-names .connection-tree-name,
+.explorer-full-names .schema-catalog,
+.explorer-full-names .schema-tree-item > span,
+.explorer-full-names .table-tree-item > span:nth-of-type(2),
+.explorer-full-names .source-column > span:nth-of-type(2),
+.explorer-full-names .source-column > small {
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.explorer-full-names .connection-tree-item > svg,
+.explorer-full-names .connection-tree-item .status-dot,
+.explorer-full-names .schema-tree-item > small,
+.explorer-full-names .table-tree-item > span:first-of-type {
+  flex-shrink: 0;
+}
+.explorer-full-names .columns-tree > .source-column {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 6px;
+  row-gap: 0;
+  padding-block: 4px;
+}
+.explorer-full-names .source-column > span:first-child {
+  grid-row: 1 / span 2;
+}
+.explorer-full-names .source-column > small {
+  grid-column: 2;
+  margin-left: 0;
 }
 .metadata-progress {
   display: flex;
