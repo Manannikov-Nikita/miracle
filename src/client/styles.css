@@ -623,20 +623,6 @@ svg {
 .explorer-placeholder .button {
   margin-top: 6px;
 }
-.explorer-footer {
-  height: 29px;
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--text-quiet);
-  font-size: 12px;
-  padding: 0 12px;
-}
-.explorer-footer .status-dot {
-  width: 4px;
-  height: 4px;
-}
 .explorer-loading {
   display: flex;
   gap: 7px;

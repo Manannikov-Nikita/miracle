@@ -1665,17 +1665,6 @@ function Workspace({
           />
         )}
       </div>
-      <footer className="board-footer">
-        <span>
-          {board
-            ? `${board.document.nodes.length} блоков · ${board.document.edges.length} связей`
-            : "Рабочая область"}
-        </span>
-        <span>
-          Shift + клик: выбрать несколько · рамка: фон · панорама: пробел + фон
-          · Option / Alt + перетаскивание: копия
-        </span>
-      </footer>
       <Dialog.Root
         open={!!dialog}
         onOpenChange={(open) => {

@@ -373,10 +373,6 @@ export default function Explorer({
           </p>
         )}
       </div>
-      <div className="explorer-footer">
-        <span className="status-dot" />
-        Рабочая область
-      </div>
     </aside>
   );
 }
