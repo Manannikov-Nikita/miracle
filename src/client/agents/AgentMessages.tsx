@@ -50,21 +50,15 @@ function MessageContent({ content }: { content: string }) {
   );
 }
 
-function Approval({
-  message,
-  state,
-}: {
-  message: AgentMessage;
-  state: AgentChatState;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const detailsId = useId();
-  const approvalId = message.details?.approvalId;
+function approvalInfo(message: AgentMessage, state: AgentChatState) {
+  const approvalId =
+    typeof message.details?.approvalId === "string"
+      ? message.details.approvalId
+      : "";
   const decision =
-    state.resolvedApprovals.get(String(approvalId)) ||
-    message.details?.decision;
+    state.resolvedApprovals.get(approvalId) || message.details?.decision;
   const pending =
-    typeof approvalId === "string" &&
+    Boolean(approvalId) &&
     state.active?.id === message.turnId &&
     state.active?.status === "waiting" &&
     !decision &&
@@ -79,6 +73,19 @@ function Approval({
         : pending
           ? "Нужно разрешение"
           : "Запрос закрыт";
+  return { approvalId, decision, pending, label };
+}
+
+function Approval({
+  message,
+  state,
+}: {
+  message: AgentMessage;
+  state: AgentChatState;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  const { approvalId, pending, label } = approvalInfo(message, state);
   return (
     <article
       className={`agent-message approval ${pending ? "pending" : "resolved"}`}
@@ -133,6 +140,61 @@ function Approval({
         )}
       </div>
     </article>
+  );
+}
+
+function Approvals({
+  messages,
+  state,
+}: {
+  messages: AgentMessage[];
+  state: AgentChatState;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  const pending: AgentMessage[] = [];
+  const resolved: AgentMessage[] = [];
+  let denied = 0;
+  for (const message of messages) {
+    const info = approvalInfo(message, state);
+    if (info.pending) pending.push(message);
+    else {
+      resolved.push(message);
+      if (info.decision === "deny") denied += 1;
+    }
+  }
+  return (
+    <>
+      {resolved.length > 0 && (
+        <div className="agent-approvals">
+          <button
+            type="button"
+            className="agent-approvals-summary"
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            <ShieldCheck size={14} aria-hidden="true" />
+            <span>Разрешения · {resolved.length}</span>
+            {denied > 0 && <span>Отклонено: {denied}</span>}
+            <CaretRight size={12} aria-hidden="true" />
+          </button>
+          <div
+            id={detailsId}
+            hidden={!expanded}
+            className="agent-approvals-list"
+          >
+            {expanded &&
+              resolved.map((message) => (
+                <Approval key={message.id} message={message} state={state} />
+              ))}
+          </div>
+        </div>
+      )}
+      {pending.map((message) => (
+        <Approval key={message.id} message={message} state={state} />
+      ))}
+    </>
   );
 }
 
@@ -198,9 +260,7 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
                 <MessageContent content={message.content} />
               </article>
             ))}
-            {approvals.map((message) => (
-              <Approval key={message.id} message={message} state={state} />
-            ))}
+            <Approvals messages={approvals} state={state} />
             {hasActivity && (
               <AgentActivity messages={group.messages} turn={group.turn} />
             )}

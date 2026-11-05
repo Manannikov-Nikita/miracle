@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChatCircle, MagnifyingGlass, X } from "@phosphor-icons/react";
 import type { AgentChat } from "../../shared/agents";
+import { useAgentPortalContainer } from "./useAgentPortalContainer";
 
 export default function AgentHistory({
   open,
@@ -16,13 +17,14 @@ export default function AgentHistory({
   selected: string;
   onSelect: (id: string) => void;
 }) {
+  const portalContainer = useAgentPortalContainer();
   const [search, setSearch] = useState("");
   const filtered = chats.filter((chat) =>
     chat.title.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
   );
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal container={document.getElementById("agent-panel")}>
+      <Dialog.Portal container={portalContainer}>
         <Dialog.Overlay className="agent-dialog-overlay" />
         <Dialog.Content
           className="agent-dialog agent-history-dialog"

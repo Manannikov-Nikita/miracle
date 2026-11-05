@@ -303,13 +303,15 @@ describe("local agent panel", () => {
       )!;
       await act(async () => toggle.click());
       const openSettings = async () => {
-        await act(async () =>
-          host
-            .querySelector('button[aria-label="Выбрать профиль агента"]')!
-            .dispatchEvent(
-              new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-            ),
-        );
+        await act(async () => {
+          const trigger = host.querySelector<HTMLButtonElement>(
+            'button[aria-label="Выбрать профиль агента"]',
+          )!;
+          trigger.focus();
+          trigger.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+          );
+        });
         await act(async () =>
           [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
             .find((item) => item.textContent?.includes("Настроить агента"))!
@@ -368,6 +370,14 @@ describe("local agent panel", () => {
           .click(),
       );
       expect(host.querySelector(".agent-settings-dialog")).toBeNull();
+      // Radix restores focus asynchronously after the dialog unmounts.
+      await act(async () =>
+        vi.waitFor(() =>
+          expect(document.activeElement).toBe(
+            host.querySelector("#agent-message"),
+          ),
+        ),
+      );
       await openSettings();
       expect(
         host.querySelector<HTMLInputElement>(".agent-settings-dialog input")!
