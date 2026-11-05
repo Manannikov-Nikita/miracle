@@ -121,8 +121,8 @@ monaco.editor.defineTheme("miracle-dark", {
     "editorSuggestWidget.selectedBackground": "#35443c",
     "editorSuggestWidget.selectedForeground": "#eeeff0",
     "editorSuggestWidget.selectedIconForeground": "#b9d3c5",
-    "editorSuggestWidget.highlightForeground": "#b9d3c5",
-    "editorSuggestWidget.focusHighlightForeground": "#b9d3c5",
+    "editorSuggestWidget.highlightForeground": "#b5f0d0",
+    "editorSuggestWidget.focusHighlightForeground": "#b5f0d0",
     "editorIndentGuide.background1": "#303338",
   },
 });
