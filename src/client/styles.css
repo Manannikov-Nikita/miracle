@@ -68,8 +68,9 @@ input:focus-visible,
 textarea:focus-visible,
 select:focus-visible,
 [tabindex]:focus-visible {
+  /* Follow the control's edge without a detached ring or a layout shift. */
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 input,
 textarea,
@@ -484,6 +485,13 @@ svg {
   padding: 6px;
   background: transparent;
   font-size: 12px;
+}
+.explorer-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.explorer-search input:focus-visible {
+  outline: none;
 }
 .explorer-search .icon-button {
   width: 24px;
@@ -1428,7 +1436,7 @@ kbd {
 }
 .error-details > summary:focus-visible {
   outline: 2px solid currentColor;
-  outline-offset: 3px;
+  outline-offset: -1px;
 }
 .error-details pre,
 .error-full-text {
@@ -1936,7 +1944,7 @@ kbd {
 }
 .connection-options > summary:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .connection-options > summary .muted {
   float: right;
@@ -2013,7 +2021,7 @@ kbd {
 }
 .connection-file-picker:focus-within {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .connection-settings {
   display: flex;

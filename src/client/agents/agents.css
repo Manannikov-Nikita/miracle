@@ -278,7 +278,8 @@
   transition: border-color 160ms;
 }
 .agent-composer:focus-within {
-  border-color: #ffffff35;
+  border-color: var(--mint);
+  box-shadow: inset 0 0 0 1px var(--mint);
 }
 .agent-context-chips {
   display: flex;
@@ -440,6 +441,11 @@
 .agent-composer textarea::placeholder {
   color: var(--agent-muted);
 }
+.agent-panel .agent-composer textarea:focus {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
+}
 .agent-composer-toolbar {
   display: flex;
   align-items: center;
@@ -563,7 +569,7 @@
 }
 .agent-composer-toolbar .agent-composer-control:focus-visible {
   outline: 2px solid var(--mint);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .agent-composer-toolbar .agent-composer-control:disabled {
   color: var(--agent-muted);
@@ -794,8 +800,13 @@
   margin: 0 16px 12px;
   padding: 0 12px;
   background: var(--agent-surface);
+  border: 1px solid var(--agent-line);
   border-radius: 9px;
   color: var(--agent-muted);
+}
+.agent-history-search:focus-within {
+  border-color: var(--mint);
+  box-shadow: inset 0 0 0 1px var(--mint);
 }
 .agent-history-search input {
   min-width: 0;
@@ -805,6 +816,11 @@
   padding: 12px 0;
   color: var(--agent-text);
   font-size: 13px;
+}
+.agent-history-search input:focus {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
 }
 .agent-history-list {
   padding: 0 8px 12px;
@@ -1046,8 +1062,8 @@
 .agent-approvals-summary:focus-visible,
 .agent-approval-actions button:focus-visible,
 .agent-activity-trigger:focus-visible {
-  outline: 2px solid var(--agent-muted);
-  outline-offset: 3px;
+  outline: 2px solid var(--mint);
+  outline-offset: -1px;
 }
 .agent-approval-content {
   margin: 8px 0 12px;
