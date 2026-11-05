@@ -1321,6 +1321,9 @@ kbd {
 .modal-wide {
   width: min(700px, calc(100vw - 28px));
 }
+.save-changes-dialog {
+  width: min(560px, calc(100vw - 28px));
+}
 .modal-heading {
   display: flex;
   justify-content: space-between;
@@ -1339,6 +1342,7 @@ kbd {
 }
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
@@ -1356,6 +1360,15 @@ kbd {
 }
 .modal form .modal-actions {
   margin-top: 4px;
+}
+@media (max-width: 600px) {
+  .save-changes-dialog .modal-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .save-changes-dialog .modal-actions .button {
+    white-space: normal;
+  }
 }
 .form-row {
   display: grid;

@@ -1995,6 +1995,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         }}
         title="Сохранить изменения?"
         description="В файле есть несохранённые изменения."
+        className="save-changes-dialog"
       >
         <div className="modal-actions">
           <button className="button" onClick={() => setCloseFileId(null)}>
