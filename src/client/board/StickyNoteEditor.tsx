@@ -16,7 +16,11 @@ export default function StickyNoteEditor({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const measure = useRef<HTMLDivElement>(null);
-  const [layout, setLayout] = useState({ fontSize: maxFontSize, height: 68 });
+  const [layout, setLayout] = useState({
+    fontSize: maxFontSize,
+    height: 68,
+    overflow: false,
+  });
 
   useLayoutEffect(() => {
     const container = host.current;
@@ -40,12 +44,16 @@ export default function StickyNoteEditor({
         if (measureHeight(size) <= height) low = size;
         else high = size - 1;
       }
+      const textHeight = measureHeight(low);
       const next = {
         fontSize: low,
-        height: Math.min(height, measureHeight(low) + 2),
+        height: Math.min(height, textHeight + 2),
+        overflow: textHeight > height,
       };
       setLayout((previous) =>
-        previous.fontSize === next.fontSize && previous.height === next.height
+        previous.fontSize === next.fontSize &&
+        previous.height === next.height &&
+        previous.overflow === next.overflow
           ? previous
           : next,
       );
@@ -80,7 +88,13 @@ export default function StickyNoteEditor({
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         className="board-note-text nokey"
-        style={{ fontSize: layout.fontSize, height: layout.height }}
+        style={{
+          fontSize: layout.fontSize,
+          height: layout.height,
+          // A stale scrollbar narrows the textarea and changes wrapping after
+          // fitting. Only reserve scrollbar space once the minimum size overflows.
+          overflowY: layout.overflow ? "auto" : "hidden",
+        }}
         onKeyDown={(event) => event.stopPropagation()}
         onKeyUp={(event) => event.stopPropagation()}
       />
