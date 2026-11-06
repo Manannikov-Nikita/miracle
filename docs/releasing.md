@@ -4,14 +4,14 @@
 
 ## Подготовка
 
-Текущий опубликованный выпуск — **0.7.0**: [результаты проверки](release-validation.md). Для следующего выпуска сначала выберите новый номер версии; не переиспользуйте опубликованный тег. До публикации сохраняйте публичную ссылку на последний доступный выпуск. Перед сборкой сверьте основную ветку с remote, версии в `package.json` / `package-lock.json`, заметки выпуска и список проверок в `release-validation.md`. Примеры ниже используют 0.7.0.
+Текущий опубликованный выпуск — **0.8.0**: [результаты проверки](release-validation.md). Для следующего выпуска сначала выберите новый номер версии; не переиспользуйте опубликованный тег. До публикации сохраняйте публичную ссылку на последний доступный выпуск. Перед сборкой сверьте основную ветку с remote, версии в `package.json` / `package-lock.json`, заметки выпуска и список проверок в `release-validation.md`. Примеры ниже используют 0.8.0.
 
 ```sh
 npm ci
 npm test
 npm run build
 npm run notices
-node scripts/build-release.mjs Manannikov-Nikita/miracle 0.7.0 .local/releases darwin-arm64
+node scripts/build-release.mjs Manannikov-Nikita/miracle 0.8.0 .local/releases darwin-arm64
 ```
 
 Параметры сборщика: repository, version, output, target и необязательный путь к заранее скачанному архиву Node. Четыре target: darwin-arm64, darwin-x64, linux-arm64, linux-x64. Используется фиксированный Node 24.22.2, архив runtime проверяется по SHA-256. Все четыре архива поставляются в `.tar.gz`; рядом с каждым публикуется файл `.sha256`.
@@ -30,7 +30,7 @@ node scripts/build-release.mjs Manannikov-Nikita/miracle 0.7.0 .local/releases d
 
 ```sh
 node tests/upgrade-smoke.mjs \
-  .local/releases/miracle-0.7.0-darwin-arm64.tar.gz \
+  .local/releases/miracle-0.8.0-darwin-arm64.tar.gz \
   .local/published-v0.2.0/miracle-0.2.0-darwin-arm64.tar.gz \
   .local/published-v0.2.1/miracle-0.2.1-darwin-arm64.tar.gz
 ```
