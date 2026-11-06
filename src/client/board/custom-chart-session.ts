@@ -26,6 +26,7 @@ export function startCustomChartRun(options: {
   width: number;
   height: number;
   theme: "dark" | "light";
+  reportStatus?: boolean;
   onStatus: (status: ChartRuntimeStatus) => void;
   onDiagnosticConnection: (connected: boolean | null) => void;
 }): () => void {
@@ -83,22 +84,24 @@ export function startCustomChartRun(options: {
   void (async () => {
     let stage = "hash";
     try {
-      const digest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(
-          serializeCustomChartPresentation(
-            options.spec,
-            options.table,
-            options.visibleColumns,
+      if (options.reportStatus !== false) {
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(
+            serializeCustomChartPresentation(
+              options.spec,
+              options.table,
+              options.visibleColumns,
+            ),
           ),
-        ),
-      );
-      if (!live()) return;
-      hash = Array.from(new Uint8Array(digest), (byte) =>
-        byte.toString(16).padStart(2, "0"),
-      ).join("");
-      report();
-      heartbeat = setInterval(report, 20000);
+        );
+        if (!live()) return;
+        hash = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+        report();
+        heartbeat = setInterval(report, 20000);
+      }
       stage = "data";
       const data = await api<CustomChartData>(
         `/api/result-sets/${encodeURIComponent(options.resultSetId)}/custom-chart`,

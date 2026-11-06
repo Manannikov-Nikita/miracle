@@ -93,6 +93,9 @@ describe("board inspector settings integration", () => {
       editable?: boolean;
       missingMetadata?: boolean;
       result?: ResultSet;
+      presentation?: boolean;
+      refresh?: () => void;
+      refreshing?: boolean;
     } = {},
   ) {
     function Board() {
@@ -104,6 +107,9 @@ describe("board inspector settings integration", () => {
           ? undefined
           : (options.result ?? result),
         editable: options.editable ?? true,
+        presentation: options.presentation,
+        refresh: options.refresh,
+        refreshing: options.refreshing,
         change(next) {
           changes.push(next);
           setValue(next);
@@ -114,6 +120,51 @@ describe("board inspector settings integration", () => {
     }
     await act(async () => root.render(createElement(Board)));
   }
+  it.each([
+    {
+      presentation: true,
+      editable: true,
+      refreshing: false,
+      visible: true,
+      disabled: false,
+    },
+    {
+      presentation: true,
+      editable: false,
+      refreshing: false,
+      visible: true,
+      disabled: true,
+    },
+    {
+      presentation: true,
+      editable: true,
+      refreshing: true,
+      visible: true,
+      disabled: true,
+    },
+    {
+      presentation: false,
+      editable: true,
+      refreshing: false,
+      visible: false,
+      disabled: false,
+    },
+  ])("keeps snapshot refresh in presentation settings: %j", async (options) => {
+    const node = fixture();
+    node.data.source = result.source;
+    const refresh = vi.fn();
+    await render(node, { ...options, refresh });
+    const action = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Обновить снимок"]',
+    );
+    if (!options.visible) {
+      expect(action).toBeNull();
+      return;
+    }
+    expect(action?.disabled).toBe(options.disabled);
+    await act(async () => action!.click());
+    expect(refresh).toHaveBeenCalledTimes(options.disabled ? 0 : 1);
+  });
   function button(text: string): HTMLButtonElement {
     const found = [...container.querySelectorAll("button")].find(
       (item) => item.textContent === text,

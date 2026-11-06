@@ -3,6 +3,61 @@ import { ProjectSync } from "../src/client/agents/ProjectSync";
 import type { AgentTargetContext } from "../src/shared/agents";
 
 describe("agent target context", () => {
+  it("publishes open editor tabs separately from the target and removes them on unmount", () => {
+    const project = new ProjectSync();
+    let tabs = [
+      { id: "draft", name: "draft.sql" },
+      { id: "file", name: "note.md", path: "docs/note.md" },
+    ];
+    const seen: unknown[] = [];
+    const unsubscribe = project.subscribeEditorTabs((value) =>
+      seen.push(value),
+    );
+    const unregister = project.register("editor", {
+      context: () => ({ editorDocumentId: "draft" }),
+      editorTabs: () => tabs,
+      flush: async () => {},
+    });
+    expect(project.editorTabs()).toEqual(tabs);
+    expect(project.context()).toEqual({ editorDocumentId: "draft" });
+    const snapshot = project.editorTabs();
+    tabs[0].name = "renamed.sql";
+    tabs = tabs.slice(0, 1);
+    project.editorTabsChanged();
+    expect(snapshot[0].name).toBe("draft.sql");
+    expect(seen.at(-1)).toEqual([{ id: "draft", name: "renamed.sql" }]);
+    unregister();
+    expect(seen.at(-1)).toEqual([]);
+    unsubscribe();
+  });
+
+  it("passes the frozen explicit context to flushes before browser focus can change", async () => {
+    const project = new ProjectSync();
+    let active = "other";
+    const contexts: AgentTargetContext[] = [];
+    project.register("editor", {
+      context: () => ({
+        editorDocumentId: active,
+        selection: "wrong editor selection",
+      }),
+      flush: async (context) => {
+        contexts.push(context!);
+        active = "later";
+      },
+    });
+    const result = await project.prepare({
+      editorDocumentId: "chosen",
+      selection: undefined,
+      filePaths: ["chosen.sql"],
+    });
+    expect(contexts).toEqual([result]);
+    expect(result).toEqual({
+      editorDocumentId: "chosen",
+      selection: undefined,
+      filePaths: ["chosen.sql"],
+    });
+  });
+
   it("publishes the current selection when blocks change and clears it on unmount", () => {
     const project = new ProjectSync();
     const seen: AgentTargetContext[] = [];

@@ -205,6 +205,40 @@ it("rejects stale or cross-board selected nodes and missing files before launchi
   expect(store.conversation(chatId).turns).toHaveLength(0);
 });
 
+it("captures the selected editor name in message history without trusting client labels or retargeting retries", async () => {
+  store.createEditor({ name: "Other.sql", sql: "select 0", connectionId: "" });
+  const selected = store.createEditor({
+    name: "Monthly revenue.sql",
+    sql: "select 1",
+    connectionId: "",
+  });
+  const request = payload({
+    editorDocumentId: selected.id,
+    editorDocumentName: "Client supplied name",
+  });
+  const turn = manager.start(chatId, request);
+  await manager.active!.completion;
+  const expected = {
+    editorDocumentId: selected.id,
+    editorDocumentName: "Monthly revenue.sql",
+  };
+  expect(store.conversation(chatId).messages[0].details?.context).toEqual(
+    expected,
+  );
+  expect(turn.context).toEqual({ editorDocumentId: selected.id });
+  store.updateEditor(selected.id, {
+    baseRevision: selected.revision,
+    mutationId: randomUUID(),
+    name: "Renamed later.sql",
+  });
+  const retry = manager.start(chatId, request);
+  expect(retry.id).toBe(turn.id);
+  expect(store.conversation(chatId).messages[0].details?.context).toEqual(
+    expected,
+  );
+  expect(startAgentTurn).toHaveBeenCalledTimes(1);
+});
+
 it("keeps accepted targets on retry after files or nodes change and rejects retargeting the same request ID", async () => {
   const path = join(root, "referenced.md");
   writeFileSync(path, "content");

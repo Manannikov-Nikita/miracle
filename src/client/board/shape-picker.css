@@ -1,0 +1,25 @@
+.shape-picker-menu {
+  width: max-content;
+  padding: 8px;
+  z-index: 100;
+}
+.shape-picker-options {
+  display: grid;
+  grid-template-columns: repeat(4, 40px);
+  gap: 4px;
+}
+.shape-picker-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  height: 40px;
+  border-radius: 4px;
+  color: var(--board-text);
+  outline: none;
+  cursor: pointer;
+}
+.shape-picker-option[data-highlighted] {
+  background: var(--board-raised);
+  box-shadow: inset 0 0 0 1px var(--board-accent);
+}

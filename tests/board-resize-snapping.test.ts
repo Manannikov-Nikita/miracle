@@ -5,6 +5,125 @@ import {
   type ResizeSides,
 } from "../src/client/board/resize-snapping";
 
+const slideFrame = { x: 0, y: 0, right: 1600, bottom: 900 };
+
+describe("slide edge resize snapping", () => {
+  it("snaps small shapes while preserving their 40-unit minimum", () => {
+    const shape: BoardNode = {
+      ...node("shape", 4, 4, 96, 76),
+      data: { title: "Shape", kind: "shape", shape: { type: "rectangle" } },
+    };
+    const result = snapResizedNode(
+      [shape],
+      shape.id,
+      { left: true, top: true },
+      1,
+      slideFrame,
+    );
+    expect(result.nodes[0]).toMatchObject({
+      position: { x: 0, y: 0 },
+      width: 100,
+      height: 80,
+    });
+    const tiny = [
+      { ...shape, position: { x: -4, y: -4 }, width: 40, height: 40 },
+    ];
+    expect(
+      snapResizedNode(tiny, shape.id, { left: true, top: true }, 1, slideFrame)
+        .nodes,
+    ).toBe(tiny);
+  });
+  it.each<[ResizeSides, BoardNode, BoardNode["position"], number, number]>([
+    [{ left: true }, node("a", 4, 123, 396, 300), { x: 0, y: 123 }, 400, 300],
+    [
+      { right: true },
+      node("a", 1200, 123, 396, 300),
+      { x: 1200, y: 123 },
+      400,
+      300,
+    ],
+    [{ top: true }, node("a", 123, 4, 400, 296), { x: 123, y: 0 }, 400, 300],
+    [
+      { bottom: true },
+      node("a", 123, 600, 400, 296),
+      { x: 123, y: 600 },
+      400,
+      300,
+    ],
+  ])(
+    "snaps active side %o with no sibling blocks",
+    (sides, original, position, width, height) => {
+      const result = snapResizedNode([original], "a", sides, 1, slideFrame);
+      expect(result.nodes[0]).toMatchObject({ position, width, height });
+      expect(result.nodes[0].data).toBe(original.data);
+      expect(result.guides).toHaveLength(1);
+      expect(result.guides[0]).toMatchObject({
+        from: 0,
+        to: sides.left || sides.right ? 900 : 1600,
+      });
+    },
+  );
+
+  it("snaps corners and respects minimum size", () => {
+    const result = snapResizedNode(
+      [node("a", 4, 4, 396, 296)],
+      "a",
+      { left: true, top: true },
+      1,
+      slideFrame,
+    );
+    expect(result.nodes[0]).toMatchObject({
+      position: { x: 0, y: 0 },
+      width: 400,
+      height: 300,
+    });
+    expect(result.guides).toHaveLength(2);
+    const tiny = [node("a", -4, 100, 280, 300)];
+    expect(
+      snapResizedNode(tiny, "a", { left: true }, 1, slideFrame).nodes,
+    ).toBe(tiny);
+  });
+
+  it("uses zoom-aware distance without clamping or affecting ordinary boards", () => {
+    const nodes = [node("a", 1200, 123, 389, 300)];
+    expect(
+      snapResizedNode(nodes, "a", { right: true }, 0.5, slideFrame).nodes[0]
+        .width,
+    ).toBe(400);
+    expect(
+      snapResizedNode(nodes, "a", { right: true }, 1, slideFrame).nodes,
+    ).toBe(nodes);
+    expect(snapResizedNode(nodes, "a", { right: true }, 0.5).nodes).toBe(nodes);
+  });
+
+  it("chooses closer blocks but favors the slide edge on an equal-distance tie", () => {
+    const moving = node("a", 1200, 123, 396, 300);
+    expect(
+      snapResizedNode(
+        [moving, node("b", 1595, 600)],
+        "a",
+        { right: true },
+        1,
+        slideFrame,
+      ).nodes[0].width,
+    ).toBe(395);
+    const result = snapResizedNode(
+      [moving, node("b", 1592, 600)],
+      "a",
+      { right: true },
+      1,
+      slideFrame,
+    );
+    expect(result.nodes[0].width).toBe(400);
+    expect(result.guides[0]).toEqual({
+      axis: "x",
+      coordinate: 1600,
+      from: 0,
+      to: 900,
+    });
+  });
+});
+
 function node(
   id: string,
   x: number,

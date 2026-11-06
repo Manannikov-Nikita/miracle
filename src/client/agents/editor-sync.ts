@@ -1,5 +1,6 @@
 import type { EditorDocument } from "../../shared/agents";
 import type { DateRangeOptions } from "../../shared/types";
+import { ApiRequestError } from "../api";
 export interface EditorTab {
   id: string;
   name: string;
@@ -17,6 +18,21 @@ export interface EditorTab {
   dateRange?: DateRangeOptions;
   cursor?: { lineNumber: number; column: number };
   scrollTop?: number;
+}
+/** Accept completed operations without overwriting fields changed since they began. */
+export function acknowledgeEditor(
+  current: EditorTab,
+  before: EditorTab,
+  values: Partial<EditorTab>,
+  identity: (keyof EditorTab)[],
+): EditorTab {
+  const unchanged = (key: keyof EditorTab) =>
+    JSON.stringify(current[key]) === JSON.stringify(before[key]);
+  if (identity.some((key) => !unchanged(key))) return current;
+  const accepted = Object.fromEntries(
+    Object.entries(values).filter(([key]) => unchanged(key as keyof EditorTab)),
+  );
+  return Object.keys(accepted).length ? { ...current, ...accepted } : current;
 }
 export function documentToTab(doc: EditorDocument): EditorTab {
   const { revision, queryRevision, updatedAt: _, ...fields } = doc;
@@ -115,6 +131,7 @@ export class EditorSync {
     documents: EditorDocument[],
     private request: Request,
     private changed: (tabs: EditorTab[]) => void,
+    private locked: (tab: EditorTab) => boolean = () => false,
   ) {
     this.tabs = documents.map(documentToTab);
     for (const doc of documents) this.base.set(doc.id, doc);
@@ -247,8 +264,13 @@ export class EditorSync {
     for (let pass = 0; pass < 20; pass++) {
       if (this.conflicts.size)
         throw new Error("Разрешите конфликт SQL перед отправкой сообщения.");
-      const snapshot = this.tabs.find((t) => this.dirty(t));
-      if (!snapshot) return;
+      const snapshot = this.tabs.find((t) => this.dirty(t) && !this.locked(t));
+      if (!snapshot) {
+        const blocked = this.tabs.find((t) => this.dirty(t));
+        if (blocked) this.assertUnlocked(blocked);
+        return;
+      }
+      this.assertUnlocked(snapshot);
       const fields = tabFields(snapshot),
         mark = fingerprint(snapshot),
         base = this.base.get(snapshot.id);
@@ -318,7 +340,11 @@ export class EditorSync {
     );
   }
   async remove(id: string) {
+    const tab = this.tabs.find((tab) => tab.id === id);
+    if (tab) this.assertUnlocked(tab);
     if (this.pending) await this.pending;
+    const current = this.tabs.find((tab) => tab.id === id);
+    if (current) this.assertUnlocked(current);
     const base = this.base.get(id);
     if (base)
       await this.request(`/api/editor-documents/${id}`, {
@@ -332,5 +358,13 @@ export class EditorSync {
     this.conflicts.delete(id);
     this.tabs = this.tabs.filter((t) => t.id !== id);
     this.publish();
+  }
+  private assertUnlocked(tab: EditorTab) {
+    if (this.locked(tab))
+      throw new ApiRequestError(
+        "Агент работает с этим объектом. Ваш черновик сохранён в браузере.",
+        423,
+        "ENTITY_AGENT_LOCKED",
+      );
   }
 }

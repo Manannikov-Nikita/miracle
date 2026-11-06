@@ -7,6 +7,10 @@ export type {
 } from "./date-batch.js";
 import type { TableSpec } from "./tableTypes.js";
 import type { CustomChartSpec } from "./custom-charts.js";
+import type { ShapeSpec } from "./shapes.js";
+import type { TextStyleSpec } from "./text-style.js";
+export type { ShapeKind, ShapeSpec } from "./shapes.js";
+export type { TextStyleSpec } from "./text-style.js";
 export type { TableSpec, TableColumnOptions } from "./tableTypes.js";
 export type Engine = "clickhouse" | "trino";
 export interface ClickHouseOptions {
@@ -163,8 +167,10 @@ export interface ChartSpec {
 }
 export interface BoardNodeData {
   title: string;
-  kind: "result" | "note" | "markdown";
+  kind: "result" | "note" | "markdown" | "shape" | "text";
   text?: string;
+  textStyle?: TextStyleSpec;
+  shape?: ShapeSpec;
   color?: string;
   resultSetId?: string;
   source?: QuerySource;
@@ -178,6 +184,7 @@ export interface BoardNodeData {
 }
 export interface BoardNode {
   id: string;
+  slideId?: string;
   type: "artifact";
   position: { x: number; y: number };
   data: BoardNodeData;
@@ -199,6 +206,7 @@ export interface BoardEdgePoint {
 }
 export interface BoardEdge {
   id: string;
+  slideId?: string;
   source?: string;
   target?: string;
   sourcePoint?: BoardEdgePoint;
@@ -211,8 +219,16 @@ export interface BoardEdge {
   labelPosition?: number;
   appearance?: BoardEdgeAppearance;
 }
+export type BoardKind = "board" | "presentation";
+export interface PresentationSlide {
+  id: string;
+  title: string;
+  background: string;
+}
 export interface BoardDocument {
   schemaVersion: 1;
+  kind?: BoardKind;
+  slides?: PresentationSlide[];
   nodes: BoardNode[];
   edges: BoardEdge[];
   viewport?: { x: number; y: number; zoom: number };
@@ -226,6 +242,7 @@ export interface Board {
 }
 export interface BoardSummary {
   id: string;
+  kind?: BoardKind;
   name: string;
   revision: number;
   updatedAt: string;

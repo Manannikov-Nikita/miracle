@@ -31,6 +31,7 @@ const nested: ProjectTree = {
 
 describe("inline project file creation", () => {
   let container: HTMLDivElement;
+  let toolbar: HTMLDivElement;
   let root: Root;
   let props: ComponentProps<typeof ProjectFileTree>;
   let created: ProjectTextFile[];
@@ -42,9 +43,10 @@ describe("inline project file creation", () => {
     >();
 
   function button(label: string) {
-    const match = container.querySelector<HTMLButtonElement>(
-      `button[aria-label="${label}"]`,
-    );
+    const selector = `button[aria-label="${label}"]`;
+    const match =
+      container.querySelector<HTMLButtonElement>(selector) ||
+      toolbar.querySelector<HTMLButtonElement>(selector);
     expect(match).toBeTruthy();
     return match!;
   }
@@ -127,7 +129,8 @@ describe("inline project file creation", () => {
       return { files: ["docs/guide.md"], truncated: false };
     });
     container = window.document.createElement("div");
-    window.document.body.append(container);
+    toolbar = window.document.createElement("div");
+    window.document.body.append(toolbar, container);
     root = createRoot(container);
     props = {
       workspaceId: "create-test",
@@ -141,6 +144,7 @@ describe("inline project file creation", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    toolbar.remove();
     vi.unstubAllGlobals();
   });
 
@@ -163,36 +167,43 @@ describe("inline project file creation", () => {
     },
   );
 
-  it("creates inside the selected folder, beside a selected file, then returns to the root explicitly", async () => {
-    await render();
-    await click(item("docs"));
-    await click(button("Создать файл"));
-    expect(container.querySelector("form")?.getAttribute("aria-label")).toBe(
-      "Новый файл: docs",
-    );
-    await name("new.sql");
-    await click(button("Создать файл с этим именем"));
-    expect(create).toHaveBeenLastCalledWith({
-      directory: "docs",
-      name: "new.sql",
-    });
-    await click(item("docs/guide.md"));
-    await click(button("Создать файл"));
-    await name("рядом.md");
-    await submit();
-    expect(create).toHaveBeenLastCalledWith({
-      directory: "docs",
-      name: "рядом.md",
-    });
-    await click(button("Корень проекта"));
-    await click(button("Создать файл"));
-    await name("root.txt");
-    await submit();
-    expect(create).toHaveBeenLastCalledWith({
-      directory: "",
-      name: "root.txt",
-    });
-  });
+  it.each([false, true])(
+    "creates inside the selected folder, beside a selected file, then returns to the root explicitly (toolbar portal: %s)",
+    async (portal) => {
+      await render(portal ? { actionsTarget: toolbar } : {});
+      if (portal) {
+        expect(toolbar.contains(button("Создать файл"))).toBe(true);
+        expect(container.contains(button("Создать файл"))).toBe(false);
+      }
+      await click(item("docs"));
+      await click(button("Создать файл"));
+      expect(container.querySelector("form")?.getAttribute("aria-label")).toBe(
+        "Новый файл: docs",
+      );
+      await name("new.sql");
+      await click(button("Создать файл с этим именем"));
+      expect(create).toHaveBeenLastCalledWith({
+        directory: "docs",
+        name: "new.sql",
+      });
+      await click(item("docs/guide.md"));
+      await click(button("Создать файл"));
+      await name("рядом.md");
+      await submit();
+      expect(create).toHaveBeenLastCalledWith({
+        directory: "docs",
+        name: "рядом.md",
+      });
+      await click(button("Корень проекта"));
+      await click(button("Создать файл"));
+      await name("root.txt");
+      await submit();
+      expect(create).toHaveBeenLastCalledWith({
+        directory: "",
+        name: "root.txt",
+      });
+    },
+  );
 
   it("keeps duplicate errors and the entered name inline, then permits a corrected retry", async () => {
     create.mockRejectedValueOnce(

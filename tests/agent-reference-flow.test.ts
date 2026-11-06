@@ -132,6 +132,44 @@ async function attachFile() {
   await act(async () => option!.click());
 }
 
+it("uses a new request identity when the same instruction targets another slide", async () => {
+  const original = vi.mocked(api).getMockImplementation()!;
+  const attempts: { clientRequestId: string; context: AgentTargetContext }[] =
+    [];
+  vi.mocked(api).mockImplementation(async (path, options) => {
+    if (path === "/api/chats/chat/messages") {
+      attempts.push(JSON.parse(String(options?.body)));
+      throw new Error("temporary failure");
+    }
+    return original(path, options);
+  });
+  await act(async () => {
+    context = { boardId: "deck", slideId: "first", boardNodes: [] };
+    project.contextChanged();
+  });
+  await type("Добавь заголовок");
+  await act(async () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+      .click(),
+  );
+  await act(async () => {
+    context = { boardId: "deck", slideId: "second", boardNodes: [] };
+    project.contextChanged();
+  });
+  await act(async () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+      .click(),
+  );
+  expect(attempts).toHaveLength(2);
+  expect(attempts.map((attempt) => attempt.context.slideId)).toEqual([
+    "first",
+    "second",
+  ]);
+  expect(attempts[1].clientRequestId).not.toBe(attempts[0].clientRequestId);
+});
+
 it("sends the displayed file and original chart even when selection changes during flush", async () => {
   await attachFile();
   expect(host.querySelector("textarea")!.value).toBe("Объясни ");
@@ -163,6 +201,70 @@ it("sends the displayed file and original chart even when selection changes duri
   expect(host.querySelector("form")?.textContent).not.toContain(
     "sql/monthly trips.sql",
   );
+});
+
+it("pins the mentioned editor instead of the active tab and omits another tab's selection", async () => {
+  let activeEditor = "editor-other";
+  await act(async () => {
+    project.register("editor", {
+      context: () => ({
+        editorDocumentId: activeEditor,
+        selection: "unrelated selected SQL",
+      }),
+      editorTabs: () => [
+        { id: "editor-target", name: "Выручка.sql" },
+        { id: "editor-other", name: "Другой.sql" },
+      ],
+      flush: async () => {},
+    });
+  });
+  await type("Поправь @Выручка");
+  const target = host.querySelector<HTMLButtonElement>('[role="option"]')!;
+  expect(target.textContent).toContain("Выручка.sql");
+  await act(async () => target.click());
+  hold = true;
+  await act(async () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+      .click(),
+  );
+  await act(async () => {
+    activeEditor = "editor-third";
+    project.contextChanged();
+    finish!();
+  });
+  expect(sent[0].context.editorDocumentId).toBe("editor-target");
+  expect(sent[0].context.selection).toBeUndefined();
+  expect(
+    host.querySelector('[aria-label="Убрать запрос Выручка.sql"]'),
+  ).toBeNull();
+});
+
+it("pins a mentioned native SQL tab by path without leaking another editor target", async () => {
+  await act(async () => {
+    project.register("editor", {
+      context: () => ({
+        editorDocumentId: "editor-other",
+        selection: "other SQL",
+      }),
+      editorTabs: () => [
+        { id: "native-tab", name: "Native.sql", path: "sql/native.sql" },
+      ],
+      flush: async () => {},
+    });
+  });
+  await type("Поправь @Native");
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>('[role="option"]')!.click(),
+  );
+  await act(async () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+      .click(),
+  );
+  expect(sent[0].context.filePaths).toEqual(["sql/native.sql"]);
+  expect(sent[0].context.editorDocumentId).toBeUndefined();
+  expect(sent[0].context.selection).toBeUndefined();
 });
 
 it("honors removed context chips while preserving board selection", async () => {

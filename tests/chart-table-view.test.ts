@@ -97,6 +97,36 @@ const pointValues = () =>
     ),
   );
 
+it("updates presentation chart contrast when the slide background changes without rereading data", async () => {
+  const table = createTableSpec(result.columns);
+  const show = async (presentationBackground: string) =>
+    act(async () =>
+      root.render(
+        createElement(ResultView, {
+          id: result.id,
+          view: "chart",
+          chart,
+          table,
+          presentationBackground,
+        }),
+      ),
+    );
+  await show("#ffffff");
+  expect(rendered.option.xAxis.axisLabel.color).toBe("#475569");
+  const reads = vi.mocked(api).mock.calls.length;
+  const resultReads = vi.mocked(getResultRows).mock.calls.length;
+  const seriesColors = rendered.option.series.map(
+    (item: any) => item.itemStyle,
+  );
+  await show("#202124");
+  expect(rendered.option.xAxis.axisLabel.color).toBe("#a9adb1");
+  expect(rendered.option.series.map((item: any) => item.itemStyle)).toEqual(
+    seriesColors,
+  );
+  expect(api).toHaveBeenCalledTimes(reads);
+  expect(getResultRows).toHaveBeenCalledTimes(resultReads);
+});
+
 it("charts the filtered and sorted complete table, then updates without rereading the snapshot", async () => {
   const table: TableSpec = {
     ...createTableSpec(result.columns),

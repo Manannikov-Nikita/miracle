@@ -402,6 +402,64 @@ describe("board navigation is local view state", () => {
     });
   });
 
+  it("waits for unlock before retrying a completed block refresh", async () => {
+    customResultWithoutRevision();
+    const originalFetch = globalThis.fetch;
+    let finish!: (value: Response) => void;
+    let polls = 0;
+    let locked = false;
+    const completed = () =>
+      response({
+        id: "refresh-run",
+        status: "completed",
+        resultSetId: "fresh-result",
+      });
+    vi.stubGlobal("fetch", (path: string, options: RequestInit = {}) => {
+      if (path === "/api/boards/first/nodes/note/refresh")
+        return Promise.resolve(
+          response({ id: "refresh-run", status: "running" }),
+        );
+      if (path === "/api/query-runs/refresh-run") {
+        polls++;
+        if (polls === 1)
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        if (locked) return new Promise<Response>(() => {});
+        return Promise.resolve(completed());
+      }
+      return originalFetch(path, options);
+    });
+    await open();
+    await act(async () => flow.actions!.refresh("note"));
+    locked = true;
+    await act(async () =>
+      project.emit({
+        id: 10,
+        type: "agent.work",
+        data: {
+          locks: [
+            {
+              target: { kind: "board-node", boardId: "first", id: "note" },
+              turnId: "turn",
+              chatId: "chat",
+              startedAt: "now",
+            },
+          ],
+        },
+      }),
+    );
+    await act(async () => finish(completed()));
+    expect(polls).toBe(1);
+    expect(flow.props.nodes![0].data.resultSetId).toBe("old-result");
+    locked = false;
+    await act(async () =>
+      project.emit({ id: 11, type: "agent.work", data: { locks: [] } }),
+    );
+    expect(polls).toBe(2);
+    expect(flow.props.nodes![0].data.resultSetId).toBe("fresh-result");
+  });
+
   it.each(["source change", "node removal"])(
     "rejects a late omitted-revision refresh after %s",
     async (change) => {

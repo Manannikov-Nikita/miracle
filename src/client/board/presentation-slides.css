@@ -1,0 +1,48 @@
+.presentation-slide-item {
+  position: relative;
+}
+.presentation-slide-item.is-dragging {
+  opacity: 0.35;
+}
+.presentation-slide-thumbnail[draggable="true"] {
+  cursor: grab;
+}
+.presentation-slide-item.is-dragging .presentation-slide-thumbnail {
+  cursor: grabbing;
+}
+
+.presentation-thumbnail-slot,
+.presentation-thumbnail-frame {
+  aspect-ratio: 16 / 9;
+}
+
+.presentation-slide-colors {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 12px;
+}
+
+.presentation-slide-colors > label {
+  display: grid;
+  gap: 4px;
+}
+
+.presentation-slide-colors input[type="color"] {
+  width: 60px;
+  height: 28px;
+  padding: 2px 4px;
+}
+
+.presentation-slide-color-error {
+  grid-column: 2;
+  color: var(--board-danger);
+}
+
+.presentation-thumbnail-frame {
+  position: absolute;
+  /* Match the slide button's 5px padding and 1px border. */
+  inset: 6px 6px auto;
+  overflow: hidden;
+  border-radius: 2px;
+  pointer-events: none;
+}

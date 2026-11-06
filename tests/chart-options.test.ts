@@ -5,6 +5,7 @@ import {
 } from "../src/client/board/chartOptions";
 import type { ChartSpec } from "../src/shared/types";
 import { boardDocumentSchema } from "../src/server/validation";
+import { chartSeries } from "../src/client/board/model";
 
 const columns = [
   { id: "day", name: "Дата", type: "Date" },
@@ -19,6 +20,33 @@ const spec: ChartSpec = {
 };
 
 describe("chart presentation", () => {
+  it("keeps transparent presentation charts readable on a light slide without changing series colors", () => {
+    const configured = { ...spec, showLabels: true };
+    const series = chartSeries(columns, [["2026-11-06", 3, 120]], configured);
+    const board = chartOptions(columns, configured, series);
+    const slide = chartOptions(columns, configured, series, "#ffffff");
+    expect(slide.backgroundColor).toBe("transparent");
+    expect(slide.xAxis.axisLabel.color).toBe("#475569");
+    expect(slide.yAxis.axisLabel.color).toBe("#475569");
+    expect(slide.legend.textStyle.color).toBe("#475569");
+    expect(slide.yAxis.splitLine.lineStyle.color).toBe("#cbd5e1");
+    expect(slide.series[0].label.color).toBe("#20252b");
+    expect(slide.series.map((item) => item.itemStyle)).toEqual(
+      board.series.map((item) => item.itemStyle),
+    );
+    expect(board.xAxis.axisLabel.color).toBe("#a9adb1");
+    expect(board.series[0].label.color).toBe("#eeeff0");
+  });
+
+  it("uses light labels on a dark presentation background", () => {
+    const configured = { ...spec, showLabels: true };
+    const series = chartSeries(columns, [["2026-11-06", 3, 120]], configured);
+    const slide = chartOptions(columns, configured, series, "#202124");
+    expect(slide.xAxis.axisLabel.color).toBe("#a9adb1");
+    expect(slide.legend.textStyle.color).toBe("#a9adb1");
+    expect(slide.series[0].label.color).toBe("#eeeff0");
+  });
+
   it("accepts compact chart settings and retains legacy labels when validating a saved board", () => {
     const document = {
       schemaVersion: 1,

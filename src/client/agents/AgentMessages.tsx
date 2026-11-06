@@ -26,7 +26,18 @@ function MessageReferences({ context }: { context: unknown }) {
         ),
       )
     : [];
-  return <AgentContextChips filePaths={filePaths} boardNodes={boardNodes} />;
+  const editorTarget =
+    typeof value.editorDocumentId === "string" &&
+    typeof value.editorDocumentName === "string"
+      ? { id: value.editorDocumentId, name: value.editorDocumentName }
+      : undefined;
+  return (
+    <AgentContextChips
+      filePaths={filePaths}
+      boardNodes={boardNodes}
+      editorTarget={editorTarget}
+    />
+  );
 }
 
 function MessageContent({ content }: { content: string }) {

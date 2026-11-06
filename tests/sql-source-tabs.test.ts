@@ -23,10 +23,12 @@ vi.mock("@monaco-editor/react", () => ({
     value?: string;
     defaultValue?: string;
     onChange: (value: string) => void;
+    options?: { readOnly?: boolean };
   }) =>
     createElement("textarea", {
       "aria-label": "Test SQL editor",
       value: p.value ?? p.defaultValue ?? "",
+      readOnly: p.options?.readOnly,
       onChange: (event: { target: { value: string } }) =>
         p.onChange(event.target.value),
     }),
@@ -155,6 +157,159 @@ describe("chart source SQL tabs", () => {
     await act(async () => root.render(createElement(SqlWorkspace, props)));
     await readyEditor();
   }
+  it("locks a linked saved query without blocking navigation to another SQL tab", async () => {
+    seed("draft.sql", { queryId: "saved-query", revision: 1 });
+    const sync = new ProjectSync();
+    await act(async () =>
+      root.render(
+        createElement(
+          ProjectSyncContext.Provider,
+          { value: sync },
+          createElement(SqlWorkspace, props),
+        ),
+      ),
+    );
+    await readyEditor();
+    await clickTab("draft.sql");
+    await act(async () =>
+      sync.receiveWorkSnapshot({
+        revision: 1,
+        locks: [
+          {
+            target: { kind: "query", id: "saved-query" },
+            turnId: "turn",
+            chatId: "chat",
+            startedAt: "now",
+          },
+        ],
+      }),
+    );
+    expect((editor() as HTMLTextAreaElement).readOnly).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>('[aria-label="База запроса"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".agent-work-indicator")?.textContent).toBe(
+      "Агент работает",
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Новый SQL-файл"]')!
+        .click(),
+    );
+    expect((editor() as HTMLTextAreaElement).readOnly).toBe(false);
+    await act(async () => tabs()[0].click());
+    expect((editor() as HTMLTextAreaElement).readOnly).toBe(true);
+    await act(async () => sync.receiveWorkSnapshot({ revision: 2, locks: [] }));
+    expect((editor() as HTMLTextAreaElement).readOnly).toBe(false);
+  });
+  it("preserves SQL input queued in the same turn as an agent update", async () => {
+    seed("draft.sql");
+    const sync = new ProjectSync();
+    await act(async () =>
+      root.render(
+        createElement(
+          ProjectSyncContext.Provider,
+          { value: sync },
+          createElement(SqlWorkspace, props),
+        ),
+      ),
+    );
+    await readyEditor();
+    await clickTab("draft.sql");
+    const documents = await (await fetch("/api/editor-documents")).json();
+    const current = documents.find(
+      (doc: { id: string }) => doc.id === "existing",
+    );
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(editor(), "select queued_input");
+      editor().dispatchEvent(new Event("input", { bubbles: true }));
+      sync.emit({
+        id: 1,
+        type: "editor.updated",
+        data: {
+          ...current,
+          revision: current.revision + 1,
+          sql: "select agent_update",
+        },
+      });
+    });
+    expect(editorValue()).toBe("select queued_input");
+    expect(container.textContent).toContain("Ваш черновик сохранён");
+  });
+  it("pauses a pending SQL autosave and an open save dialog until the claim is released", async () => {
+    seed("draft.sql", { queryId: "saved-query", revision: 1 });
+    const sync = new ProjectSync();
+    await act(async () =>
+      root.render(
+        createElement(
+          ProjectSyncContext.Provider,
+          { value: sync },
+          createElement(SqlWorkspace, props),
+        ),
+      ),
+    );
+    await readyEditor();
+    await clickTab("draft.sql");
+    vi.useFakeTimers();
+    try {
+      await editSql("select paused_draft");
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+          )!
+          .click(),
+      );
+      vi.mocked(fetch).mockClear();
+      await act(async () =>
+        sync.receiveWorkSnapshot({
+          revision: 1,
+          locks: [
+            {
+              target: { kind: "query", id: "saved-query" },
+              turnId: "turn",
+              chatId: "chat",
+              startedAt: "now",
+            },
+          ],
+        }),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(600));
+      await act(async () =>
+        document
+          .querySelector('[role="dialog"] form')!
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true }),
+          ),
+      );
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([, options]) =>
+              options?.method === "PATCH" || options?.method === "POST",
+          ),
+      ).toHaveLength(0);
+      expect(editorValue()).toBe("select paused_draft");
+      expect(
+        localStorage.getItem("miracle:sql-recovery:source-tab-test"),
+      ).toContain("select paused_draft");
+      await act(async () =>
+        sync.receiveWorkSnapshot({ revision: 2, locks: [] }),
+      );
+      const docs = await (await fetch("/api/editor-documents")).json();
+      expect(
+        docs.find((doc: { id: string }) => doc.id === "existing").sql,
+      ).toBe("select paused_draft");
+      expect(editorValue()).toBe("select paused_draft");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   async function readyEditor() {
     // Legacy migration hashes batches with native WebCrypto before loading the
     // editor. Wait for the real rendered state, including in fake-timer tests.
@@ -248,6 +403,289 @@ describe("chart source SQL tabs", () => {
     );
     await readyEditor();
   }
+  it("publishes exactly the open tab strip with file paths and live rename/close updates", async () => {
+    seed("draft.sql");
+    const sync = new ProjectSync();
+    await openProjectFile("docs/notes.md", "# Notes", sync);
+    await openProjectFile("sql/report.sql", "select report", sync);
+    expect(sync.context()).toEqual({});
+    expect(sync.editorTabs().map(({ name }) => name)).toEqual(
+      tabs().map((tab) => tab.textContent),
+    );
+    expect(sync.editorTabs()).toEqual([
+      { id: "existing", name: "draft.sql" },
+      { id: "other", name: "other.sql" },
+      { id: expect.any(String), name: "report.sql", path: "sql/report.sql" },
+      { id: expect.any(String), name: "notes.md", path: "docs/notes.md" },
+    ]);
+    const documents = await (await fetch("/api/editor-documents")).json();
+    const current = documents.find(
+      (doc: { id: string }) => doc.id === "existing",
+    );
+    await act(async () =>
+      sync.emit({
+        id: 1,
+        type: "editor.updated",
+        data: {
+          ...current,
+          name: "renamed.sql",
+          revision: current.revision + 1,
+        },
+      }),
+    );
+    expect(sync.editorTabs()[0].name).toBe("renamed.sql");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Закрыть вкладку notes.md"]',
+        )!
+        .click(),
+    );
+    expect(sync.editorTabs().map(({ name }) => name)).toEqual(
+      tabs().map((tab) => tab.textContent),
+    );
+    expect(sync.editorTabs().some((tab) => tab.path === "docs/notes.md")).toBe(
+      false,
+    );
+  });
+
+  it.each([
+    { fail: false, extension: "sql" },
+    { fail: true, extension: "sql" },
+    { fail: false, extension: "md" },
+  ])(
+    "flushes only explicitly referenced dirty native files before agent context ($extension / $fail)",
+    async ({ fail, extension }) => {
+      const writes: { path: string; content: string }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          editorApi(
+            async (url, options) => {
+              if (
+                url.startsWith("/api/project/file?") &&
+                options.method === "PUT"
+              ) {
+                const path = new URL(url, "http://localhost").searchParams.get(
+                  "path",
+                )!;
+                const body = JSON.parse(String(options.body));
+                writes.push({ path, content: body.content });
+                return fail
+                  ? new Response(
+                      JSON.stringify({ error: "Revision conflict" }),
+                      { status: 409 },
+                    )
+                  : new Response(
+                      JSON.stringify({
+                        ...projectFile(path, body.content),
+                        revision: "disk-v2",
+                      }),
+                    );
+              }
+              return new Response("[]");
+            },
+            () => props.workspaceId,
+          ),
+        ),
+      );
+      const sync = new ProjectSync();
+      await openProjectFile("sql/unrelated.sql", "select original", sync);
+      await editSql("select unrelated draft");
+      const chosen = `sql/chosen.${extension}`;
+      await openProjectFile(chosen, "select original", sync);
+      await editSql("select latest chosen draft");
+      await act(async () => {
+        const pending = sync.prepare({ filePaths: [chosen] });
+        if (fail) await expect(pending).rejects.toThrow(/сохранить/i);
+        else
+          await expect(pending).resolves.toMatchObject({ filePaths: [chosen] });
+      });
+      expect(writes).toEqual([
+        { path: chosen, content: "select latest chosen draft" },
+      ]);
+      if (fail)
+        expect(container.textContent).toContain("Файл изменён на диске");
+    },
+  );
+  it.each([false, true])(
+    "refreshes native agent file edits after release without losing a dirty draft (%s)",
+    async (dirty) => {
+      const sync = new ProjectSync();
+      const path = "docs/notes.md";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          editorApi(
+            async (url) => {
+              if (url.startsWith("/api/project/file?"))
+                return new Response(
+                  JSON.stringify({
+                    ...projectFile(path, "# Agent version"),
+                    revision: "disk-v2",
+                  }),
+                );
+              return new Response("[]");
+            },
+            () => props.workspaceId,
+          ),
+        ),
+      );
+      await openProjectFile(path, "# Original", sync);
+      if (dirty) await editSql("# My draft");
+      await act(async () =>
+        sync.receiveWorkSnapshot({
+          revision: 1,
+          locks: [
+            {
+              target: { kind: "file", id: path },
+              turnId: "turn",
+              chatId: "chat",
+              startedAt: "now",
+            },
+          ],
+        }),
+      );
+      expect(markdownView()?.contentDOM.getAttribute("contenteditable")).toBe(
+        "false",
+      );
+      await act(async () =>
+        sync.receiveWorkSnapshot({ revision: 2, locks: [] }),
+      );
+      expect(editorValue()).toBe(dirty ? "# My draft" : "# Agent version");
+      if (dirty)
+        expect(container.textContent).toContain("Ваш черновик сохранён");
+    },
+  );
+  it.each(["clean", "dirty", "removed"])(
+    "refreshes native files after a Git branch switch and preserves %s drafts",
+    async (state) => {
+      const sync = new ProjectSync();
+      const path = "sql/branch.sql";
+      const gitStateChanged =
+        vi.fn<NonNullable<typeof props.onGitEditorStateChange>>();
+      props.onGitEditorStateChange = gitStateChanged;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          editorApi(
+            async (url) => {
+              if (url.startsWith("/api/project/file?"))
+                return state === "removed"
+                  ? new Response(JSON.stringify({ error: "Файл не найден" }), {
+                      status: 404,
+                    })
+                  : new Response(
+                      JSON.stringify({
+                        ...projectFile(path, "select new_branch"),
+                        revision: "disk-v2",
+                      }),
+                    );
+              return new Response("[]");
+            },
+            () => props.workspaceId,
+          ),
+        ),
+      );
+      await openProjectFile(path, "select original", sync);
+      const cleanGitState = gitStateChanged.mock.lastCall![0]!;
+      expect(cleanGitState.hasUnsavedFiles).toBe(false);
+      if (state === "dirty") await editSql("select my_draft");
+      expect(gitStateChanged.mock.lastCall![0]!.hasUnsavedFiles).toBe(
+        state === "dirty",
+      );
+      // The project-level button retains this callback across editor renders.
+      // Its final guard must still see edits made after the callback was captured.
+      if (state === "dirty")
+        await expect(cleanGitState.onBeforeMutation()).rejects.toThrow(
+          "Сначала сохраните",
+        );
+      else
+        await expect(cleanGitState.onBeforeMutation()).resolves.toBeUndefined();
+      if (state === "clean") await act(() => cleanGitState.onBranchChanged());
+      else
+        await act(async () =>
+          sync.emit({
+            id: 10,
+            type: "git.changed",
+            data: { action: "switch" },
+          }),
+        );
+      expect(editorValue()).toBe(
+        state === "clean"
+          ? "select new_branch"
+          : state === "dirty"
+            ? "select my_draft"
+            : "select original",
+      );
+      if (state === "dirty")
+        expect(container.textContent).toContain("Ваш черновик сохранён");
+      if (state === "removed")
+        expect(container.textContent).toContain("Файл не найден");
+    },
+  );
+  it("refreshes an agent native edit after a pre-lock file save reply arrives late", async () => {
+    const sync = new ProjectSync();
+    const path = "docs/notes.md";
+    let finishSave!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (url, options) => {
+            if (url.startsWith("/api/project/file?")) {
+              if (options.method === "PUT")
+                return new Promise<Response>((done) => {
+                  finishSave = done;
+                });
+              return new Response(
+                JSON.stringify({
+                  ...projectFile(path, "# Agent final"),
+                  revision: "disk-v3",
+                }),
+              );
+            }
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile(path, "# Original", sync);
+    await editSql("# User save");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    await act(async () =>
+      sync.receiveWorkSnapshot({
+        revision: 1,
+        locks: [
+          {
+            target: { kind: "file", id: path },
+            turnId: "turn",
+            chatId: "chat",
+            startedAt: "now",
+          },
+        ],
+      }),
+    );
+    await act(async () => sync.receiveWorkSnapshot({ revision: 2, locks: [] }));
+    await act(async () =>
+      finishSave(
+        new Response(
+          JSON.stringify({
+            ...projectFile(path, "# User save"),
+            revision: "disk-v2",
+          }),
+        ),
+      ),
+    );
+    expect(editorValue()).toBe("# Agent final");
+  });
   it("opens text files without SQL actions or stale SQL agent targets and preserves dirty drafts on reopen", async () => {
     const sync = new ProjectSync();
     await openProjectFile("docs/notes.md", "# Notes", sync);
@@ -548,6 +986,101 @@ describe("chart source SQL tabs", () => {
     expect(editorSqlAtQuerySave).toBe("select freshly_typed_sql");
     expect(props.onQueriesChanged).toHaveBeenCalledOnce();
   });
+  it("keeps a successful query association when its response arrives under an agent claim", async () => {
+    const sync = new ProjectSync();
+    let complete!: () => void;
+    const backend = editorApi(
+      async (path, options) => {
+        if (path === "/api/queries" && options.method === "POST") {
+          const saved = {
+            ...JSON.parse(options.body as string),
+            id: "saved-query",
+            revision: 1,
+          };
+          return new Promise<Response>((resolve) => {
+            complete = () => resolve(new Response(JSON.stringify(saved)));
+          });
+        }
+        return new Response("[]");
+      },
+      () => props.workspaceId,
+    );
+    vi.stubGlobal("fetch", vi.fn(backend));
+    seed("draft.sql");
+    await act(async () =>
+      root.render(
+        createElement(
+          ProjectSyncContext.Provider,
+          { value: sync },
+          createElement(SqlWorkspace, props),
+        ),
+      ),
+    );
+    await readyEditor();
+    await clickTab("draft.sql");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    await act(async () =>
+      document
+        .querySelector('[role="dialog"] form')!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        ),
+    );
+    await act(async () =>
+      sync.receiveWorkSnapshot({
+        revision: 1,
+        locks: [
+          {
+            target: { kind: "editor", id: "existing" },
+            turnId: "turn",
+            chatId: "chat",
+            startedAt: "now",
+          },
+        ],
+      }),
+    );
+    const docs = await (await backend("/api/editor-documents")).json();
+    const current = docs.find((doc: { id: string }) => doc.id === "existing");
+    const changed = await backend("/api/editor-documents/existing", {
+      method: "PATCH",
+      body: JSON.stringify({
+        baseRevision: current.revision,
+        name: "agent.sql",
+        sql: "select agent_sql",
+      }),
+    });
+    await act(async () =>
+      sync.emit({ id: 2, type: "editor.updated", data: await changed.json() }),
+    );
+    await act(async () => complete());
+    const recovery = JSON.parse(
+      localStorage.getItem("miracle:sql-recovery:source-tab-test") || "[]",
+    );
+    expect(
+      recovery.find((doc: { id: string }) => doc.id === "existing"),
+    ).toMatchObject({
+      queryId: "saved-query",
+      revision: 1,
+      name: "agent.sql",
+      sql: "select agent_sql",
+    });
+    await act(async () => sync.receiveWorkSnapshot({ revision: 3, locks: [] }));
+    const saved = await (await backend("/api/editor-documents")).json();
+    expect(
+      saved.find((doc: { id: string }) => doc.id === "existing"),
+    ).toMatchObject({
+      queryId: "saved-query",
+      queryRevision: 1,
+      name: "agent.sql",
+      sql: "select agent_sql",
+    });
+  });
   it("saves the latest synchronized revision of the original tab after a pending flush", async () => {
     const sync = new ProjectSync();
     let releaseFlush!: () => void;
@@ -703,8 +1236,11 @@ describe("chart source SQL tabs", () => {
     expect(
       vi
         .mocked(fetch)
-        .mock.calls.every(([path]) =>
-          String(path).startsWith("/api/editor-documents"),
+        .mock.calls.every(
+          ([path, options]) =>
+            String(path).startsWith("/api/editor-documents") ||
+            (String(path) === "/api/project/git" &&
+              (options?.method ?? "GET") === "GET"),
         ),
     ).toBe(true);
     const add = container.querySelector<HTMLButtonElement>(

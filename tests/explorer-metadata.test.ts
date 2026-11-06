@@ -164,9 +164,13 @@ describe("schema explorer", () => {
       );
       await act(async () => alert.querySelector("button")!.click());
       expect(container.querySelector('[role="alert"]')).toBeNull();
-      expect(container.textContent).toContain(
-        kind === "queries" ? "ФАЙЛЫ ПРОЕКТА" : "История начнётся",
-      );
+      expect(
+        container.querySelector<HTMLButtonElement>(
+          'button[aria-label="Обновить список"]',
+        )?.disabled,
+      ).toBe(false);
+      if (kind === "history")
+        expect(container.textContent).toContain("История начнётся");
     },
   );
 

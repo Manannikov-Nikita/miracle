@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   CaretRight,
   Code,
@@ -12,6 +13,8 @@ import {
 import type { ProjectTextFile, ProjectTree } from "../../shared/project-files";
 import { api } from "../api";
 import { IconButton } from "./UI";
+import { useAgentWorkLocks } from "../agents/useAgentWork";
+import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import "./project-files.css";
 
 type DirectoryState = { tree?: ProjectTree; loading?: boolean; error?: string };
@@ -29,6 +32,7 @@ export default function ProjectFileTree({
   onOpenFile,
   onNotify,
   onClearFilter,
+  actionsTarget,
 }: {
   workspaceId: string;
   filter: string;
@@ -36,7 +40,9 @@ export default function ProjectFileTree({
   onOpenFile: (file: ProjectTextFile) => void;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
   onClearFilter?: () => void;
+  actionsTarget?: HTMLElement | null;
 }) {
+  const workLocks = useAgentWorkLocks();
   const storageKey = `miracle:project-tree:${workspaceId}`;
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     try {
@@ -391,6 +397,9 @@ export default function ProjectFileTree({
     fullPath = false,
   ) {
     const Icon = /\.sql$/i.test(name) ? Code : FileText;
+    const work = workLocks.find(
+      (work) => work.target.kind === "file" && work.target.id === path,
+    );
     return (
       <button
         type="button"
@@ -400,7 +409,7 @@ export default function ProjectFileTree({
         aria-busy={opening === path}
         key={path}
         title={path}
-        className={`project-file-row ${selected === path ? "selected" : ""}`}
+        className={`project-file-row ${selected === path ? "selected" : ""}${work ? " agent-work-active" : ""}`}
         style={{ paddingLeft: 12 + (level - 1) * 14 + (fullPath ? 0 : 18) }}
         onClick={() => void open(path)}
         onFocus={() => select(path, false)}
@@ -412,6 +421,7 @@ export default function ProjectFileTree({
             <small>{path.slice(0, path.lastIndexOf("/"))}</small>
           )}
         </span>
+        <AgentWorkIndicator compact work={work} />
         {opening === path && (
           <span className="project-file-loading" aria-hidden="true">
             …
@@ -488,28 +498,34 @@ export default function ProjectFileTree({
     );
   }
 
+  const actions = (
+    <>
+      <IconButton
+        label="Корень проекта"
+        aria-pressed={selected === ""}
+        title="Выбрать корень проекта"
+        onClick={() => select("", true)}
+      >
+        <Folder size={14} />
+      </IconButton>
+      <IconButton
+        label="Создать файл"
+        title={`Создать файл: ${selectedDirectory || "корень проекта"}`}
+        onClick={startCreate}
+        disabled={creating}
+      >
+        <Plus size={14} />
+      </IconButton>
+    </>
+  );
+
   return (
     <>
-      <div className="project-tree-heading">
-        <button
-          type="button"
-          className="project-root-label"
-          aria-label="Корень проекта"
-          aria-pressed={selected === ""}
-          title="Выбрать корень проекта"
-          onClick={() => select("", true)}
-        >
-          ФАЙЛЫ ПРОЕКТА
-        </button>
-        <IconButton
-          label="Создать файл"
-          title={`Создать файл: ${selectedDirectory || "корень проекта"}`}
-          onClick={startCreate}
-          disabled={creating}
-        >
-          <Plus size={14} />
-        </IconButton>
-      </div>
+      {actionsTarget
+        ? createPortal(actions, actionsTarget)
+        : actionsTarget === undefined && (
+            <div className="project-tree-actions">{actions}</div>
+          )}
       <div
         className="project-file-tree"
         role="tree"

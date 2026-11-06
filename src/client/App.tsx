@@ -1,6 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
-import type { Connection, QueryDocument, ResultSet } from "../shared/types";
+import type {
+  BoardKind,
+  Connection,
+  QueryDocument,
+  ResultSet,
+} from "../shared/types";
 import type { ProjectTextFile } from "../shared/project-files";
 import { api, openLocalSession } from "./api";
 import { createMetadataStore } from "./metadata-store";
@@ -14,7 +27,35 @@ import SqlWorkspace, { type SqlSourceRequest } from "./components/SqlWorkspace";
 import BoardWorkspace from "./board/BoardWorkspace";
 import { ProjectSyncProvider, useProjectSync } from "./agents/ProjectSync";
 import AgentAssistant from "./agents/AgentAssistant";
-import WorkspaceRail, { type PaneMode } from "./components/WorkspaceRail";
+import WorkspaceRail from "./components/WorkspaceRail";
+import ProjectGitButton, {
+  type ProjectGitEditorState,
+} from "./git/ProjectGitButton";
+import ExplorerPanel from "./components/ExplorerPanel";
+import { CanvasWorkspaceProvider } from "./canvas-workspace";
+import {
+  PANE_MIN_WIDTH,
+  PANE_ORDER,
+  PANES_BY_MODE,
+  isPairMode,
+  isPaneMode,
+  readPaneLayout,
+  resetPaneLayout,
+  savePaneLayout,
+  selectPaneMode,
+  setPaneVisible,
+  type PairMode,
+  type Pane,
+  type PaneMode,
+  type PaneView,
+} from "./workspace-panes";
+
+const PANE_DIVIDER_LABEL: Record<PairMode, string> = {
+  split: "Размер SQL и доски",
+  "sql-presentation": "Размер SQL и презентации",
+  "board-presentation": "Размер доски и презентации",
+};
+
 export default function App() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,9 +80,25 @@ export default function App() {
   const [savedToOpen, setSavedToOpen] = useState<QueryDocument | null>(null);
   const [fileToOpen, setFileToOpen] = useState<ProjectTextFile | null>(null);
   const [fileRevision, setFileRevision] = useState(0);
+  const [gitEditorState, setGitEditorState] =
+    useState<ProjectGitEditorState | null>(null);
+  const projectFilesChanged = useCallback(
+    () => setFileRevision((value) => value + 1),
+    [],
+  );
   const [incomingResult, setIncomingResult] = useState<ResultSet | null>(null);
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
-  const [paneMode, setPaneMode] = useState<PaneMode>("split");
+  const [paneView, setPaneView] = useState<PaneView>({
+    mode: "split",
+    focusedPane: null,
+  });
+  const { mode: paneMode, focusedPane } = paneView;
+  const visiblePanes = PANES_BY_MODE[paneMode];
+  const activeCanvas =
+    focusedPane && focusedPane !== "sql"
+      ? focusedPane
+      : visiblePanes.find((pane) => pane !== "sql");
+  const lastSqlPair = useRef<"split" | "sql-presentation">("split");
   const [toasts, setToasts] = useState<
     { id: number; message: string; tone: string }[]
   >([]);
@@ -68,11 +125,14 @@ export default function App() {
         const saved = JSON.parse(
           localStorage.getItem(`miracle:view:${next}`) || "{}",
         );
-        setPaneMode(
-          ["sql", "board", "none"].includes(saved.paneMode)
-            ? saved.paneMode
-            : "split",
-        );
+        const savedMode: unknown = saved.paneMode;
+        const mode = isPaneMode(savedMode) ? savedMode : "split";
+        setPaneView({
+          mode,
+          focusedPane: PANES_BY_MODE[mode].includes(saved.focusedPane)
+            ? saved.focusedPane
+            : null,
+        });
         setExplorer(
           saved.explorer === null ||
             ["sources", "queries", "history"].includes(saved.explorer)
@@ -80,7 +140,7 @@ export default function App() {
             : "sources",
         );
       } catch {
-        setPaneMode("split");
+        setPaneView({ mode: "split", focusedPane: null });
         setExplorer("sources");
       }
     }
@@ -90,19 +150,9 @@ export default function App() {
     if (workspaceId)
       localStorage.setItem(
         `miracle:view:${workspaceId}`,
-        JSON.stringify({ paneMode, explorer }),
+        JSON.stringify({ paneMode, focusedPane, explorer }),
       );
-  }, [workspaceId, paneMode, explorer]);
-  function savedLayout() {
-    try {
-      const saved = JSON.parse(
-        localStorage.getItem(`miracle:workspace-layout:${workspaceId}`) ||
-          "null",
-      );
-      if (saved?.sql > 5 && saved?.board > 5) return saved;
-    } catch {}
-    return { sql: 45, board: 55 };
-  }
+  }, [workspaceId, paneMode, focusedPane, explorer]);
   async function loadWorkspace() {
     setLoading(true);
     setLoadError("");
@@ -162,51 +212,60 @@ export default function App() {
     media.addEventListener("change", handler);
     return () => media.removeEventListener("change", handler);
   }, []);
-  useEffect(() => {
-    if (!workspaceId) return;
+  useLayoutEffect(() => {
+    if (paneMode === "split" || paneMode === "sql-presentation") {
+      lastSqlPair.current = paneMode;
+    }
+    if (!workspaceId || paneMode === "none") return;
     const handle = requestAnimationFrame(() => {
-      if (paneMode === "sql") group.current?.setLayout({ sql: 100, board: 0 });
-      else if (paneMode === "board")
-        group.current?.setLayout({ sql: 0, board: 100 });
-      else if (paneMode === "split") {
-        try {
-          const stored = JSON.parse(
-            localStorage.getItem(`miracle:workspace-layout:${workspaceId}`) ||
-              "null",
-          );
-          group.current?.setLayout(
-            stored?.sql > 5 && stored?.board > 5
-              ? stored
-              : { sql: 45, board: 55 },
-          );
-        } catch {
-          group.current?.setLayout({ sql: 45, board: 55 });
-        }
-      }
+      group.current?.setLayout(readPaneLayout(workspaceId, paneMode));
     });
     return () => cancelAnimationFrame(handle);
-  }, [paneMode, workspaceId]);
-  function setPaneVisibility(pane: "sql" | "board", visible?: boolean) {
-    setPaneMode((mode) => {
-      const other = pane === "sql" ? "board" : "sql";
-      const show = visible ?? !(mode === "split" || mode === pane);
-      const otherVisible = mode === "split" || mode === other;
-      return show
-        ? otherVisible
-          ? "split"
-          : pane
-        : otherVisible
-          ? other
-          : "none";
-    });
+  }, [group, paneMode, workspaceId]);
+  function changePaneMode(mode: PaneMode) {
+    setPaneView((view) => selectPaneMode(view, mode));
+  }
+  function setPaneVisibility(pane: Pane, visible?: boolean) {
+    setPaneView((view) => setPaneVisible(view, pane, visible));
+  }
+  function focusPane(pane: Pane) {
+    setPaneView((view) =>
+      view.focusedPane !== pane && PANES_BY_MODE[view.mode].includes(pane)
+        ? { ...view, focusedPane: pane }
+        : view,
+    );
   }
   const showSql = () => setPaneVisibility("sql", true);
-  const showBoard = () => setPaneVisibility("board", true);
+  const openCanvas = useCallback((kind: BoardKind) => {
+    setPaneView((view) =>
+      PANES_BY_MODE[view.mode].includes("sql")
+        ? selectPaneMode(view, kind === "board" ? "split" : "sql-presentation")
+        : setPaneVisible(view, kind, true),
+    );
+  }, []);
+  const openCanvasPair = useCallback(() => {
+    setPaneView((view) => selectPaneMode(view, "board-presentation"));
+  }, []);
+  function resetCurrentSplit() {
+    if (workspaceId && isPairMode(paneMode)) {
+      resetPaneLayout(workspaceId, paneMode);
+      group.current?.setLayout(readPaneLayout(workspaceId, paneMode));
+    }
+  }
   function resetLayout() {
-    if (workspaceId)
-      localStorage.removeItem(`miracle:workspace-layout:${workspaceId}`);
-    setPaneMode("split");
-    group.current?.setLayout({ sql: 45, board: 55 });
+    if (workspaceId) {
+      for (const mode of [
+        "split",
+        "sql-presentation",
+        "board-presentation",
+      ] as const) {
+        resetPaneLayout(workspaceId, mode);
+      }
+      localStorage.removeItem(`miracle:explorer-width:${workspaceId}`);
+    }
+    if (paneMode === "split")
+      group.current?.setLayout(readPaneLayout(workspaceId, "split"));
+    changePaneMode("split");
     window.dispatchEvent(new Event("miracle:reset-layout"));
   }
   if (loading)
@@ -239,8 +298,26 @@ export default function App() {
             mode={paneMode}
             explorer={narrow && !explorerDrawer ? null : explorer}
             connectionCount={connections.length}
+            gitControl={
+              <ProjectGitButton
+                workspaceId={workspaceId}
+                hasUnsavedFiles={gitEditorState?.hasUnsavedFiles ?? false}
+                onBeforeMutation={async () => {
+                  if (!gitEditorState)
+                    throw new Error(
+                      "Дождитесь загрузки файлов редактора перед действием Git.",
+                    );
+                  await gitEditorState.onBeforeMutation();
+                }}
+                onBranchChanged={async () => {
+                  if (gitEditorState) await gitEditorState.onBranchChanged();
+                  else projectFilesChanged();
+                }}
+                onNotify={notify}
+              />
+            }
             onSelectMode={(mode) => {
-              setPaneMode(mode);
+              changePaneMode(mode);
               setExplorerDrawer(false);
             }}
             onTogglePane={setPaneVisibility}
@@ -258,42 +335,56 @@ export default function App() {
             onHelp={() => setHelpOpen(true)}
           />
           {explorer && (!narrow || explorerDrawer) && (
-            <Explorer
-              onClose={narrow ? () => setExplorerDrawer(false) : undefined}
+            <ExplorerPanel
               key={workspaceId}
-              kind={explorer}
               workspaceId={workspaceId}
-              connections={connections}
-              activeConnectionId={connectionId}
-              onConnectionChange={setConnectionId}
-              metadata={metadata}
-              sourceViews={sourceViews}
-              onOpenConnections={() => setConnectionsOpen(true)}
-              onOpenQuery={(q) => {
-                setExplorerDrawer(false);
-                setSavedToOpen(q);
-                showSql();
-              }}
-              onOpenFile={(file) => {
-                setExplorerDrawer(false);
-                setFileToOpen(file);
-                showSql();
-              }}
-              fileRevision={fileRevision}
-              onOpenSource={(q, run) => {
-                setExplorerDrawer(false);
-                setSourceToOpen({ source: q, run });
-                showSql();
-              }}
-              queryRevision={queryRevision}
-              onNotify={notify}
-            />
+              drawer={narrow}
+              minWorkspaceWidth={
+                visiblePanes.reduce(
+                  (width, pane) => width + PANE_MIN_WIDTH[pane],
+                  0,
+                ) + (isPairMode(paneMode) ? 5 : 0)
+              }
+            >
+              <Explorer
+                onClose={narrow ? () => setExplorerDrawer(false) : undefined}
+                key={workspaceId}
+                kind={explorer}
+                workspaceId={workspaceId}
+                connections={connections}
+                activeConnectionId={connectionId}
+                onConnectionChange={setConnectionId}
+                metadata={metadata}
+                sourceViews={sourceViews}
+                onOpenConnections={() => setConnectionsOpen(true)}
+                onOpenQuery={(q) => {
+                  setExplorerDrawer(false);
+                  setSavedToOpen(q);
+                  showSql();
+                }}
+                onOpenFile={(file) => {
+                  setExplorerDrawer(false);
+                  setFileToOpen(file);
+                  showSql();
+                }}
+                fileRevision={fileRevision}
+                onOpenSource={(q, run) => {
+                  setExplorerDrawer(false);
+                  setSourceToOpen({ source: q, run });
+                  showSql();
+                }}
+                queryRevision={queryRevision}
+                onNotify={notify}
+              />
+            </ExplorerPanel>
           )}
           <main className="workbench">
             {paneMode === "none" && (
               <div className="workbench-empty" role="status">
                 <p>Области скрыты</p>
-                <span>Включите редактор или доску кнопками слева.</span>
+                <span>
+                  Включите редактор, доску или презентацию кнопками слева.
+                </span>
               </div>
             )}
             <div
@@ -301,102 +392,126 @@ export default function App() {
               hidden={paneMode === "none"}
               inert={paneMode === "none"}
             >
-              <Group
-                orientation="horizontal"
-                groupRef={group}
-                className="main-split"
-                defaultLayout={savedLayout()}
-                disabled={paneMode !== "split"}
-                onLayoutChanged={(
-                  layout,
-                  { isUserInteraction, requestedLayout },
-                ) => {
-                  if (!isUserInteraction) return;
-                  const l = requestedLayout ?? layout;
-                  if (workspaceId && l.sql > 5 && l.board > 5)
-                    localStorage.setItem(
-                      `miracle:workspace-layout:${workspaceId}`,
-                      JSON.stringify(l),
-                    );
-                  setPaneMode(
-                    layout.sql === 0
-                      ? "board"
-                      : layout.board === 0
-                        ? "sql"
-                        : "split",
-                  );
-                }}
+              <CanvasWorkspaceProvider
+                key={workspaceId}
+                workspaceId={workspaceId}
+                onOpen={openCanvas}
+                onTransferOpen={openCanvasPair}
+                onNotify={notify}
               >
-                <Panel
-                  id="sql"
-                  defaultSize="45%"
-                  minSize="340px"
-                  collapsible={paneMode !== "split"}
+                <Group
+                  orientation="horizontal"
+                  groupRef={group}
+                  className="main-split"
+                  defaultLayout={readPaneLayout(workspaceId, paneMode)}
+                  disabled={!isPairMode(paneMode)}
+                  onLayoutChanged={(
+                    layout,
+                    { isUserInteraction, requestedLayout },
+                  ) => {
+                    if (
+                      isUserInteraction &&
+                      workspaceId &&
+                      isPairMode(paneMode)
+                    ) {
+                      savePaneLayout(
+                        workspaceId,
+                        paneMode,
+                        requestedLayout ?? layout,
+                      );
+                    }
+                  }}
                 >
-                  <div
-                    className="pane-host"
-                    inert={paneMode !== "split" && paneMode !== "sql"}
-                  >
-                    <SqlWorkspace
-                      workspaceId={workspaceId}
-                      key={workspaceId}
-                      connections={connections}
-                      activeConnectionId={connectionId}
-                      onConnectionChange={setConnectionId}
-                      metadata={metadata}
-                      sourceToOpen={sourceToOpen}
-                      savedToOpen={savedToOpen}
-                      fileToOpen={fileToOpen}
-                      onFileConsumed={() => setFileToOpen(null)}
-                      onProjectFileSaved={() =>
-                        setFileRevision((value) => value + 1)
-                      }
-                      onSourceConsumed={() => setSourceToOpen(null)}
-                      onSavedConsumed={() => setSavedToOpen(null)}
-                      onQueriesChanged={() => setQueryRevision((r) => r + 1)}
-                      onResult={(r) => {
-                        setIncomingResult(r);
-                        showBoard();
-                      }}
-                      onNotify={notify}
-                      onOpenConnections={() => setConnectionsOpen(true)}
-                      onMaximize={() =>
-                        setPaneMode(paneMode === "sql" ? "split" : "sql")
-                      }
-                      onCollapse={() => setPaneVisibility("sql", false)}
-                    />
-                  </div>
-                </Panel>
-                <Separator
-                  className="resize-separator vertical"
-                  aria-label="Размер SQL и доски"
-                  onDoubleClick={resetLayout}
-                  style={paneMode !== "split" ? { display: "none" } : undefined}
-                />
-                <Panel
-                  id="board"
-                  defaultSize="55%"
-                  minSize="400px"
-                  collapsible={paneMode !== "split"}
-                >
-                  <div
-                    className="pane-host"
-                    inert={paneMode !== "split" && paneMode !== "board"}
-                  >
-                    <BoardWorkspace
-                      workspaceId={workspaceId}
-                      key={workspaceId}
-                      incomingResult={incomingResult}
-                      onIncomingConsumed={() => setIncomingResult(null)}
-                      onOpenSource={(source, name) => {
-                        setSourceToOpen({ source, name });
-                        showSql();
-                      }}
-                      onNotify={notify}
-                    />
-                  </div>
-                </Panel>
-              </Group>
+                  {PANE_ORDER.map((pane) => {
+                    const visible = visiblePanes.includes(pane);
+                    return (
+                      <Fragment key={pane}>
+                        <Panel
+                          id={pane}
+                          defaultSize={visible ? undefined : "0%"}
+                          minSize={visible ? `${PANE_MIN_WIDTH[pane]}px` : "0%"}
+                          maxSize={visible ? "100%" : "0%"}
+                          disabled={!visible}
+                        >
+                          <div
+                            className="pane-host"
+                            inert={!visible}
+                            onPointerDownCapture={() => focusPane(pane)}
+                            onFocusCapture={() => focusPane(pane)}
+                          >
+                            {pane === "sql" ? (
+                              <SqlWorkspace
+                                workspaceId={workspaceId}
+                                key={workspaceId}
+                                connections={connections}
+                                activeConnectionId={connectionId}
+                                onConnectionChange={setConnectionId}
+                                metadata={metadata}
+                                sourceToOpen={sourceToOpen}
+                                savedToOpen={savedToOpen}
+                                fileToOpen={fileToOpen}
+                                onFileConsumed={() => setFileToOpen(null)}
+                                onProjectFileSaved={projectFilesChanged}
+                                onGitEditorStateChange={setGitEditorState}
+                                onSourceConsumed={() => setSourceToOpen(null)}
+                                onSavedConsumed={() => setSavedToOpen(null)}
+                                onQueriesChanged={() =>
+                                  setQueryRevision((r) => r + 1)
+                                }
+                                onResult={(r) => {
+                                  setIncomingResult(r);
+                                  openCanvas("board");
+                                }}
+                                onNotify={notify}
+                                onOpenConnections={() =>
+                                  setConnectionsOpen(true)
+                                }
+                                onMaximize={() =>
+                                  changePaneMode(
+                                    paneMode === "sql"
+                                      ? lastSqlPair.current
+                                      : "sql",
+                                  )
+                                }
+                                onCollapse={() =>
+                                  setPaneVisibility("sql", false)
+                                }
+                              />
+                            ) : (
+                              <BoardWorkspace
+                                workspaceId={workspaceId}
+                                key={workspaceId}
+                                kind={pane}
+                                active={visible && activeCanvas === pane}
+                                onActivate={() => focusPane(pane)}
+                                incomingResult={
+                                  pane === "board" ? incomingResult : null
+                                }
+                                onIncomingConsumed={() =>
+                                  setIncomingResult(null)
+                                }
+                                onOpenSource={(source, name) => {
+                                  setSourceToOpen({ source, name });
+                                  showSql();
+                                }}
+                                onNotify={notify}
+                              />
+                            )}
+                          </div>
+                        </Panel>
+                        {isPairMode(paneMode) && visiblePanes[0] === pane && (
+                          <Separator
+                            className="resize-separator vertical"
+                            aria-label={PANE_DIVIDER_LABEL[paneMode]}
+                            disableDoubleClick
+                            onDoubleClick={resetCurrentSplit}
+                          />
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </Group>
+              </CanvasWorkspaceProvider>
             </div>
           </main>
         </div>

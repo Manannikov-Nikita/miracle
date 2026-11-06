@@ -9,7 +9,6 @@ import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
-  SquaresFour,
   Rows,
   ArrowsOutSimple,
   CaretDown,
@@ -49,10 +48,12 @@ import {
   type ProjectFileDraft,
 } from "../project-file-drafts";
 import ProjectTextEditor from "./ProjectTextEditor";
+import type { ProjectGitEditorState } from "../git/ProjectGitButton";
 import { describeError } from "../error-message";
 import type { EditorDocument } from "../../shared/agents";
 import {
   documentToTab,
+  acknowledgeEditor,
   tabFields,
   type EditorTab,
 } from "../agents/editor-sync";
@@ -62,12 +63,19 @@ import {
   useEditorSync,
 } from "../agents/useEditorSync";
 import { useProjectSync } from "../agents/ProjectSync";
+import {
+  currentAgentWork,
+  editorAgentWork,
+  useAgentWorkLocks,
+} from "../agents/useAgentWork";
+import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import { hasDatePlaceholder } from "../../shared/date-batch";
 import DateBatchDialog from "./DateBatchDialog";
 import DateBatchProgress from "./DateBatchProgress";
 import { QueryDuration } from "./QueryTiming";
 import { EmptyState, ErrorBox, IconButton, Modal, Spinner } from "./UI";
 import ResultTable from "./ResultTable";
+import ResultCanvasActions from "./ResultCanvasActions";
 import { Select } from "./Select";
 import { formatSql, sqlFileName } from "../sql-files";
 import { sqlStatementAt } from "../sql-statements";
@@ -143,6 +151,7 @@ interface Props {
   fileToOpen?: ProjectTextFile | null;
   onFileConsumed?: () => void;
   onProjectFileSaved?: () => void;
+  onGitEditorStateChange?: (state: ProjectGitEditorState | null) => void;
   onSourceConsumed: () => void;
   onSavedConsumed: () => void;
   onQueriesChanged: () => void;
@@ -229,6 +238,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const recoveryFailed = useRef(false);
   const [fileSaving, setFileSaving] = useState(new Set<string>());
   const fileSavingRef = useRef(new Set<string>());
+  const pendingFileRefresh = useRef(new Set<string>());
+  const fileRefreshVersions = useRef(new Map<string, number>());
+  const refreshFile = useRef<(id: string) => Promise<void>>(async () => {});
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({});
   const [closeFileId, setCloseFileId] = useState<string | null>(null);
   const [tabs, setTabs] = useState<Tab[]>(() => {
@@ -275,13 +287,24 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     tabs,
     setTabs,
     p.onNotify,
+    (id) => filesRef.current.find((file) => file.id === id)?.path,
   );
   const projectSync = useProjectSync();
+  useAgentWorkLocks();
   const [activeId, setActiveId] = useState(
     () => localStorage.getItem(`${storage}:active`) || "",
   );
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  const workForId = useCallback(
+    (id: string) =>
+      editorAgentWork(
+        currentAgentWork(projectSync),
+        tabsRef.current.find((tab) => tab.id === id) ?? { id },
+        filesRef.current.find((file) => file.id === id)?.path,
+      ),
+    [projectSync],
+  );
   const active = tabs.find((t) => t.id === activeId) || tabs[0];
   const activeFile = files.find((file) => file.id === activeId);
   const activeTextFile =
@@ -289,6 +312,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const activeTextFileRef = useRef(activeTextFile);
   activeTextFileRef.current = activeTextFile;
   const visibleId = activeTextFile?.id || active.id;
+  const activeWork = workForId(visibleId);
   const activeRef = useRef(active);
   activeRef.current = active;
   const activeTabRef = useRef<HTMLDivElement>(null);
@@ -428,15 +452,59 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     (c) => c.id === (active.connectionId || p.activeConnectionId),
   );
   const patch = useCallback(
-    (id: string, values: Partial<Tab>) =>
-      setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...values } : t))),
-    [],
+    (id: string, values: Partial<Tab>) => {
+      if (
+        Object.keys(values).some(
+          (key) => !["cursor", "scrollTop"].includes(key),
+        ) &&
+        workForId(id)
+      )
+        return;
+      setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...values } : t)));
+    },
+    [workForId],
+  );
+  const acknowledge = useCallback(
+    (
+      id: string,
+      before: Tab,
+      values: Partial<Tab>,
+      identity: (keyof Tab)[],
+    ) => {
+      // Confirmations are not new user edits. Rebase only unchanged fields onto
+      // the latest streamed document; the normal flush still honors its claim.
+      const next = documentSync.sync.tabs.map((tab) =>
+        tab.id === id ? acknowledgeEditor(tab, before, values, identity) : tab,
+      );
+      tabsRef.current = next;
+      documentSync.sync.local(next);
+      setTabs(next);
+      return next.find((tab) => tab.id === id);
+    },
+    [documentSync.sync],
   );
   useEffect(() => {
     if (!projectSync) return;
     return projectSync.register("editor", {
+      editorTabs: () => [
+        ...tabsRef.current.map((tab) => {
+          const file = filesRef.current.find((item) => item.id === tab.id);
+          return {
+            id: tab.id,
+            name: tab.name,
+            ...(file ? { path: file.path } : {}),
+          };
+        }),
+        ...filesRef.current
+          .filter((file) => !isSqlProjectFile(file.path))
+          .map((file) => ({ id: file.id, name: file.name, path: file.path })),
+      ],
       context: () => {
-        if (activeTextFileRef.current) return {};
+        if (
+          activeTextFileRef.current ||
+          filesRef.current.some((file) => file.id === activeRef.current.id)
+        )
+          return {};
         const editor = editorRef.current,
           selection = editor?.getSelection();
         return {
@@ -446,12 +514,34 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             : undefined,
         };
       },
-      flush: documentSync.flush,
+      flush: async (context) => {
+        await documentSync.flush();
+        // Native files are saved explicitly, so an @ reference must flush its
+        // open draft before the agent reads the path. Other file drafts stay local.
+        const paths = new Set(context?.filePaths || []);
+        for (const file of filesRef.current.filter((item) =>
+          paths.has(item.path),
+        )) {
+          const content =
+            tabsRef.current.find((tab) => tab.id === file.id)?.sql ??
+            file.content;
+          if (
+            content !== file.savedContent &&
+            !(await saveProjectFile(file.id))
+          )
+            throw new Error(
+              `Не удалось сохранить файл ${file.path} перед отправкой агенту. Проверьте черновик и повторите отправку.`,
+            );
+        }
+      },
     });
   }, [projectSync, documentSync.flush]);
   useEffect(() => {
     projectSync?.contextChanged();
   }, [visibleId, projectSync]);
+  useEffect(() => {
+    projectSync?.editorTabsChanged?.();
+  }, [tabs, files, projectSync]);
   useEffect(() => {
     const recovery = files.map((file) => ({
       ...file,
@@ -517,7 +607,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       mounted.current &&
       !controller.signal.aborted &&
       pollers.current.get(tabId) === controller &&
-      tabsRef.current.some((tab) => tab.id === tabId);
+      tabsRef.current.some((tab) => tab.id === tabId && tab.runId === id);
     let resultVersion = "";
     let failures = 0;
     const clearTrackingError = () =>
@@ -543,6 +633,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     try {
       while (valid()) {
         let delay = 600;
+        const requested = tabsRef.current.find((tab) => tab.id === tabId)!;
         try {
           const update = await api<QueryRun>(`/api/query-runs/${id}`, {
             signal: controller.signal,
@@ -564,7 +655,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
               if (!valid()) return;
               resultVersion = version;
               setResults((current) => ({ ...current, [tabId]: saved }));
-              patch(tabId, { resultSetId: saved.id });
+              acknowledge(tabId, requested, { resultSetId: saved.id }, [
+                "runId",
+              ]);
             }
           }
           failures = 0;
@@ -581,7 +674,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             error.status === 404 &&
             !runsRef.current[tabId]
           )
-            patch(tabId, { runId: undefined });
+            acknowledge(tabId, requested, { runId: undefined }, ["runId"]);
           failures++;
           const retryable =
             !(error instanceof ApiRequestError) ||
@@ -748,7 +841,95 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     setActiveId(file.id);
     p.onFileConsumed?.();
   }, [p.fileToOpen]);
+  refreshFile.current = async (id: string) => {
+    const file = filesRef.current.find((item) => item.id === id);
+    if (!file || workForId(id)) return;
+    if (fileSavingRef.current.has(id)) {
+      pendingFileRefresh.current.add(id);
+      return;
+    }
+    const version = (fileRefreshVersions.current.get(id) ?? 0) + 1;
+    fileRefreshVersions.current.set(id, version);
+    try {
+      const remote = await api<ProjectTextFile>(
+        `/api/project/file?path=${encodeURIComponent(file.path)}`,
+      );
+      if (fileRefreshVersions.current.get(id) !== version || workForId(id))
+        return;
+      if (fileSavingRef.current.has(id)) {
+        pendingFileRefresh.current.add(id);
+        return;
+      }
+      const latest = filesRef.current.find((item) => item.id === id);
+      if (!latest || latest.revision !== file.revision) return;
+      const content =
+        tabsRef.current.find((tab) => tab.id === id)?.sql ?? latest.content;
+      const dirty = content !== latest.savedContent;
+      if (
+        dirty &&
+        remote.content !== latest.savedContent &&
+        remote.content !== content
+      ) {
+        setFileErrors((errors) => ({
+          ...errors,
+          [id]: "Файл изменён на диске. Ваш черновик сохранён в браузере. Загрузите версию с диска или скачайте свой черновик.",
+        }));
+        return;
+      }
+      filesRef.current = filesRef.current.map((item) =>
+        item.id === id
+          ? {
+              ...remote,
+              id,
+              content: dirty ? content : remote.content,
+              savedContent: remote.content,
+            }
+          : item,
+      );
+      setFiles(filesRef.current);
+      if (!dirty && isSqlProjectFile(file.path))
+        patch(id, { sql: remote.content, externalSqlRevision: Date.now() });
+      setFileErrors((errors) => {
+        const next = { ...errors };
+        delete next[id];
+        return next;
+      });
+    } catch (error) {
+      setFileErrors((errors) => ({
+        ...errors,
+        [id]: describeError(error).details,
+      }));
+    }
+  };
+  useEffect(() => {
+    if (!projectSync) return;
+    let previous = currentAgentWork(projectSync);
+    const unsubscribe = projectSync.subscribeWork?.((snapshot) => {
+      for (const file of filesRef.current) {
+        const target = { id: file.id };
+        if (editorAgentWork(previous, target, file.path) && !workForId(file.id))
+          void refreshFile.current(file.id);
+      }
+      previous = snapshot.locks;
+    });
+    const reconnect = projectSync.onReconnect(() => {
+      for (const file of filesRef.current) void refreshFile.current(file.id);
+    });
+    const gitChanged = projectSync.subscribe((event) => {
+      if (event.type !== "git.changed") return;
+      const action = (event.data as { action?: string })?.action;
+      if (action !== "switch" && action !== "create_branch") return;
+      for (const file of filesRef.current) void refreshFile.current(file.id);
+      p.onProjectFileSaved?.();
+    });
+    return () => {
+      unsubscribe?.();
+      reconnect();
+      gitChanged();
+    };
+  }, [projectSync, workForId]);
   async function saveProjectFile(id: string): Promise<boolean> {
+    if (workForId(id)) return false;
     const file = filesRef.current.find((file) => file.id === id);
     if (!file || fileSavingRef.current.has(id)) return false;
     const content = isSqlProjectFile(file.path)
@@ -770,19 +951,18 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         },
       );
       // Edits made during the request stay dirty against the acknowledged disk content.
-      setFiles((current) =>
-        current.map((latest) =>
-          latest.id === id
-            ? {
-                ...latest,
-                revision: saved.revision,
-                size: saved.size,
-                updatedAt: saved.updatedAt,
-                savedContent: saved.content,
-              }
-            : latest,
-        ),
+      filesRef.current = filesRef.current.map((latest) =>
+        latest.id === id
+          ? {
+              ...latest,
+              revision: saved.revision,
+              size: saved.size,
+              updatedAt: saved.updatedAt,
+              savedContent: saved.content,
+            }
+          : latest,
       );
+      setFiles(filesRef.current);
       p.onProjectFileSaved?.();
       p.onNotify(`Файл ${file.name} сохранён`, "success");
       const latest = filesRef.current.find((item) => item.id === id);
@@ -799,9 +979,11 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     } finally {
       fileSavingRef.current.delete(id);
       setFileSaving(new Set(fileSavingRef.current));
+      if (pendingFileRefresh.current.delete(id)) void refreshFile.current(id);
     }
   }
   async function reloadProjectFile(file: ProjectFileDraft) {
+    if (workForId(file.id)) return;
     if (fileSavingRef.current.has(file.id)) return;
     const contentBeforeReload =
       tabsRef.current.find((tab) => tab.id === file.id)?.sql ??
@@ -811,7 +993,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         `/api/project/file?path=${encodeURIComponent(file.path)}`,
       );
       const latestFile = filesRef.current.find((item) => item.id === file.id);
-      if (!latestFile || fileSavingRef.current.has(file.id)) return;
+      if (
+        !latestFile ||
+        fileSavingRef.current.has(file.id) ||
+        workForId(file.id)
+      )
+        return;
       const latestContent =
         tabsRef.current.find((tab) => tab.id === file.id)?.sql ??
         latestFile.content;
@@ -843,6 +1030,45 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       p.onNotify(describeError(error).details, "error");
     }
   }
+  const hasUnsavedFiles = files.some(
+    (file) =>
+      (tabs.find((tab) => tab.id === file.id)?.sql ?? file.content) !==
+      file.savedContent,
+  );
+  const prepareGitMutation = useCallback(async () => {
+    if (fileSavingRef.current.size)
+      throw new Error("Дождитесь сохранения файлов перед действием Git.");
+    if (
+      filesRef.current.some(
+        (file) =>
+          (tabsRef.current.find((tab) => tab.id === file.id)?.sql ??
+            file.content) !== file.savedContent,
+      )
+    )
+      throw new Error("Сначала сохраните изменения открытых файлов на диск.");
+  }, []);
+  const refreshGitFiles = useCallback(async () => {
+    await Promise.all(
+      filesRef.current.map((file) => refreshFile.current(file.id)),
+    );
+    p.onProjectFileSaved?.();
+  }, [p.onProjectFileSaved]);
+  useEffect(() => {
+    p.onGitEditorStateChange?.({
+      hasUnsavedFiles,
+      onBeforeMutation: prepareGitMutation,
+      onBranchChanged: refreshGitFiles,
+    });
+  }, [
+    p.onGitEditorStateChange,
+    hasUnsavedFiles,
+    prepareGitMutation,
+    refreshGitFiles,
+  ]);
+  useEffect(
+    () => () => p.onGitEditorStateChange?.(null),
+    [p.onGitEditorStateChange],
+  );
   function downloadProjectDraft(file: ProjectFileDraft) {
     const content =
       tabsRef.current.find((tab) => tab.id === file.id)?.sql ?? file.content;
@@ -856,6 +1082,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   async function removeProjectFile(id: string) {
+    if (workForId(id)) return;
     if (fileSavingRef.current.has(id)) return;
     pollers.current.get(id)?.abort();
     if (tabsRef.current.some((tab) => tab.id === id)) {
@@ -883,6 +1110,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     setCloseFileId(null);
   }
   function closeProjectFile(file: ProjectFileDraft) {
+    if (workForId(file.id)) return;
     if (
       ["running", "cancelling", "paused"].includes(
         runsRef.current[file.id]?.status || "",
@@ -1066,6 +1294,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   }, [active.id, active.sql, connection?.engine]);
   const dateMode = hasDatePlaceholder(executionSql, connection?.engine);
   async function startRun(tabId: string, source: QuerySource) {
+    if (workForId(tabId))
+      throw new ApiRequestError(
+        "Агент работает с этим запросом. Повторите запуск после завершения работы.",
+        423,
+        "ENTITY_AGENT_LOCKED",
+      );
     if (
       launchingRef.current.has(tabId) ||
       (tabsRef.current.find((tab) => tab.id === tabId)?.runId &&
@@ -1076,6 +1310,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     )
       return;
     launchingRef.current.add(tabId);
+    const requested = tabsRef.current.find((tab) => tab.id === tabId)!;
     setLaunchingTabs(new Set(launchingRef.current));
     pollers.current.get(tabId)?.abort();
     try {
@@ -1085,12 +1320,18 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       });
       if (!mounted.current || !tabsRef.current.some((tab) => tab.id === tabId))
         return;
+      const accepted = acknowledge(
+        tabId,
+        requested,
+        {
+          runId: started.id,
+          connectionId: source.connectionId,
+          ...(source.dateRange ? { dateRange: source.dateRange } : {}),
+        },
+        ["runId"],
+      );
+      if (accepted?.runId !== started.id) return;
       setRuns((current) => ({ ...current, [tabId]: started }));
-      patch(tabId, {
-        runId: started.id,
-        connectionId: source.connectionId,
-        ...(source.dateRange ? { dateRange: source.dateRange } : {}),
-      });
       if (!resultExpanded) {
         group.current?.setLayout({ editor: 55, results: 45 });
         setResultExpanded(true);
@@ -1104,6 +1345,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   async function run() {
     if (activeTextFileRef.current) return;
     const tab = activeRef.current;
+    if (workForId(tab.id)) return;
     if (
       launchingRef.current.has(tab.id) ||
       batchRequest ||
@@ -1154,6 +1396,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     if (!unfinished && !launching && !restoringRun) void run();
   };
   function formatActive() {
+    if (workForId(activeRef.current.id)) return;
     const editor = editorRef.current;
     const model = editor?.getModel();
     if (!editor || !model) return;
@@ -1186,6 +1429,8 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   }
   formatAction.current = formatActive;
   saveAction.current = () => {
+    if (workForId(activeTextFileRef.current?.id ?? activeRef.current.id))
+      return;
     if (activeFile) {
       void saveProjectFile(activeFile.id);
       return;
@@ -1271,6 +1516,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   };
   async function actOnRun(action: "resume" | "cancel") {
     const tabId = activeRef.current.id;
+    if (workForId(tabId)) return;
     const currentRun = runsRef.current[tabId];
     if (!currentRun || runActionsRef.current.has(tabId)) return;
     if (action === "resume" && currentRun.status !== "paused") return;
@@ -1302,6 +1548,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   }
   const cancel = () => actOnRun("cancel");
   async function save() {
+    if (workForId(activeRef.current.id)) return;
     setSaving(true);
     setSaveError("");
     try {
@@ -1313,6 +1560,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       // original target even if focus changed, but save its latest revision.
       const t = documentSync.sync.tabs.find((tab) => tab.id === targetId);
       if (!t) throw new Error("SQL-файл был закрыт до сохранения");
+      if (workForId(targetId))
+        throw new ApiRequestError(
+          "Агент работает с этим запросом. Ваш черновик сохранён.",
+          423,
+          "ENTITY_AGENT_LOCKED",
+        );
       const c = p.connections.find(
         (c) => c.id === (t.connectionId || p.activeConnectionId),
       );
@@ -1335,11 +1588,16 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           }),
         },
       );
-      patch(t.id, {
-        queryId: saved.id,
-        revision: saved.revision,
-        name: saved.name,
-      });
+      acknowledge(
+        t.id,
+        t,
+        {
+          queryId: saved.id,
+          revision: saved.revision,
+          name: saved.name,
+        },
+        ["queryId", "revision"],
+      );
       setSaveOpen(false);
       p.onQueriesChanged();
       p.onNotify("Запрос сохранён", "success");
@@ -1360,6 +1618,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     setActiveId(t.id);
   }
   function closeTab(id: string) {
+    if (workForId(id)) return;
     if (
       ["running", "cancelling", "paused"].includes(
         runsRef.current[id]?.status || "",
@@ -1410,13 +1669,19 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           </span>
           <button
             className="text-button"
-            onClick={() => documentSync.sync.keepAsCopy(id)}
+            disabled={Boolean(workForId(id))}
+            onClick={() => {
+              if (!workForId(id)) documentSync.sync.keepAsCopy(id);
+            }}
           >
             Сохранить мой черновик копией
           </button>
           <button
             className="text-button"
-            onClick={() => documentSync.sync.useServer(id)}
+            disabled={Boolean(workForId(id))}
+            onClick={() => {
+              if (!workForId(id)) documentSync.sync.useServer(id);
+            }}
           >
             Загрузить серверную версию
           </button>
@@ -1428,7 +1693,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             <div
               key={t.id}
               ref={t.id === visibleId ? activeTabRef : undefined}
-              className={`query-tab ${t.id === visibleId ? "active" : ""}`}
+              className={`query-tab ${t.id === visibleId ? "active" : ""}${workForId(t.id) ? " agent-work-active" : ""}`}
             >
               <button
                 role="tab"
@@ -1438,6 +1703,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
               >
                 <Code size={13} />
                 <span>{t.name}</span>
+                <AgentWorkIndicator work={workForId(t.id)} compact />
                 {runs[t.id]?.status === "running" && <Spinner />}
                 {(files.some((file) => file.id === t.id)
                   ? files.find((file) => file.id === t.id)!.savedContent !==
@@ -1451,7 +1717,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                 disabled={
                   ["running", "cancelling", "paused"].includes(
                     runs[t.id]?.status || "",
-                  ) || fileSaving.has(t.id)
+                  ) ||
+                  fileSaving.has(t.id) ||
+                  Boolean(workForId(t.id))
                 }
                 onClick={() => {
                   const file = files.find((file) => file.id === t.id);
@@ -1466,7 +1734,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             .filter((file) => !isSqlProjectFile(file.path))
             .map((file) => (
               <div
-                className={`query-tab ${file.id === visibleId ? "active" : ""}`}
+                className={`query-tab ${file.id === visibleId ? "active" : ""}${workForId(file.id) ? " agent-work-active" : ""}`}
                 key={file.id}
                 ref={file.id === visibleId ? activeTabRef : undefined}
               >
@@ -1478,6 +1746,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                 >
                   <Code size={13} />
                   <span>{file.name}</span>
+                  <AgentWorkIndicator work={workForId(file.id)} compact />
                   {file.content !== file.savedContent && (
                     <i
                       className="unsaved-dot"
@@ -1487,7 +1756,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                 </button>
                 <IconButton
                   label={`Закрыть вкладку ${file.name}`}
-                  disabled={fileSaving.has(file.id)}
+                  disabled={
+                    fileSaving.has(file.id) || Boolean(workForId(file.id))
+                  }
                   onClick={() => closeProjectFile(file)}
                 >
                   <X size={12} />
@@ -1512,6 +1783,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           <ErrorBox>{fileErrors[activeFile.id]}</ErrorBox>
           <button
             className="text-button"
+            disabled={Boolean(activeWork)}
             onClick={() => void saveProjectFile(activeFile.id)}
           >
             Повторить сохранение
@@ -1524,6 +1796,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           </button>
           <button
             className="text-button"
+            disabled={Boolean(activeWork)}
             onClick={() => {
               if (
                 window.confirm(
@@ -1542,41 +1815,47 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           workspaceId={p.workspaceId}
           file={activeTextFile}
           saving={fileSaving.has(activeTextFile.id)}
-          onChange={(content) =>
+          onChange={(content) => {
+            if (workForId(activeTextFile.id)) return;
             setFiles((current) =>
               current.map((file) =>
                 file.id === activeTextFile.id ? { ...file, content } : file,
               ),
-            )
-          }
+            );
+          }}
           onSave={() => void saveProjectFile(activeTextFile.id)}
         />
       ) : (
         <>
           <div className="sql-toolbar">
-            <div className="sql-connection">
-              <Database size={14} />
-              <Select
-                aria-label="Подключение запроса"
-                value={connection?.id || ""}
-                placeholder="Выберите источник"
-                options={p.connections.map((c) => ({
-                  value: c.id,
-                  label: c.name,
-                }))}
-                onValueChange={(value) => {
-                  const c = p.connections.find((c) => c.id === value);
-                  patch(active.id, {
-                    connectionId: value,
-                    database: c?.database,
-                    catalog: c?.catalog,
-                    schema: c?.schema,
-                  });
-                  p.onConnectionChange(value);
-                }}
-              />
+            <div className="sql-toolbar-context">
+              <div className="sql-connection">
+                <Database size={14} />
+                <Select
+                  aria-label="Подключение запроса"
+                  disabled={Boolean(activeWork)}
+                  value={connection?.id || ""}
+                  placeholder="Выберите источник"
+                  options={p.connections.map((c) => ({
+                    value: c.id,
+                    label: c.name,
+                  }))}
+                  onValueChange={(value) => {
+                    if (workForId(active.id)) return;
+                    const c = p.connections.find((c) => c.id === value);
+                    patch(active.id, {
+                      connectionId: value,
+                      database: c?.database,
+                      catalog: c?.catalog,
+                      schema: c?.schema,
+                    });
+                    p.onConnectionChange(value);
+                  }}
+                />
+              </div>
             </div>
             <div className="sql-toolbar-actions">
+              <AgentWorkIndicator work={activeWork} />
               <input
                 ref={importInput}
                 type="file"
@@ -1587,7 +1866,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
               />
               <IconButton
                 label="Сохранить SQL-файл (⌘S / Ctrl+S)"
-                disabled={activeFile ? fileSaving.has(activeFile.id) : false}
+                disabled={
+                  Boolean(activeWork) ||
+                  (activeFile ? fileSaving.has(activeFile.id) : false)
+                }
                 onClick={() => saveAction.current()}
               >
                 <FloppyDisk size={16} />
@@ -1623,6 +1905,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                     </DropdownMenu.Item>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
+                      disabled={Boolean(activeWork)}
                       onSelect={() => {
                         restoreEditorFocus.current = true;
                         formatActive();
@@ -1647,7 +1930,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                   className="button run-button stopping"
                   onClick={cancel}
                   disabled={
-                    activeRun.status === "cancelling" || !!runActions[active.id]
+                    Boolean(activeWork) ||
+                    activeRun.status === "cancelling" ||
+                    !!runActions[active.id]
                   }
                 >
                   <Square weight="fill" size={11} />
@@ -1663,7 +1948,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       ? "Выполнить запрос для диапазона дат (⌘ / Ctrl + Enter)"
                       : "Выполнить запрос под курсором или выделенный SQL (⌘ / Ctrl + Enter)"
                   }
-                  disabled={launching || restoringRun}
+                  disabled={Boolean(activeWork) || launching || restoringRun}
                   onClick={run}
                 >
                   {launching ? (
@@ -1691,6 +1976,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                     Каталог
                     <input
                       aria-label="Каталог запроса"
+                      disabled={Boolean(activeWork)}
                       value={active.catalog ?? connection.catalog ?? ""}
                       placeholder="catalog"
                       onChange={(e) =>
@@ -1702,6 +1988,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                     Схема
                     <input
                       aria-label="Схема запроса"
+                      disabled={Boolean(activeWork)}
                       value={active.schema ?? connection.schema ?? ""}
                       placeholder="schema"
                       onChange={(e) =>
@@ -1715,6 +2002,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                   База
                   <input
                     aria-label="База запроса"
+                    disabled={Boolean(activeWork)}
                     value={active.database ?? connection.database ?? ""}
                     placeholder="default"
                     onChange={(e) =>
@@ -1743,7 +2031,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             className="editor-results-group"
           >
             <Panel id="editor" defaultSize="55%" minSize="100px" collapsible>
-              <div className="editor-area">
+              <div
+                className={`editor-area${activeWork ? " agent-work-active" : ""}`}
+              >
                 {editorOverlays && (
                   <Editor
                     path={`miracle-query://${p.workspaceId}/${active.id}.sql`}
@@ -1761,6 +2051,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       </div>
                     }
                     options={{
+                      readOnly: Boolean(activeWork),
                       overflowWidgetsDomNode: editorOverlays,
                       fixedOverflowWidgets: true,
                       fontSize: 13,
@@ -1853,33 +2144,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       </span>
                     )}
                     {result && (
-                      <>
-                        <IconButton
-                          label="Добавить результат на доску"
-                          className="add-to-board"
-                          disabled={Boolean(activeRun?.batch && unfinished)}
-                          draggable={!(activeRun?.batch && unfinished)}
-                          title={
-                            activeRun?.batch && unfinished
-                              ? "Дождитесь завершения серии, чтобы закрепить снимок"
-                              : "Добавить на доску · можно перетащить в нужное место"
-                          }
-                          onClick={() => p.onResult(result)}
-                          onDragStart={(e) => {
-                            if (activeRun?.batch && unfinished) {
-                              e.preventDefault();
-                              return;
-                            }
-                            e.dataTransfer.setData(
-                              "application/x-miracle-result",
-                              JSON.stringify(result),
-                            );
-                            e.dataTransfer.effectAllowed = "copy";
-                          }}
-                        >
-                          <SquaresFour size={17} />
-                        </IconButton>
-                      </>
+                      <ResultCanvasActions
+                        result={result}
+                        disabled={Boolean(activeRun?.batch && unfinished)}
+                        onBoardFallback={p.onResult}
+                        onNotify={p.onNotify}
+                      />
                     )}
                     <IconButton
                       label="Развернуть результат"
@@ -2003,7 +2273,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           </button>
           <button
             className="button"
-            disabled={Boolean(closeFileId && fileSaving.has(closeFileId))}
+            disabled={Boolean(
+              closeFileId &&
+              (fileSaving.has(closeFileId) || workForId(closeFileId)),
+            )}
             onClick={() => {
               if (closeFileId) void removeProjectFile(closeFileId);
             }}
@@ -2012,7 +2285,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           </button>
           <button
             className="button primary"
-            disabled={Boolean(closeFileId && fileSaving.has(closeFileId))}
+            disabled={Boolean(
+              closeFileId &&
+              (fileSaving.has(closeFileId) || workForId(closeFileId)),
+            )}
             onClick={async () => {
               if (!closeFileId) return;
               const id = closeFileId;
@@ -2056,7 +2332,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             <input
               autoFocus
               required
-              disabled={saving}
+              disabled={saving || Boolean(activeWork)}
               value={saveName}
               onChange={(e) => setSaveName(e.target.value)}
               placeholder="Выручка по месяцам"
@@ -2073,7 +2349,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             >
               Отмена
             </button>
-            <button className="button primary" disabled={saving}>
+            <button
+              className="button primary"
+              disabled={saving || Boolean(activeWork)}
+            >
               {saving ? <Spinner /> : "Сохранить"}
             </button>
           </div>

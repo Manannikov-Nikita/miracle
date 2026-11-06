@@ -12,6 +12,7 @@ export function preserveResizeAspect(
   raw: ResizeRectangle,
   start: ResizeRectangle,
   sides: ResizeSides,
+  minimum: { width: number; height: number } = { width: 280, height: 180 },
 ): ResizeRectangle {
   const corner =
     Boolean(sides.left) !== Boolean(sides.right) &&
@@ -33,7 +34,10 @@ export function preserveResizeAspect(
   )
     return raw;
 
-  const minScale = Math.max(280 / start.width, 180 / start.height);
+  const minScale = Math.max(
+    minimum.width / start.width,
+    minimum.height / start.height,
+  );
   const maxScale = Math.min(10000 / start.width, 10000 / start.height);
   // Imported extreme ratios can make the minimum and maximum incompatible.
   // Keep their valid starting geometry instead of distorting or oversizing it.
@@ -44,8 +48,11 @@ export function preserveResizeAspect(
     Math.max(minScale, raw.width / start.width, raw.height / start.height),
   );
   // Multiplication can overshoot a bound by one ULP (e.g. 10000.000000000002).
-  const width = Math.min(10000, Math.max(280, start.width * scale));
-  const height = Math.min(10000, Math.max(180, start.height * scale));
+  const width = Math.min(10000, Math.max(minimum.width, start.width * scale));
+  const height = Math.min(
+    10000,
+    Math.max(minimum.height, start.height * scale),
+  );
   return {
     x: sides.left ? start.x + start.width - width : start.x,
     y: sides.top ? start.y + start.height - height : start.y,

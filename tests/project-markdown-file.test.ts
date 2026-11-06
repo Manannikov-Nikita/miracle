@@ -6,6 +6,10 @@ import { undo } from "@codemirror/commands";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectTextEditor from "../src/client/components/ProjectTextEditor";
 import type { ProjectFileDraft } from "../src/client/project-file-drafts";
+import {
+  ProjectSync,
+  ProjectSyncContext,
+} from "../src/client/agents/ProjectSync";
 
 // CodeMirror is real; only Monaco's browser workers are replaced here.
 vi.mock("@monaco-editor/react", () => ({
@@ -47,9 +51,18 @@ describe("Markdown project files", () => {
   let props: ComponentProps<typeof ProjectTextEditor>;
   const changes = vi.fn();
   const saves = vi.fn();
+  let project: ProjectSync;
   async function render(change: Partial<typeof props> = {}) {
     props = { ...props, ...change };
-    await act(async () => root.render(createElement(ProjectTextEditor, props)));
+    await act(async () =>
+      root.render(
+        createElement(
+          ProjectSyncContext.Provider,
+          { value: project },
+          createElement(ProjectTextEditor, props),
+        ),
+      ),
+    );
   }
   function view() {
     return EditorView.findFromDOM(
@@ -67,6 +80,7 @@ describe("Markdown project files", () => {
       },
     );
     vi.clearAllMocks();
+    project = new ProjectSync();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -78,7 +92,13 @@ describe("Markdown project files", () => {
       onChange(value) {
         changes(value);
         props = { ...props, file: { ...props.file, content: value } };
-        root.render(createElement(ProjectTextEditor, props));
+        root.render(
+          createElement(
+            ProjectSyncContext.Provider,
+            { value: project },
+            createElement(ProjectTextEditor, props),
+          ),
+        );
       },
     };
   });
@@ -102,6 +122,48 @@ describe("Markdown project files", () => {
       "Редактор файла docs/readme.md",
     );
     expect(changes).not.toHaveBeenCalled();
+  });
+  it("retains a Markdown draft while the agent locks its file and restores editing on release", async () => {
+    await render();
+    await act(async () =>
+      view().dispatch({ changes: { from: 2, to: 9, insert: "My draft" } }),
+    );
+    const draft = view().state.doc.toString();
+    await act(async () =>
+      project.receiveWorkSnapshot({
+        revision: 1,
+        locks: [
+          {
+            target: { kind: "file", id: props.file.path },
+            turnId: "turn",
+            chatId: "chat",
+            startedAt: "now",
+          },
+        ],
+      }),
+    );
+    expect(view().contentDOM.getAttribute("contenteditable")).toBe("false");
+    expect(container.querySelector(".agent-work-indicator")?.textContent).toBe(
+      "Агент работает",
+    );
+    expect(view().state.doc.toString()).toBe(draft);
+    await act(async () =>
+      view().contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "s",
+          code: "KeyS",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(saves).not.toHaveBeenCalled();
+    await act(async () =>
+      project.receiveWorkSnapshot({ revision: 2, locks: [] }),
+    );
+    expect(view().contentDOM.getAttribute("contenteditable")).toBe("true");
+    expect(view().state.doc.toString()).toBe(draft);
   });
 
   it("edits the Markdown source and saves the current draft with Ctrl+S", async () => {

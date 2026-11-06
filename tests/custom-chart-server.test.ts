@@ -107,8 +107,23 @@ it("preserves custom source through saves, mode switching, copy, conflict and de
   const saved = operations.patchBoard(created.id, input);
   expect(operations.patchBoard(created.id, input)).toEqual(saved);
   expect(saved.document.nodes[0].data.customChart).toEqual(spec);
+  // Repeating an already-applied value is compatible with independent writers.
+  expect(
+    operations.patchBoard(created.id, { ...input, mutationId: randomUUID() })
+      .document,
+  ).toEqual(saved.document);
   expect(() =>
-    operations.patchBoard(created.id, { ...input, mutationId: randomUUID() }),
+    operations.patchBoard(created.id, {
+      ...input,
+      mutationId: randomUUID(),
+      operations: [
+        {
+          type: "update_node",
+          id: "chart",
+          patch: { data: { title: "Competing edit" } },
+        },
+      ],
+    }),
   ).toThrow(/измен/);
   const copy = operations.createBoard({
     name: "Copy",

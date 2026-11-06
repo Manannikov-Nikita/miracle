@@ -205,7 +205,7 @@ describe("personal board drafts and revisions", () => {
     ).toContain("recoverable edit");
     expect(boards[0].document.nodes[0].data.text).toBe("server first");
   });
-  it("accepts a clean agent board update once and exposes it as one undo step", async () => {
+  it("accepts a clean agent board update without adding it to personal undo", async () => {
     await open();
     const external = {
       ...boards[0],
@@ -217,9 +217,9 @@ describe("personal board drafts and revisions", () => {
       project.emit({ id: 1, type: "board.updated", data: external });
     });
     expect(store.board?.document.nodes[0].data.text).toBe("agent note");
-    expect(store.canUndo).toBe(true);
+    expect(store.canUndo).toBe(false);
     await act(async () => store.undo());
-    expect(store.board?.document.nodes[0].data.text).toBe("server first");
+    expect(store.board?.document.nodes[0].data.text).toBe("agent note");
     expect(store.canUndo).toBe(false);
     expect(store.board?.revision).toBe(4);
   });
@@ -333,7 +333,7 @@ describe("personal board drafts and revisions", () => {
     expect(store.board?.revision).toBe(4);
     expect(changes).toEqual([]);
     await act(async () => store.undo());
-    expect(store.board?.document.nodes[0].data.text).toBe("server first");
+    expect(store.board?.document.nodes[0].data.text).toBe("agent block");
   });
   it("migrates an old viewport-only draft without treating its stale revision as a conflict", async () => {
     localStorage.setItem(

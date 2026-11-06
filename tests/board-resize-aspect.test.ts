@@ -10,6 +10,17 @@ const corners: ResizeSides[] = [
   { right: true, bottom: true },
 ];
 describe("proportional corner resize", () => {
+  it("keeps small shape proportions with their own resize minimum", () => {
+    const shape = { x: 20, y: 30, width: 120, height: 80 };
+    expect(
+      preserveResizeAspect(
+        { ...shape, width: 30, height: 20 },
+        shape,
+        corners[3],
+        { width: 40, height: 40 },
+      ),
+    ).toEqual({ ...shape, width: 60, height: 40 });
+  });
   it("accepts the direction metadata emitted by real XYFlow movement callbacks", () => {
     const raw = { ...start, width: 900, height: 450, direction: [1, 1] };
     expect(preserveResizeAspect(raw, start, corners[3])).toEqual({

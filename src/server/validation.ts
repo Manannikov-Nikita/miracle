@@ -7,6 +7,8 @@ export {
   boardEdgeAppearanceSchema,
   boardEdgePointSchema,
   boardDocumentSchema,
+  boardKindSchema,
+  presentationSlideSchema,
 } from "../shared/board-schema.js";
 export const connectionSchema = z
   .object({

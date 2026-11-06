@@ -395,6 +395,21 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.agent-mention-section {
+  padding: 8px;
+  color: var(--agent-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.agent-file-options [role="option"] > small {
+  margin-left: auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--agent-muted);
+}
 .agent-file-picker p,
 .agent-file-picker-error {
   margin: 0;

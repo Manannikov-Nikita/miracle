@@ -1,11 +1,14 @@
 import { useLayoutEffect, useRef } from "react";
 import type { BoardNode, ResultSet } from "../../shared/types";
-import { Code, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Code, X } from "@phosphor-icons/react";
 import { ChartSettings } from "./ResultView";
 import { defaultChart } from "./model";
 import TableSettings from "./TableSettings";
 import { createTableSpec } from "./tableModel";
 import CustomChartDetails from "./CustomChartDetails";
+import MarkdownEditor from "./MarkdownEditor";
+import ShapeSettings from "./ShapeSettings";
+import TextBlockSettings from "./TextBlockSettings";
 export default function Inspector({
   boardId,
   node,
@@ -14,6 +17,10 @@ export default function Inspector({
   change,
   close,
   openSource,
+  presentation = false,
+  autoFocus = true,
+  refresh,
+  refreshing = false,
 }: {
   boardId?: string;
   node: BoardNode;
@@ -22,13 +29,17 @@ export default function Inspector({
   change: (node: BoardNode) => void;
   close: () => void;
   openSource: () => void;
+  presentation?: boolean;
+  autoFocus?: boolean;
+  refresh?: () => void;
+  refreshing?: boolean;
 }) {
   const firstField = useRef<HTMLInputElement>(null);
   const panel = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     const trigger = document.activeElement as HTMLElement | null;
     const element = panel.current;
-    firstField.current?.focus({ preventScroll: true });
+    if (autoFocus) firstField.current?.focus({ preventScroll: true });
     return () => {
       if (element?.contains(document.activeElement) && trigger?.isConnected)
         trigger.focus({ preventScroll: true });
@@ -63,8 +74,74 @@ export default function Inspector({
             }
           />
         </label>
+        {node.data.kind === "shape" && (
+          <ShapeSettings
+            key={node.id}
+            shape={node.data.shape ?? { type: "rectangle" }}
+            text={node.data.text ?? ""}
+            disabled={!editable}
+            onChange={(patch) => {
+              if (editable)
+                change({ ...node, data: { ...node.data, ...patch } });
+            }}
+          />
+        )}
+        {node.data.kind === "text" && (
+          <TextBlockSettings
+            key={node.id}
+            textStyle={node.data.textStyle}
+            text={node.data.text ?? ""}
+            disabled={!editable}
+            onChange={(patch) => {
+              if (editable)
+                change({ ...node, data: { ...node.data, ...patch } });
+            }}
+          />
+        )}
+        {presentation && node.data.kind === "note" && (
+          <label>
+            Текст заметки
+            <textarea
+              className="board-inspector-content-editor"
+              aria-label="Текст заметки"
+              maxLength={200000}
+              value={node.data.text ?? ""}
+              readOnly={!editable}
+              onChange={(event) =>
+                change({
+                  ...node,
+                  data: { ...node.data, text: event.target.value },
+                })
+              }
+            />
+          </label>
+        )}
+        {presentation && node.data.kind === "markdown" && (
+          <div className="board-inspector-content-editor">
+            <MarkdownEditor
+              key={node.id}
+              ariaLabel="Текст Markdown"
+              value={node.data.text ?? ""}
+              readOnly={!editable}
+              onChange={(text) =>
+                change({ ...node, data: { ...node.data, text } })
+              }
+            />
+          </div>
+        )}
         {node.data.kind === "result" && (
           <>
+            {presentation && node.data.source && refresh && (
+              <button
+                className="board-open-source"
+                aria-label="Обновить снимок"
+                disabled={!editable || refreshing}
+                onClick={refresh}
+              >
+                <ArrowsClockwise size={16} aria-hidden="true" />
+                {refreshing ? "Обновление…" : "Обновить снимок"}
+              </button>
+            )}
             <div className="board-view-tabs">
               <button
                 disabled={!editable}

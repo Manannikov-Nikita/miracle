@@ -65,27 +65,9 @@
 .project-saved-heading > span {
   margin-left: auto;
 }
-.project-tree-heading {
+.project-tree-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 10px 8px 4px 13px;
-}
-.project-root-label {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  color: var(--text-quiet);
-  font-size: 12px;
-  font-weight: 500;
-}
-.project-root-label:hover,
-.project-root-label:focus-visible {
-  color: var(--text);
-}
-.project-tree-heading .icon-button {
-  width: 26px;
-  height: 26px;
 }
 .project-create-file {
   padding: 3px 7px 3px 30px;

@@ -20,11 +20,13 @@ function Chart({
   spec: savedSpec,
   table,
   visibleColumns,
+  presentationBackground,
 }: {
   result: ResultSet;
   spec?: ChartSpec;
   table?: TableSpec;
   visibleColumns?: string[];
+  presentationBackground?: string;
 }) {
   const { data, error, preparationError, retry } = useChartTableData(
     result,
@@ -40,11 +42,18 @@ function Chart({
     if (!data || !data.rows.length) return null;
     try {
       const series = tableChartSeries(data, spec);
-      return { option: chartOptions(data.columns, spec, series) };
+      return {
+        option: chartOptions(
+          data.columns,
+          spec,
+          series,
+          presentationBackground,
+        ),
+      };
     } catch (e) {
       return { error: (e as Error).message };
     }
-  }, [data, spec, preparationError]);
+  }, [data, spec, preparationError, presentationBackground]);
   if (error || prepared?.error)
     return (
       <ErrorBox
@@ -368,6 +377,8 @@ export default function ResultView({
   visibleColumns,
   table,
   onMetadata,
+  reportChartStatus,
+  presentationBackground,
   onTableChange,
 }: {
   boardId?: string;
@@ -378,6 +389,8 @@ export default function ResultView({
   customChart?: CustomChartSpec;
   visibleColumns?: string[];
   table?: TableSpec;
+  reportChartStatus?: boolean;
+  presentationBackground?: string;
   onMetadata?: (result: ResultSet) => void;
   onTableChange?: (table: TableSpec) => void;
 }) {
@@ -431,6 +444,7 @@ export default function ResultView({
         spec={customChart}
         table={table}
         visibleColumns={visibleColumns}
+        reportStatus={reportChartStatus}
         onShowTable={() => setShowCustomTable(true)}
       />
     );
@@ -457,6 +471,7 @@ export default function ResultView({
       spec={chart}
       table={table}
       visibleColumns={visibleColumns}
+      presentationBackground={presentationBackground}
     />
   ) : (
     <TableView

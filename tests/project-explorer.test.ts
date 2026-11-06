@@ -12,11 +12,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import * as files from "../src/server/project-files";
 import { registerProjectRoutes } from "../src/server/project-routes";
-import { problem, type ProjectStore } from "../src/server/project-store";
+import { problem, ProjectStore } from "../src/server/project-store";
+import { Database, migrate } from "../src/server/db";
+import { SecretBox } from "../src/server/secrets";
 
 let root: string, project: string, dataDir: string;
 beforeEach(() => {
@@ -27,6 +30,20 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const context = () => ({ projectRoot: project, dataDir });
+function routeStore(app: ReturnType<typeof Fastify>) {
+  const db = new Database(dataDir);
+  migrate(db, () => {});
+  const store = new ProjectStore(db, new SecretBox(Buffer.alloc(32, 1)), {
+    ...context(),
+    workspaceId: randomUUID(),
+    instanceId: randomUUID(),
+  });
+  app.addHook("onClose", async () => {
+    store.close();
+    db.close();
+  });
+  return store;
+}
 const file = (name: string, content: string | Buffer = "hello") => {
   const path = join(project, name);
   mkdirSync(join(path, ".."), { recursive: true });
@@ -135,14 +152,10 @@ it("rejects invalid names and keeps creation inside accessible project directori
 it("requires authentication to create files and returns a reusable file document", async () => {
   mkdirSync(join(project, "docs"));
   const app = Fastify();
-  registerProjectRoutes(
-    app,
-    { context: context() } as ProjectStore,
-    (request) => {
-      if (request.headers["x-test-session"] !== "allowed")
-        throw problem(401, "Session required");
-    },
-  );
+  registerProjectRoutes(app, routeStore(app), (request) => {
+    if (request.headers["x-test-session"] !== "allowed")
+      throw problem(401, "Session required");
+  });
   const request = {
     method: "POST" as const,
     url: "/api/project/file",
@@ -375,14 +388,10 @@ it("exposes authenticated listing, read and revision-checked save routes without
   const path = file("notes.txt", "before");
   file("blob.bin", Buffer.from([0, 1]));
   const app = Fastify();
-  registerProjectRoutes(
-    app,
-    { context: context() } as ProjectStore,
-    (request) => {
-      if (request.headers["x-test-session"] !== "allowed")
-        throw problem(401, "Session required");
-    },
-  );
+  registerProjectRoutes(app, routeStore(app), (request) => {
+    if (request.headers["x-test-session"] !== "allowed")
+      throw problem(401, "Session required");
+  });
   const headers = { "x-test-session": "allowed" };
   try {
     for (const url of ["/api/project/tree", "/api/project/file?path=notes.txt"])
