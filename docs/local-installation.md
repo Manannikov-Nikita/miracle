@@ -258,7 +258,7 @@ miracle update
 Скачайте `.tar.gz`, соседний `.sha256` и `install.sh` из одного релиза. Для локального кандидата используйте эти же три файла из каталога сборки. Например, для macOS Apple Silicon:
 
 ```sh
-MIRACLE_ARCHIVE="$PWD/miracle-0.6.0-darwin-arm64.tar.gz" sh ./install.sh
+MIRACLE_ARCHIVE="$PWD/miracle-0.7.0-darwin-arm64.tar.gz" sh ./install.sh
 ```
 
 SHA-256 проверяется до запуска установщика из архива. `MIRACLE_INSTALL_ROOT` и `MIRACLE_BIN_DIR` задают каталоги установки и launcher; сохраняйте их при последующих установках. Установщик и runtime входят в архив/комплект, системный Node.js не нужен.
