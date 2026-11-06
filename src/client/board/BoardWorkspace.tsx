@@ -145,7 +145,7 @@ function Workspace({
   );
   const workspaceRef = useRef<HTMLElement>(null);
   const store = useBoard(workspaceId, notify);
-  const { board, editable, change } = store;
+  const { board, editable, change, flushDraft } = store;
   // Choose the camera once per board; remote content updates must not move it.
   const initialViewport = useMemo(
     () =>
@@ -349,6 +349,7 @@ function Workspace({
       shiftPressed.current = false;
       snapCancelled.current = true;
       cancelDuplicateDrag();
+      flushDraft();
       setGuides([]);
     };
     const keyDown = (event: KeyboardEvent) => {
@@ -373,7 +374,7 @@ function Workspace({
       window.removeEventListener("pointercancel", cancel, true);
       window.removeEventListener("blur", cancel);
     };
-  }, [cancelDuplicateDrag]);
+  }, [cancelDuplicateDrag, flushDraft]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -911,7 +912,10 @@ function Workspace({
           (!e.target || !removed.has(e.target)),
       ),
     };
-    change(document, !gesture.current);
+    change(document, !gesture.current, {
+      deferDraft: Boolean(gesture.current) && !completed,
+    });
+    if (completed) flushDraft();
     if (completed && gesture.current) {
       if (JSON.stringify(gesture.current) !== JSON.stringify(document))
         store.recordHistory(gesture.current);
@@ -1064,21 +1068,18 @@ function Workspace({
       setDialogBusy(false);
     }
   };
-  const actionContext = {
-    boardId: board?.id ?? "",
-    editable,
-    resizeStart,
-    resize,
-    update,
-    remove,
-    refresh: (id: string) => void refresh(id),
-    openSource: (id: string) => {
+  const refreshNode = useCallback((id: string) => void refresh(id), [refresh]);
+  const openNodeSource = useCallback(
+    (id: string) => {
       const node = store.current.current?.document.nodes.find(
         (n) => n.id === id,
       );
       if (node?.data.source) onOpenSource(node.data.source, node.data.title);
     },
-    inspect: (id: string) => {
+    [store.current, onOpenSource],
+  );
+  const inspectNode = useCallback(
+    (id: string) => {
       const node = store.current.current?.document.nodes.find(
         (n) => n.id === id,
       );
@@ -1087,22 +1088,54 @@ function Workspace({
       selectNodes(new Set([id]));
       setInspecting(true);
     },
-    metadata: useCallback(
-      (result: ResultSet) =>
-        setMetadata((values) =>
-          values[result.id] ? values : { ...values, [result.id]: result },
-        ),
-      [],
-    ),
-    busy: {
+    [store.current],
+  );
+  const recordMetadata = useCallback(
+    (result: ResultSet) =>
+      setMetadata((values) =>
+        values[result.id] ? values : { ...values, [result.id]: result },
+      ),
+    [],
+  );
+  const nodeBusy = useMemo(
+    () => ({
       ...busy,
       ...Object.fromEntries(
         pendingRefreshes
           .filter((pending) => pending.boardId === board?.id)
           .map((pending) => [pending.nodeId, true]),
       ),
-    },
-  };
+    }),
+    [busy, pendingRefreshes, board?.id],
+  );
+  const actionContext = useMemo(
+    () => ({
+      boardId: board?.id ?? "",
+      editable,
+      resizeStart,
+      resize,
+      update,
+      remove,
+      refresh: refreshNode,
+      openSource: openNodeSource,
+      inspect: inspectNode,
+      metadata: recordMetadata,
+      busy: nodeBusy,
+    }),
+    [
+      board?.id,
+      editable,
+      resizeStart,
+      resize,
+      update,
+      remove,
+      refreshNode,
+      openNodeSource,
+      inspectNode,
+      recordMetadata,
+      nodeBusy,
+    ],
+  );
   return (
     <section
       ref={workspaceRef}

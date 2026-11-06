@@ -1,5 +1,6 @@
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   type CSSProperties,
@@ -8,7 +9,8 @@ import {
   Handle,
   NodeResizer,
   Position,
-  useViewport,
+  useStore,
+  type ReactFlowState,
   type OnResizeStart,
   type OnResize,
   type OnResizeEnd,
@@ -63,13 +65,11 @@ export const BoardActions = createContext<{
   resize: () => {},
   busy: {},
 });
-export default function ArtifactNode({
-  id,
-  data,
-  selected,
-}: NodeProps<ArtifactFlowNode>) {
+const selectZoom = (state: ReactFlowState) => state.transform[2];
+
+function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const actions = useContext(BoardActions);
-  const { zoom } = useViewport();
+  const zoom = useStore(selectZoom);
   // Keep these handlers stable: XYFlow installs its raw resize calculation in
   // an effect keyed by the callback identities, including during the gesture.
   const resizeStart = useCallback<OnResizeStart>(
@@ -231,3 +231,13 @@ export default function ArtifactNode({
     </article>
   );
 }
+
+// Position, drag flags and measured dimensions belong to XYFlow's wrapper.
+// The card consumes only these props; resizer/zoom subscriptions remain live.
+export default memo(
+  ArtifactNode,
+  (previous, next) =>
+    previous.id === next.id &&
+    previous.data === next.data &&
+    previous.selected === next.selected,
+);
