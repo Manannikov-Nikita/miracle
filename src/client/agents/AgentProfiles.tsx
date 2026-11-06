@@ -49,6 +49,7 @@ export default function AgentProfiles({
     onBusyChange?.(true);
     setPending(kind);
     setError("");
+    if (kind === "save") setPreview("");
     try {
       await action();
     } catch (e) {
@@ -215,12 +216,16 @@ export default function AgentProfiles({
           </button>
         </div>
       )}
-      {savedProfile?.trusted && savedProfile.command === command && (
-        <p className="agent-profile-trusted">
-          <CheckCircle size={16} aria-hidden="true" /> Команда проверена,
-          профиль готов к работе
-        </p>
-      )}
+      {preview &&
+        !busy &&
+        !error &&
+        savedProfile?.trusted &&
+        savedProfile.command === command && (
+          <p className="agent-profile-trusted">
+            <CheckCircle size={16} aria-hidden="true" /> Команда проверена,
+            профиль готов к работе
+          </p>
+        )}
       <Dialog.Root
         open={deleting}
         onOpenChange={(open) => {

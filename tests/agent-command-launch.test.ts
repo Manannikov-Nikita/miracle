@@ -69,11 +69,22 @@ describe("custom command subprocess launch", () => {
           script,
           `
         import { appendFileSync } from 'node:fs';
+        import { createInterface } from 'node:readline';
         const args = process.argv.slice(2);
         appendFileSync(process.env.ARGV_LOG, JSON.stringify(args) + '\\n');
         if (args.includes('--version')) console.log('fixture-cli 1.0');
         else if (args.includes('--help')) console.log('--stdio --input-format --output-format --include-partial-messages --permission-prompt-tool --mcp-config --resume');
-        else console.log(JSON.stringify({type: 'ready', args}));
+        else if (args[0] === 'app-server') {
+          createInterface({input: process.stdin}).on('line', line => {
+            const request = JSON.parse(line);
+            if (request.method === 'initialize') console.log(JSON.stringify({id:request.id,result:{userAgent:'fixture/1.0'}}));
+            if (request.method === 'config/read') console.log(JSON.stringify({id:request.id,result:{config:{}}}));
+            if (request.method === 'fixture/ready') {
+              console.log(JSON.stringify({type:'ready',args}));
+              process.exit(0);
+            }
+          });
+        } else console.log(JSON.stringify({type: 'ready', args}));
       `,
         );
         const quote = (value: string) =>
@@ -94,6 +105,7 @@ describe("custom command subprocess launch", () => {
           (message) => messages.push(message),
           (error) => errors.push(error),
         );
+        if (provider === "codex") transport.send({ method: "fixture/ready" });
         expect((await transport.closed).code).toBe(0);
         expect(errors).toEqual([]);
         const calls = (await readFile(log, "utf8"))
@@ -119,6 +131,7 @@ describe("custom command subprocess launch", () => {
               ];
         expect(calls[1]).toEqual([...runtimeArgs, "--help"]);
         expect(calls[2]).toEqual(runtimeArgs);
+        if (provider === "codex") expect(calls[3]).toEqual(runtimeArgs);
         expect(messages).toEqual([{ type: "ready", args: runtimeArgs }]);
       } finally {
         await rm(directory, { recursive: true, force: true });

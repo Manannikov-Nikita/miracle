@@ -50,6 +50,15 @@ export function describeError(
     /\b(?:ClickHouse|Trino|Engine)\s+HTTP\b/i.test(text);
 
   if (
+    code === "AGENT_CONFIGURATION_INVALID" ||
+    /^Не удалось проверить конфигурацию Codex\./.test(message)
+  )
+    return result(
+      "Не удалось проверить настройки Codex.",
+      "Укажите совместимый CLI в команде профиля или исправьте настройку из подробностей ошибки. Версия CLI должна поддерживать параметры config.toml.",
+    );
+
+  if (
     /WORKSPACE_CHANGED|INSTANCE_CHANGED|рабочая область изменилась|экземпляр проекта изменился/i.test(
       text,
     )
