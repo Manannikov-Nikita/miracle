@@ -1,3 +1,5 @@
+import type { AgentEntityWork } from "../../shared/agent-work";
+import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import {
   useEffect,
   useId,
@@ -30,6 +32,7 @@ export type { BoardEdgeGeometryPatch } from "./edge-geometry";
 export type BoardEdgeViewData = {
   edge: BoardEdge;
   editable: boolean;
+  work?: AgentEntityWork;
   editing: boolean;
   gestureScope?: string;
   onEdit: () => void;
@@ -256,11 +259,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
       </defs>
       <g
         ref={edgeGroup}
-        className={
-          data.editable && !data.editing
-            ? "board-edge-draggable nodrag nopan"
-            : undefined
-        }
+        className={`${data.editable && !data.editing ? "board-edge-draggable nodrag nopan" : ""}${data.work ? " board-edge-agent-work" : ""}`}
         onPointerDown={(event) => gestures.begin("line", event)}
         onClickCapture={(event) => {
           if (gestures.consumeClick()) {
@@ -314,6 +313,18 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
         />
       </g>
       <EdgeLabelRenderer>
+        {data.work && (
+          <div
+            className="board-edge-agent-indicator"
+            style={{
+              left: x,
+              top: y - 24,
+              transform: `translate(-50%, -100%) scale(${1 / viewport.zoom})`,
+            }}
+          >
+            <AgentWorkIndicator work={data.work} />
+          </div>
+        )}
         <EdgeCaption
           data={data}
           x={x}

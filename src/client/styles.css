@@ -36,6 +36,32 @@
   background: var(--bg);
   color-scheme: dark;
 }
+.agent-work-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.agent-work-indicator.compact {
+  width: 18px;
+  justify-content: center;
+}
+.agent-work-indicator .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 * {
   box-sizing: border-box;
 }
@@ -401,6 +427,9 @@ svg {
   min-height: 0;
   overflow: hidden;
 }
+.pane-host[inert] {
+  visibility: hidden;
+}
 .resize-separator {
   position: relative;
   background: var(--border-subtle);
@@ -425,62 +454,82 @@ svg {
   outline: none;
 }
 /* Explorer */
+.explorer-panel {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
+  min-height: 0;
+  padding-right: 5px;
+}
+.explorer-panel-content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.explorer-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
 .explorer {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  width: 228px;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   background: var(--bg);
   border-right: 1px solid var(--border-subtle);
 }
-.explorer-heading {
-  height: 44px;
+.explorer-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 8px 0 13px;
-  border-bottom: 1px solid transparent;
+  gap: 4px;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 8px;
 }
-.explorer.explorer-drawer {
+.explorer-panel-drawer {
   position: absolute;
   left: var(--activity-bar-width);
   top: 0;
   bottom: 0;
   z-index: 40;
-  width: min(265px, calc(100vw - var(--activity-bar-width)));
   box-shadow: 12px 0 28px #0005;
 }
-.explorer-heading > strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-}
-.explorer-heading > div {
+.explorer-actions {
   display: flex;
+  align-items: center;
   flex-shrink: 0;
 }
-.explorer-heading .icon-button {
-  width: 28px;
-  height: 28px;
+.explorer-actions .icon-button {
+  width: 24px;
+  height: 24px;
 }
-.explorer-heading .icon-button[aria-pressed="true"] {
+.explorer-actions .icon-button[aria-pressed="true"] {
   color: var(--accent-hover);
   background: var(--hover);
 }
 .explorer-search {
   display: flex;
   align-items: center;
-  margin: 12px 10px 5px;
+  flex: 1;
+  min-width: 0;
   color: var(--text-quiet);
   border: 1px solid var(--border-subtle);
   background: var(--control-bg);
   border-radius: 8px;
   padding: 0 7px;
+}
+.explorer-search > svg,
+.explorer-search .icon-button {
+  flex-shrink: 0;
 }
 .explorer-search input {
   width: 100%;
@@ -871,6 +920,35 @@ svg {
   background: transparent;
   border-bottom-color: var(--accent);
 }
+.query-tab.agent-work-active {
+  background-image: linear-gradient(
+    110deg,
+    #8861c64d 0%,
+    #6284d659 35%,
+    #55a9b54d 65%,
+    #9b72cc4d 100%
+  );
+  background-size: 300% 100%;
+  animation: agent-tab-gradient 6s ease-in-out infinite alternate;
+}
+.query-tab.agent-work-active > button[role="tab"],
+.query-tab.agent-work-active .agent-work-indicator {
+  color: var(--text);
+}
+@keyframes agent-tab-gradient {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 100% 50%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .query-tab.agent-work-active {
+    animation: none;
+    background-position: 50% 50%;
+  }
+}
 .query-tab > button[role="tab"] {
   display: flex;
   align-items: center;
@@ -916,6 +994,19 @@ svg {
   gap: 8px;
   border-bottom: 0;
   background: var(--bg);
+}
+.sql-toolbar-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.sql-toolbar-context > .sql-connection {
+  flex: 0 1 200px;
+}
+.sql-toolbar-context > .project-file-path {
+  flex: 0 1 auto;
 }
 .sql-connection {
   display: flex;
@@ -1400,6 +1491,15 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+.canvas-transfer-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 16px;
+}
+.canvas-transfer-fields details > label {
+  margin: 14px 0;
 }
 .modal form .modal-actions {
   margin-top: 4px;
@@ -1893,9 +1993,6 @@ kbd {
   background: var(--menu-border);
 }
 @media (max-width: 1250px) {
-  .explorer {
-    width: 188px;
-  }
   .sql-toolbar .shortcut {
     display: none;
   }

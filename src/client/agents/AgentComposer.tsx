@@ -19,6 +19,7 @@ import AgentHistory from "./AgentHistory";
 import AgentFileMentions, { AgentContextChips } from "./AgentFileMentions";
 import type { DraftAgentImage } from "./useAgentImageDrafts";
 import { useAgentPortalContainer } from "./useAgentPortalContainer";
+import type { OpenEditorTab } from "./ProjectSync";
 
 export interface ComposerProps {
   state: AgentChatState;
@@ -30,6 +31,9 @@ export interface ComposerProps {
   onSettings: () => void;
   filePaths?: string[];
   onFilesChange?: (paths: string[]) => void;
+  editorTabs?: OpenEditorTab[];
+  editorTarget?: OpenEditorTab;
+  onEditorTargetChange?: (tab: OpenEditorTab | undefined) => void;
   boardNodes?: { id: string; title: string }[];
   onDismissBoardNode?: (id: string) => void;
   images?: DraftAgentImage[];
@@ -47,6 +51,9 @@ export default function AgentComposer({
   onSettings,
   filePaths = [],
   onFilesChange,
+  editorTabs = [],
+  editorTarget,
+  onEditorTargetChange,
   boardNodes = [],
   onDismissBoardNode,
   images = [],
@@ -128,6 +135,8 @@ export default function AgentComposer({
         <AgentContextChips
           filePaths={filePaths}
           onFilesChange={onFilesChange}
+          editorTarget={editorTarget}
+          onEditorTargetChange={onEditorTargetChange}
           boardNodes={boardNodes}
           onDismissBoardNode={onDismissBoardNode}
         />
@@ -163,6 +172,9 @@ export default function AgentComposer({
           onDraftChange={onDraftChange}
           filePaths={filePaths}
           onFilesChange={onFilesChange}
+          editorTabs={editorTabs}
+          editorTarget={editorTarget}
+          onEditorTargetChange={onEditorTargetChange}
           onSubmit={submit}
         />
         <div className="agent-composer-toolbar">

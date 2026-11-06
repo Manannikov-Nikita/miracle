@@ -16,6 +16,15 @@ const block = (id: string, x: number): BoardNode => ({
 });
 
 describe("controlled board node identity", () => {
+  it("drags a shape by its visible content without requiring an artifact header", () => {
+    const shape: BoardNode = {
+      ...block("shape", 10),
+      data: { title: "Фигура", kind: "shape", shape: { type: "ellipse" } },
+    };
+    expect(toArtifactFlowNode(shape, null).dragHandle).toBe(
+      ".board-shape-content",
+    );
+  });
   it("only replaces the moving node through a controlled flow update", () => {
     const nodes = [block("moving", 20), block("stationary", 600)];
     const document: BoardDocument = { schemaVersion: 1, nodes, edges: [] };

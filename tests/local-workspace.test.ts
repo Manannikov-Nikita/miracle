@@ -85,7 +85,15 @@ it("opens directly, persists workspace and JSON content across restart, and reje
     },
   };
   expect((await app.inject(patch)).statusCode).toBe(200);
-  expect((await app.inject(patch)).statusCode).toBe(409);
+  expect((await app.inject(patch)).statusCode).toBe(200);
+  expect(
+    (
+      await app.inject({
+        ...patch,
+        payload: { ...patch.payload, name: "Competing title" },
+      })
+    ).statusCode,
+  ).toBe(409);
 });
 it("validates Host, every supplied Origin and Fetch Metadata before exposing data; requires session and CSRF", async () => {
   const app = await open();

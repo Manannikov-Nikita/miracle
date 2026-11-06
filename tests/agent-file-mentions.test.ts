@@ -6,11 +6,13 @@ import AgentComposer from "../src/client/agents/AgentComposer";
 import { AgentContextChips } from "../src/client/agents/AgentFileMentions";
 import { api } from "../src/client/api";
 import type { AgentChatState } from "../src/client/agents/useAgentChat";
+import type { OpenEditorTab } from "../src/client/agents/ProjectSync";
 
 vi.mock("../src/client/api", () => ({ api: vi.fn() }));
 let root: Root, host: HTMLDivElement;
 const send = vi.fn(async () => {});
 const dismissBoard = vi.fn();
+let editorTabs: OpenEditorTab[] = [];
 const chat = {
   selected: "chat",
   profiles: [{ id: "profile", name: "Codex", trusted: true }],
@@ -21,6 +23,7 @@ const chat = {
   setSelected: vi.fn(),
 } as unknown as AgentChatState;
 beforeEach(() => {
+  editorTabs = [];
   vi.useFakeTimers();
   vi.clearAllMocks();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -47,6 +50,7 @@ function Harness({
 }) {
   const [draft, setDraft] = useState(initial);
   const [selected, setSelected] = useState(files);
+  const [editorTarget, setEditorTarget] = useState<OpenEditorTab>();
   return createElement(AgentComposer, {
     state: chat,
     selectedProfile: "profile",
@@ -57,6 +61,9 @@ function Harness({
     onSettings: vi.fn(),
     filePaths: selected,
     onFilesChange: setSelected,
+    editorTabs,
+    editorTarget,
+    onEditorTargetChange: setEditorTarget,
     boardNodes: [{ id: "chart", title: "Поездки по дням" }],
     onDismissBoardNode: dismissBoard,
   });
@@ -96,6 +103,63 @@ async function key(key: string, extra: KeyboardEventInit = {}) {
 const options = () => [
   ...host.querySelectorAll<HTMLButtonElement>('[role="option"]'),
 ];
+
+it("shows open tabs immediately, filters by title and selects an exact SQL target", async () => {
+  editorTabs = [
+    { id: "editor-a", name: "Выручка.sql" },
+    { id: "editor-b", name: "Заказы.sql" },
+  ];
+  await render();
+  await input("Поправь @выруч");
+  expect(options().map((option) => option.textContent)).toEqual([
+    expect.stringContaining("Выручка.sql"),
+  ]);
+  await key("Enter");
+  expect(send).not.toHaveBeenCalled();
+  expect(textarea().value).toBe("Поправь ");
+  expect(
+    host.querySelector('[aria-label="Убрать запрос Выручка.sql"]'),
+  ).not.toBeNull();
+  await input("Поправь @заказ");
+  await key("Tab");
+  expect(
+    host.querySelector('[aria-label="Убрать запрос Выручка.sql"]'),
+  ).toBeNull();
+  expect(
+    host.querySelector('[aria-label="Убрать запрос Заказы.sql"]'),
+  ).not.toBeNull();
+});
+
+it("mentions an open native file by path and does not duplicate it among project results", async () => {
+  editorTabs = [
+    { id: "file-tab", name: "monthly.sql", path: "sql/monthly.sql" },
+  ];
+  await render();
+  await input("Посмотри @");
+  await results();
+  expect(
+    options().filter((option) => option.title === "sql/monthly.sql"),
+  ).toHaveLength(1);
+  await act(async () => options()[0].click());
+  expect(
+    host.querySelector('[aria-label="Убрать файл sql/monthly.sql"]'),
+  ).not.toBeNull();
+  expect(host.querySelector('[aria-label^="Убрать запрос"]')).toBeNull();
+});
+
+it("keeps editor targets available when project file search fails or its attachment limit is reached", async () => {
+  editorTabs = [{ id: "editor-a", name: "Query.sql" }];
+  vi.mocked(api).mockRejectedValue(new Error("Search unavailable"));
+  await render(
+    "",
+    Array.from({ length: 20 }, (_, i) => `file-${i}`),
+  );
+  await input("Измени @");
+  await key("Enter");
+  expect(
+    host.querySelector('[aria-label="Убрать запрос Query.sql"]'),
+  ).not.toBeNull();
+});
 
 it("selects a project file at the caret without replacing surrounding text, then removes its chip", async () => {
   await render();

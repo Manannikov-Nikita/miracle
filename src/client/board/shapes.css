@@ -1,0 +1,90 @@
+.board-artifact.board-artifact-shape,
+.board-artifact.board-artifact-shape:hover,
+.board-artifact.board-artifact-shape:focus-within {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.board-artifact-shape > .board-node-body {
+  border-radius: 0;
+}
+.board-shape-content {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+.board-shape-content:active {
+  cursor: grabbing;
+}
+.board-shape-outline,
+.board-shape-text-clip {
+  position: absolute;
+  pointer-events: none;
+}
+.board-shape-outline {
+  overflow: visible;
+}
+.board-shape-text-clip {
+  inset: 0;
+  overflow: hidden;
+}
+.board-shape-text-area {
+  position: absolute;
+  inset: 5%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  line-height: 1.2;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.board-shape-ellipse .board-shape-text-area {
+  inset: 15%;
+}
+.board-shape-triangle .board-shape-text-area {
+  inset: 36% 25% 12%;
+}
+.board-shape-diamond .board-shape-text-area {
+  inset: 24%;
+}
+.board-shape-hexagon .board-shape-text-area {
+  inset: 12% 22%;
+}
+.board-shape-arrow .board-shape-text-area {
+  inset: 35% 32% 35% 8%;
+}
+.board-shape-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  user-select: none;
+}
+.board-shape-text-area .board-shape-editor {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 100%;
+  min-height: 1.2em;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: inherit;
+  line-height: inherit;
+  resize: none;
+  overflow-wrap: anywhere;
+  cursor: text;
+  pointer-events: auto;
+  user-select: text;
+}
+.board-shape-editing {
+  cursor: text;
+}

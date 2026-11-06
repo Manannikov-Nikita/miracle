@@ -45,8 +45,17 @@ vi.mock("../src/client/components/SqlWorkspace", async () => {
 vi.mock("../src/client/board/BoardWorkspace", async () => {
   const { createElement } = await import("react");
   return {
-    default: () =>
-      createElement("section", { "data-testid": "board-content" }, "Board"),
+    default: ({
+      kind = "board",
+      active,
+    }: {
+      kind?: string;
+      active?: boolean;
+    }) =>
+      createElement("section", {
+        "data-testid": `${kind}-content`,
+        "data-active": active,
+      }),
   };
 });
 
@@ -95,6 +104,7 @@ describe("independent workspace panes on desktop", () => {
     host.remove();
     localStorage.clear();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -105,7 +115,7 @@ describe("independent workspace panes on desktop", () => {
     expect(found, label).not.toBeNull();
     return found!;
   }
-  function pane(name: "sql" | "board") {
+  function pane(name: "sql" | "board" | "presentation") {
     return host.querySelector<HTMLElement>(`[data-testid="${name}-content"]`)!;
   }
   function expectPanes(sql: boolean, board: boolean) {
@@ -137,6 +147,133 @@ describe("independent workspace panes on desktop", () => {
     await act(async () => button(label).click());
     await settle();
   }
+
+  it("replaces the unfocused pane when opening a third and preserves all mounted workspaces", async () => {
+    await render("split");
+    expect(button("Презентация").getAttribute("aria-pressed")).toBe("false");
+    const sql = pane("sql");
+    const board = pane("board");
+    const presentation = pane("presentation");
+
+    await act(async () => {
+      board.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+    await click("Презентация");
+    expectPanes(false, true);
+    expect(button("Презентация").getAttribute("aria-pressed")).toBe("true");
+    expect(board.dataset.active).toBe("true");
+    expect(presentation.dataset.active).toBe("false");
+
+    await act(async () => {
+      presentation.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true }),
+      );
+    });
+    await click("Редактор");
+    expectPanes(true, false);
+    expect(presentation.dataset.active).toBe("true");
+    expect(board.dataset.active).toBe("false");
+    expect(presentation.closest(".pane-host")?.hasAttribute("inert")).toBe(
+      false,
+    );
+    expect(
+      sql.compareDocumentPosition(board) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      board.compareDocumentPosition(presentation) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await click("Редактор");
+    expect(button("Доска").getAttribute("aria-pressed")).toBe("false");
+    expect(button("Презентация").getAttribute("aria-pressed")).toBe("true");
+    expect(presentation.closest("[hidden]")).toBeNull();
+    await click("Презентация");
+    expect(presentation.closest(".pane-host")?.hasAttribute("inert")).toBe(
+      true,
+    );
+    expect(presentation.closest("[hidden]")).not.toBeNull();
+    await click("Доска");
+    expect(pane("sql")).toBe(sql);
+    expect(pane("board")).toBe(board);
+    expect(pane("presentation")).toBe(presentation);
+  });
+
+  it("restores distinct split sizes for each pair and reads the legacy editor and board size", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.hasAttribute("data-panel") &&
+          !this.hasAttribute("data-disabled")
+          ? 500
+          : 0;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return (
+          Array.from(this.parentElement?.children ?? []).indexOf(this) * 100
+        );
+      },
+    );
+    const layoutKey = "miracle:workspace-layout:pane-workspace";
+    localStorage.setItem(layoutKey, JSON.stringify({ sql: 42, board: 58 }));
+    const separator = () =>
+      host.querySelector<HTMLElement>(".main-split [role=separator]")!;
+    const size = () => Number(separator().getAttribute("aria-valuenow"));
+    const resize = () =>
+      act(async () => {
+        separator().dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+        );
+      });
+
+    await render("split");
+    expect(size()).toBe(42);
+    await act(async () => {
+      pane("sql").dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true }),
+      );
+    });
+    await click("Презентация");
+    expect(size()).toBe(45);
+    await resize();
+    expect(size()).toBe(50);
+    await act(async () => {
+      pane("presentation").dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true }),
+      );
+    });
+    await click("Доска");
+    expect(size()).toBe(50);
+    await resize();
+    expect(size()).toBe(55);
+
+    await click("Редактор");
+    expect(size()).toBe(50);
+    await act(async () => {
+      pane("sql").dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true }),
+      );
+    });
+    await click("Доска");
+    expect(size()).toBe(42);
+    expect(JSON.parse(localStorage.getItem(layoutKey)!)).toEqual({
+      sql: 42,
+      board: 58,
+    });
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(createElement(App)));
+    await settle();
+    await act(async () => {
+      pane("board").dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true }),
+      );
+    });
+    await click("Презентация");
+    expect(size()).toBe(55);
+  });
 
   it("toggles only the requested pane and retains mounted editor state", async () => {
     await render("board");
@@ -205,5 +342,115 @@ describe("independent workspace panes on desktop", () => {
     await act(async () => collapse.click());
     await settle();
     expectPanes(false, true);
+  });
+
+  it("keeps the resized explorer width across tabs, hiding and reload without remounting the editor", async () => {
+    vi.stubGlobal("innerWidth", 1440);
+    await render("sql");
+    const editor = pane("sql");
+    const separator = () =>
+      host.querySelector<HTMLElement>('[aria-label="Ширина обозревателя"]');
+    expect(separator()).not.toBeNull();
+    const initialWidth = Number(separator()!.getAttribute("aria-valuenow"));
+    await act(async () => {
+      separator()!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+    });
+    const resizedWidth = Number(separator()!.getAttribute("aria-valuenow"));
+    expect(resizedWidth).toBeGreaterThan(initialWidth);
+    await act(async () => {
+      separator()!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "End", bubbles: true }),
+      );
+    });
+    const expandedWidth = Number(separator()!.getAttribute("aria-valuenow"));
+    await click("Доска");
+    expect(
+      Number(separator()!.getAttribute("aria-valuenow")),
+    ).toBeLessThanOrEqual(1440 - 340 - 400 - 5);
+    await click("Доска");
+    expect(Number(separator()!.getAttribute("aria-valuenow"))).toBe(
+      expandedWidth,
+    );
+    await act(async () => {
+      window.dispatchEvent(new Event("miracle:reset-layout"));
+    });
+    await act(async () => {
+      separator()!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      );
+    });
+    for (const tab of [
+      "Проводник проекта",
+      "История запросов",
+      "Источники данных",
+    ]) {
+      await click(tab);
+      expect(Number(separator()!.getAttribute("aria-valuenow"))).toBe(
+        resizedWidth,
+      );
+      expect(pane("sql")).toBe(editor);
+    }
+    await click("Источники данных");
+    expect(separator()).toBeNull();
+    await click("Источники данных");
+    expect(Number(separator()!.getAttribute("aria-valuenow"))).toBe(
+      resizedWidth,
+    );
+    expect(pane("sql")).toBe(editor);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(createElement(App)));
+    await settle();
+    expect(Number(separator()!.getAttribute("aria-valuenow"))).toBe(
+      resizedWidth,
+    );
+    await act(async () =>
+      window.dispatchEvent(new Event("miracle:reset-layout")),
+    );
+    expect(Number(separator()!.getAttribute("aria-valuenow"))).toBe(
+      initialWidth,
+    );
+  });
+
+  it("bounds pointer resizing to the available space and retains the preference when the window shrinks", async () => {
+    vi.stubGlobal("innerWidth", 1440);
+    await render("sql");
+    const separator = host.querySelector<HTMLElement>(
+      '[aria-label="Ширина обозревателя"]',
+    );
+    expect(separator).not.toBeNull();
+    const handle = separator!;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    handle.hasPointerCapture = () => true;
+    const pointer = async (type: string, clientX: number) => {
+      await act(async () => {
+        const event = new MouseEvent(type, {
+          clientX,
+          button: 0,
+          bubbles: true,
+        });
+        Object.defineProperty(event, "pointerId", { value: 1 });
+        handle.dispatchEvent(event);
+      });
+    };
+    await pointer("pointerdown", 228);
+    await pointer("pointermove", 528);
+    await pointer("pointerup", 528);
+    expect(Number(handle.getAttribute("aria-valuenow"))).toBe(528);
+    vi.stubGlobal("innerWidth", 800);
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(Number(handle.getAttribute("aria-valuenow"))).toBeLessThan(528);
+    vi.stubGlobal("innerWidth", 1440);
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(Number(handle.getAttribute("aria-valuenow"))).toBe(528);
+    await pointer("pointerdown", 528);
+    await pointer("pointermove", -500);
+    await pointer("pointerup", -500);
+    expect(handle.getAttribute("aria-valuenow")).toBe(
+      handle.getAttribute("aria-valuemin"),
+    );
   });
 });

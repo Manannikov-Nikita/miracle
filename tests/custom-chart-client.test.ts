@@ -252,3 +252,26 @@ it("captures sentAt when creating a payload and preserves it across session retr
   expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true);
   stop();
 });
+
+it("renders a readonly chart from its snapshot without publishing diagnostics", async () => {
+  const requests: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      requests.push(path);
+      return Response.json({ columns: [], rows: [] });
+    }),
+  );
+  const element = host();
+  const stop = startCustomChartRun({
+    ...options(element),
+    reportStatus: false,
+  });
+  try {
+    await settle();
+    expect(element.querySelector("iframe")).not.toBeNull();
+    expect(requests).toEqual(["/api/result-sets/result/custom-chart"]);
+  } finally {
+    stop();
+  }
+});

@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { boardDocumentSchema } from "../../shared/board-schema";
-import { CUSTOM_CHART_LIMITS } from "../../shared/custom-charts";
+import {
+  PRESENTATION_WIDTH,
+  PRESENTATION_HEIGHT,
+} from "../../shared/presentation";
+import { validateCanvasInsertion } from "./presentation-model";
 import type { Board, BoardDocument } from "../../shared/types";
 
 export const BOARD_CLIPBOARD_MIME = "application/x-miracle-board+json";
@@ -13,10 +17,11 @@ const fragmentSchema = z
     copyId: z.uuid(),
     workspaceId: z.string().min(1).max(200),
     boardId: z.string().min(1).max(200),
+    slideId: z.string().min(1).max(200).optional(),
     document: boardDocumentSchema,
   })
   .strict();
-type BoardFragment = z.infer<typeof fragmentSchema>;
+export type BoardFragment = z.infer<typeof fragmentSchema>;
 type ClipboardData = Pick<DataTransfer, "getData" | "setData">;
 
 export function nativeBoardClipboardTarget(target: EventTarget | null) {
@@ -29,32 +34,43 @@ export function nativeBoardClipboardTarget(target: EventTarget | null) {
   );
 }
 
-export function copyBoardSelection(
-  clipboard: ClipboardData,
+export function createBoardFragment(
   board: Board,
   workspaceId: string,
   selected: ReadonlySet<string>,
-) {
-  const nodes = board.document.nodes.filter((node) => selected.has(node.id));
-  if (!nodes.length) return false;
+  slideId?: string,
+): BoardFragment | null {
+  const nodes = board.document.nodes
+    .filter((node) => node.slideId === slideId && selected.has(node.id))
+    .map(({ slideId: _, ...node }) => node);
+  if (!nodes.length) return null;
   const ids = new Set(nodes.map((node) => node.id));
-  const fragment: BoardFragment = {
+  return {
     version: 1,
     copyId: crypto.randomUUID(),
     workspaceId,
     boardId: board.id,
+    slideId,
     document: {
       schemaVersion: 1,
       nodes,
-      edges: board.document.edges.filter(
-        (edge) =>
-          edge.source &&
-          edge.target &&
-          ids.has(edge.source) &&
-          ids.has(edge.target),
-      ),
+      edges: board.document.edges
+        .filter(
+          (edge) =>
+            edge.source &&
+            edge.target &&
+            ids.has(edge.source) &&
+            ids.has(edge.target),
+        )
+        .map(({ slideId: _, ...edge }) => edge),
     },
   };
+}
+
+export function writeBoardClipboard(
+  clipboard: ClipboardData,
+  fragment: BoardFragment,
+) {
   const raw = JSON.stringify(fragment);
   if (byteLength(raw) > MAX_BYTES)
     throw new Error("Слишком много данных для буфера. Выделите меньше блоков.");
@@ -65,6 +81,18 @@ export function copyBoardSelection(
   } catch {
     /* Text fallback remains usable. */
   }
+}
+
+export function copyBoardSelection(
+  clipboard: ClipboardData,
+  board: Board,
+  workspaceId: string,
+  selected: ReadonlySet<string>,
+  slideId?: string,
+) {
+  const fragment = createBoardFragment(board, workspaceId, selected, slideId);
+  if (!fragment) return false;
+  writeBoardClipboard(clipboard, fragment);
   return true;
 }
 
@@ -104,12 +132,15 @@ export function pasteBoardFragment(
   board: Board,
   center: { x: number; y: number },
   pasteIndex: number,
+  destination?: { slideId?: string; placement?: "center" | "pointer" },
 ) {
   const source = fragment.document;
-  if (source.nodes.length + board.document.nodes.length > 200)
-    throw new Error("На доске может быть не больше 200 блоков.");
-  if (source.edges.length + board.document.edges.length > 500)
-    throw new Error("На доске может быть не больше 500 связей.");
+  const slideId = destination?.slideId;
+  if (
+    board.document.kind === "presentation" &&
+    !board.document.slides?.some((slide) => slide.id === slideId)
+  )
+    throw new Error("Слайд для вставки удалён.");
   const left = Math.min(...source.nodes.map((node) => node.position.x));
   const top = Math.min(...source.nodes.map((node) => node.position.y));
   const right = Math.max(
@@ -118,34 +149,73 @@ export function pasteBoardFragment(
   const bottom = Math.max(
     ...source.nodes.map((node) => node.position.y + (node.height ?? 300)),
   );
-  const sameBoard = fragment.boardId === board.id;
-  const base = sameBoard
-    ? { x: 32, y: 32 }
-    : { x: center.x - (left + right) / 2, y: center.y - (top + bottom) / 2 };
+  const margin = 32;
+  const width = right - left;
+  const height = bottom - top;
+  const scale = slideId
+    ? Math.min(
+        1,
+        (PRESENTATION_WIDTH - 2 * margin) / width,
+        (PRESENTATION_HEIGHT - 2 * margin) / height,
+      )
+    : 1;
+  const sameCanvas =
+    fragment.boardId === board.id && fragment.slideId === slideId;
+  const base =
+    sameCanvas && !destination?.placement
+      ? { x: left + 32, y: top + 32 }
+      : {
+          x: center.x - (width * scale) / 2,
+          y: center.y - (height * scale) / 2,
+        };
+  // An oversized group is scaled uniformly and kept within the slide.
+  const clamp = (value: number, end: number) =>
+    Math.max(margin, Math.min(value, end));
+  const offset = (index: number) => {
+    const x = base.x + index * 32;
+    const y = base.y + index * 32;
+    return scale < 1
+      ? {
+          x: clamp(x, PRESENTATION_WIDTH - margin - width * scale),
+          y: clamp(y, PRESENTATION_HEIGHT - margin - height * scale),
+        }
+      : { x, y };
+  };
   const existingPositions = new Set(
-    board.document.nodes.map((node) => `${node.position.x}:${node.position.y}`),
+    board.document.nodes
+      .filter((node) => node.slideId === slideId)
+      .map((node) => `${node.position.x}:${node.position.y}`),
   );
   let index = pasteIndex;
-  while (
-    source.nodes.some((node) =>
-      existingPositions.has(
-        `${node.position.x + base.x + index * 32}:${node.position.y + base.y + index * 32}`,
-      ),
+  if (scale === 1 && !destination?.placement)
+    while (
+      source.nodes.some((node) =>
+        existingPositions.has(
+          `${node.position.x - left + offset(index).x}:${node.position.y - top + offset(index).y}`,
+        ),
+      )
     )
-  )
-    index++;
-  const delta = { x: base.x + index * 32, y: base.y + index * 32 };
+      index++;
+  const origin = offset(index);
   const ids = new Map(
     source.nodes.map((node) => [node.id, crypto.randomUUID()]),
   );
   const nodes = source.nodes.map((node) => ({
     ...structuredClone(node),
     id: ids.get(node.id)!,
-    position: { x: node.position.x + delta.x, y: node.position.y + delta.y },
+    slideId,
+    position: {
+      x: origin.x + (node.position.x - left) * scale,
+      y: origin.y + (node.position.y - top) * scale,
+    },
+    width: scale === 1 ? node.width : (node.width ?? 480) * scale,
+    height: scale === 1 ? node.height : (node.height ?? 300) * scale,
   }));
   const edges = source.edges.map((edge) => ({
     ...structuredClone(edge),
     id: crypto.randomUUID(),
+    slideId,
+    bend: edge.bend && { x: edge.bend.x * scale, y: edge.bend.y * scale },
     source: ids.get(edge.source!)!,
     target: ids.get(edge.target!)!,
   }));
@@ -154,14 +224,6 @@ export function pasteBoardFragment(
     nodes: [...board.document.nodes, ...nodes],
     edges: [...board.document.edges, ...edges],
   };
-  if (!boardDocumentSchema.safeParse(document).success)
-    throw new Error("Не удалось вставить блоки в этой области доски.");
-  const size = byteLength(JSON.stringify(document));
-  if (
-    size > MAX_BYTES - 1024 ||
-    (document.nodes.some((node) => node.data.customChart) &&
-      size > CUSTOM_CHART_LIMITS.boardBytes)
-  )
-    throw new Error("На доске слишком много данных для вставки этих блоков.");
+  validateCanvasInsertion(document);
   return { document, ids: new Set(ids.values()), nextIndex: index + 1 };
 }

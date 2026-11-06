@@ -6,6 +6,75 @@ import {
   type AlignmentAction,
 } from "../src/client/board/alignment";
 
+const slideFrame = { x: 0, y: 0, right: 1600, bottom: 900 };
+
+describe("slide edge drag snapping", () => {
+  it.each([
+    [4, 123, 0, 123, "x", 0],
+    [1504, 123, 1500, 123, "x", 1600],
+    [123, 4, 123, 0, "y", 0],
+    [123, 824, 123, 820, "y", 900],
+  ])(
+    "snaps a lone block near each slide edge",
+    (x, y, expectedX, expectedY, axis, coordinate) => {
+      const original = node("a", Number(x), Number(y));
+      const result = snapBoardNodes([original], new Set(["a"]), 1, slideFrame);
+      expect(result.nodes[0].position).toEqual({ x: expectedX, y: expectedY });
+      expect(result.nodes[0].data).toBe(original.data);
+      expect(result.guides).toEqual([
+        { axis, coordinate, from: 0, to: axis === "x" ? 900 : 1600 },
+      ]);
+    },
+  );
+
+  it("snaps the group bounds to a corner without changing internal spacing", () => {
+    const nodes = [node("a", 3, 4), node("b", 203, 144)];
+    const result = snapBoardNodes(nodes, new Set(["a", "b"]), 1, slideFrame);
+    expect(result.nodes.map((item) => item.position)).toEqual([
+      { x: 0, y: 0 },
+      { x: 200, y: 140 },
+    ]);
+    expect(result.guides).toHaveLength(2);
+  });
+
+  it("uses screen distance and permits overflow outside the snap threshold", () => {
+    const nodes = [node("a", -11, 123)];
+    expect(
+      snapBoardNodes(nodes, new Set(["a"]), 0.5, slideFrame).nodes[0].position
+        .x,
+    ).toBe(0);
+    expect(snapBoardNodes(nodes, new Set(["a"]), 1, slideFrame).nodes).toBe(
+      nodes,
+    );
+    expect(snapBoardNodes(nodes, new Set(["a"]), 0.5).nodes).toBe(nodes);
+  });
+
+  it("does not align a block center to the slide edge", () => {
+    const nodes = [node("a", -49, 123)];
+    expect(snapBoardNodes(nodes, new Set(["a"]), 1, slideFrame).nodes).toBe(
+      nodes,
+    );
+  });
+
+  it("prefers the nearest target and the slide edge for equal distances", () => {
+    const moving = node("a", 4, 123);
+    const closer = node("b", 3, 400);
+    expect(
+      snapBoardNodes([moving, closer], new Set(["a"]), 1, slideFrame).nodes[0]
+        .position.x,
+    ).toBe(3);
+    const tied = node("b", 8, 400);
+    const result = snapBoardNodes(
+      [moving, tied],
+      new Set(["a"]),
+      1,
+      slideFrame,
+    );
+    expect(result.nodes[0].position.x).toBe(0);
+    expect(result.nodes[1]).toBe(tied);
+  });
+});
+
 function node(
   id: string,
   x: number,

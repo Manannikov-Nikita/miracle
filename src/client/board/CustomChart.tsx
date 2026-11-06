@@ -17,6 +17,7 @@ export default function CustomChart({
   table,
   visibleColumns,
   onShowTable,
+  reportStatus,
 }: {
   boardId: string;
   nodeId: string;
@@ -24,6 +25,7 @@ export default function CustomChart({
   spec: CustomChartSpec;
   table?: TableSpec;
   visibleColumns?: string[];
+  reportStatus?: boolean;
   onShowTable?: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
@@ -87,6 +89,7 @@ export default function CustomChart({
       visibleColumns,
       ...size,
       theme,
+      reportStatus,
       onStatus: setStatus,
       onDiagnosticConnection: setConnected,
     });
@@ -98,6 +101,7 @@ export default function CustomChart({
     size.width,
     size.height,
     theme,
+    reportStatus,
     retry,
   ]);
 

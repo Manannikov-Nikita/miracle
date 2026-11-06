@@ -2,6 +2,9 @@ import { z } from "zod";
 import { tableSpecSchema } from "./table-schema.js";
 import { dateRangeDates } from "./date-batch.js";
 import { customChartSchema } from "./custom-chart-schema.js";
+import { boardKind, PRESENTATION_MAX_SLIDES } from "./presentation.js";
+import { shapeSpecSchema } from "./shapes.js";
+import { textStyleSchema } from "./text-style.js";
 import {
   CHART_SERIES_COLOR_KEY_LIMIT,
   CHART_SERIES_COLOR_LIMIT,
@@ -79,13 +82,28 @@ export const boardEdgeAppearanceSchema = z
   })
   .strict();
 export const boardEdgePointSchema = z.object({ x: finite, y: finite }).strict();
+export const boardKindSchema = z.enum(["board", "presentation"]);
+export const presentationSlideSchema = z
+  .object({
+    id: identifier,
+    title: z.string().trim().min(1).max(200),
+    background: z.string().regex(/^#[0-9a-f]{6}$/i),
+  })
+  .strict();
 export const boardDocumentSchema = z
   .object({
     schemaVersion: z.literal(1),
+    kind: boardKindSchema.optional(),
+    slides: z
+      .array(presentationSlideSchema)
+      .min(1)
+      .max(PRESENTATION_MAX_SLIDES)
+      .optional(),
     nodes: z
       .array(
         z.object({
           id: identifier,
+          slideId: identifier.optional(),
           type: z.literal("artifact"),
           position: z.object({ x: finite, y: finite }),
           width: z.number().positive().max(10000).optional(),
@@ -93,8 +111,10 @@ export const boardDocumentSchema = z
           data: z
             .object({
               title: z.string().max(500),
-              kind: z.enum(["result", "note", "markdown"]),
+              kind: z.enum(["result", "note", "markdown", "shape", "text"]),
               text: z.string().max(200000).optional(),
+              textStyle: textStyleSchema.optional(),
+              shape: shapeSpecSchema.optional(),
               color: z.string().max(100).optional(),
               resultSetId: z.uuid().optional(),
               source: sourceSchema.optional(),
@@ -105,7 +125,15 @@ export const boardDocumentSchema = z
               visibleColumns: z.array(z.string().max(200)).max(2000).optional(),
               table: tableSpecSchema.optional(),
             })
-            .passthrough(),
+            .passthrough()
+            .superRefine((data, context) => {
+              if (data.kind === "shape" && !data.shape)
+                context.addIssue({
+                  code: "custom",
+                  path: ["shape"],
+                  message: "Для фигуры нужен тип и настройки оформления",
+                });
+            }),
         }),
       )
       .max(200),
@@ -114,6 +142,7 @@ export const boardDocumentSchema = z
         z
           .object({
             id: identifier,
+            slideId: identifier.optional(),
             source: identifier.optional(),
             target: identifier.optional(),
             sourcePoint: boardEdgePointSchema.optional(),
@@ -144,20 +173,58 @@ export const boardDocumentSchema = z
       .optional(),
   })
   .superRefine((d, ctx) => {
-    const ids = new Set(d.nodes.map((n) => n.id));
-    if (ids.size !== d.nodes.length)
+    const nodes = new Map(d.nodes.map((n) => [n.id, n]));
+    if (nodes.size !== d.nodes.length)
       ctx.addIssue({ code: "custom", message: "Повторяющийся id блока" });
     if (new Set(d.edges.map((e) => e.id)).size !== d.edges.length)
       ctx.addIssue({ code: "custom", message: "Повторяющийся id связи" });
     for (const e of d.edges)
       if (
-        (e.source !== undefined && !ids.has(e.source)) ||
-        (e.target !== undefined && !ids.has(e.target))
+        (e.source !== undefined && !nodes.has(e.source)) ||
+        (e.target !== undefined && !nodes.has(e.target))
       )
         ctx.addIssue({
           code: "custom",
           message: "Связь ссылается на отсутствующий блок",
         });
+    if (boardKind(d) === "presentation") {
+      const slides = new Set(d.slides?.map((slide) => slide.id));
+      if (!slides.size || slides.size !== d.slides?.length)
+        ctx.addIssue({
+          code: "custom",
+          path: ["slides"],
+          message: "Презентации нужны слайды с уникальными id",
+        });
+      for (const group of ["nodes", "edges"] as const)
+        d[group].forEach((item, index) => {
+          if (!item.slideId || !slides.has(item.slideId))
+            ctx.addIssue({
+              code: "custom",
+              path: [group, index, "slideId"],
+              message: "Элемент должен принадлежать слайду этой презентации",
+            });
+        });
+      d.edges.forEach((edge, index) => {
+        for (const end of ["source", "target"] as const) {
+          const id = edge[end];
+          if (id && nodes.has(id) && nodes.get(id)?.slideId !== edge.slideId)
+            ctx.addIssue({
+              code: "custom",
+              path: ["edges", index, end],
+              message: "Связь и её блоки должны быть на одном слайде",
+            });
+        }
+      });
+    } else if (
+      d.slides !== undefined ||
+      d.nodes.some((node) => node.slideId !== undefined) ||
+      d.edges.some((edge) => edge.slideId !== undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Слайды и slideId доступны только в презентациях",
+      });
+    }
     for (const n of d.nodes) {
       if (
         (n.data.view === "custom" || n.data.customChart !== undefined) &&

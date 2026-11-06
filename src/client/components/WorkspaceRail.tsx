@@ -1,4 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import type { ReactNode } from "react";
 import {
   Check,
   ClockCounterClockwise,
@@ -6,18 +7,19 @@ import {
   Database,
   FolderSimple,
   PlugsConnected,
+  Presentation,
   Question,
   SquaresFour,
 } from "@phosphor-icons/react";
 import type { ExplorerKind } from "./Explorer";
 import { Brand, IconButton } from "./UI";
-
-export type PaneMode = "split" | "sql" | "board" | "none";
+import { PANES_BY_MODE, type Pane, type PaneMode } from "../workspace-panes";
 
 export default function WorkspaceRail({
   mode,
   explorer,
   connectionCount,
+  gitControl,
   onSelectMode,
   onTogglePane,
   onToggleExplorer,
@@ -28,8 +30,9 @@ export default function WorkspaceRail({
   mode: PaneMode;
   explorer: ExplorerKind | null;
   connectionCount: number;
+  gitControl?: ReactNode;
   onSelectMode: (mode: PaneMode) => void;
-  onTogglePane: (pane: "sql" | "board") => void;
+  onTogglePane: (pane: Pane) => void;
   onToggleExplorer: (kind: ExplorerKind) => void;
   onResetLayout: () => void;
   onConnections: () => void;
@@ -64,8 +67,12 @@ export default function WorkspaceRail({
               {(
                 [
                   ["split", "Редактор и доска"],
+                  ["sql-presentation", "Редактор и презентация"],
+                  ["board-presentation", "Доска и презентация"],
                   ["sql", "Только редактор"],
                   ["board", "Только доска"],
+                  ["presentation", "Только презентация"],
+                  ["none", "Скрыть все панели"],
                 ] as const
               ).map(([value, label]) => (
                 <DropdownMenu.RadioItem
@@ -98,22 +105,22 @@ export default function WorkspaceRail({
         role="group"
         aria-label="Переключение панелей"
       >
-        <IconButton
-          label="Редактор"
-          className={mode === "split" || mode === "sql" ? "active" : ""}
-          aria-pressed={mode === "split" || mode === "sql"}
-          onClick={() => onTogglePane("sql")}
-        >
-          <Code size={21} />
-        </IconButton>
-        <IconButton
-          label="Доска"
-          className={mode === "split" || mode === "board" ? "active" : ""}
-          aria-pressed={mode === "split" || mode === "board"}
-          onClick={() => onTogglePane("board")}
-        >
-          <SquaresFour size={21} />
-        </IconButton>
+        {(
+          [
+            ["sql", "Редактор", Code],
+            ["board", "Доска", SquaresFour],
+            ["presentation", "Презентация", Presentation],
+          ] as const
+        ).map(([pane, label, Icon]) => (
+          <IconButton
+            key={pane}
+            label={label}
+            aria-pressed={PANES_BY_MODE[mode].includes(pane)}
+            onClick={() => onTogglePane(pane)}
+          >
+            <Icon size={21} />
+          </IconButton>
+        ))}
       </div>
 
       <div className="activity-group" role="group" aria-label="Обозреватель">
@@ -146,6 +153,7 @@ export default function WorkspaceRail({
             {item.icon}
           </IconButton>
         ))}
+        {gitControl}
       </div>
 
       <div className="activity-spacer" />

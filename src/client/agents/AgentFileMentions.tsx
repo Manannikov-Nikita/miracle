@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ChartLine, FileText, X } from "@phosphor-icons/react";
+import { ChartLine, Code, FileText, X } from "@phosphor-icons/react";
 import { api } from "../api";
+import type { OpenEditorTab } from "./ProjectSync";
 
 type Mention = { start: number; end: number; query: string };
 function mentionAt(value: string, start: number, end: number): Mention | null {
@@ -15,6 +16,9 @@ interface Props {
   onDraftChange: (value: string) => void;
   filePaths: string[];
   onFilesChange?: (paths: string[]) => void;
+  editorTabs?: OpenEditorTab[];
+  editorTarget?: OpenEditorTab;
+  onEditorTargetChange?: (tab: OpenEditorTab | undefined) => void;
   onSubmit: () => void;
 }
 export default function AgentFileMentions({
@@ -23,6 +27,9 @@ export default function AgentFileMentions({
   onDraftChange,
   filePaths,
   onFilesChange,
+  editorTabs = [],
+  editorTarget,
+  onEditorTargetChange,
   onSubmit,
 }: Props) {
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -40,17 +47,37 @@ export default function AgentFileMentions({
   const restoreCaret = useRef<number | null>(null);
   const listId = `agent-file-options-${useId()}`;
   const mention =
-    focused && onFilesChange ? mentionAt(draft, caret.start, caret.end) : null;
+    focused && (onFilesChange || onEditorTargetChange)
+      ? mentionAt(draft, caret.start, caret.end)
+      : null;
   const key = mention
     ? `${draftKey}:${mention.start}:${mention.end}:${mention.query}`
     : "";
   const open = Boolean(mention && key !== dismissed);
   const full = filePaths.length >= 20;
   const current = result?.key === key ? result : null;
-  const files = full
-    ? []
-    : current?.files.filter((path) => !filePaths.includes(path)) || [];
-  const active = Math.min(selected, Math.max(0, files.length - 1));
+  const query = mention?.query.trim().toLocaleLowerCase() || "";
+  const matchingTabs = editorTabs.filter(
+    (tab) =>
+      (tab.path
+        ? !!onFilesChange && !full && !filePaths.includes(tab.path)
+        : !!onEditorTargetChange && tab.id !== editorTarget?.id) &&
+      `${tab.name} ${tab.path || ""}`.toLocaleLowerCase().includes(query),
+  );
+  const tabPaths = new Set(matchingTabs.map((tab) => tab.path));
+  const files =
+    full || !onFilesChange
+      ? []
+      : current?.files.filter(
+          (path) => !filePaths.includes(path) && !tabPaths.has(path),
+        ) || [];
+  const options: (
+    { tab: OpenEditorTab; path?: string } | { path: string; tab?: undefined }
+  )[] = [
+    ...matchingTabs.map((tab) => ({ tab, path: tab.path })),
+    ...files.map((path) => ({ path })),
+  ];
+  const active = Math.min(selected, Math.max(0, options.length - 1));
 
   useLayoutEffect(() => {
     const field = textarea.current;
@@ -66,7 +93,7 @@ export default function AgentFileMentions({
     }
   }, [draft]);
   useEffect(() => {
-    if (!open || full || !mention) return;
+    if (!open || full || !mention || !onFilesChange) return;
     const controller = new AbortController();
     let cancelled = false;
     setSelected(0);
@@ -99,19 +126,23 @@ export default function AgentFileMentions({
     };
   }, [key, open, full, retry]);
   useEffect(() => {
-    if (open && files.length)
+    if (open && options.length)
       document
         .getElementById(`${listId}-${active}`)
         ?.scrollIntoView?.({ block: "nearest" });
-  }, [open, active, files.length, listId]);
+  }, [open, active, options.length, listId]);
 
   const readCaret = (field: HTMLTextAreaElement) =>
     setCaret({ start: field.selectionStart, end: field.selectionEnd });
-  const choose = (path: string) => {
-    if (!mention || full || filePaths.includes(path)) return;
+  const choose = (option: (typeof options)[number]) => {
+    if (!mention) return;
+    if (option.path) {
+      if (full || filePaths.includes(option.path)) return;
+      onFilesChange?.([...filePaths, option.path]);
+      if (option.tab) onEditorTargetChange?.(option.tab);
+    } else if (option.tab) onEditorTargetChange?.(option.tab);
     restoreCaret.current = mention.start;
     setDismissed(key);
-    onFilesChange?.([...filePaths, path]);
     onDraftChange(draft.slice(0, mention.start) + draft.slice(mention.end));
   };
   return (
@@ -119,9 +150,56 @@ export default function AgentFileMentions({
       {open && (
         <div className="agent-file-picker">
           <div className="agent-file-picker-heading">
-            <span>Файлы проекта</span>
+            <span>Добавить в контекст</span>
             <kbd>esc</kbd>
           </div>
+          {options.length > 0 && (
+            <div
+              id={listId}
+              role="listbox"
+              aria-label="Вкладки и файлы проекта"
+              className="agent-file-options"
+            >
+              {options.map((option, index) => (
+                <div
+                  key={
+                    option.tab ? `tab:${option.tab.id}` : `file:${option.path}`
+                  }
+                  role="presentation"
+                >
+                  {(index === 0 || index === matchingTabs.length) && (
+                    <div className="agent-mention-section" role="presentation">
+                      {option.tab ? "Открытые вкладки" : "Файлы проекта"}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    role="option"
+                    tabIndex={-1}
+                    id={`${listId}-${index}`}
+                    aria-selected={index === active}
+                    title={option.path || option.tab?.name}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setSelected(index)}
+                    onClick={() => choose(option)}
+                  >
+                    {option.tab && !option.path ? (
+                      <Code size={16} />
+                    ) : (
+                      <FileText size={16} />
+                    )}
+                    <span>{option.tab?.name || option.path}</span>
+                    {option.tab && (
+                      <small>
+                        {option.path ||
+                          `SQL · вкладка ${editorTabs.indexOf(option.tab) + 1}`}
+                      </small>
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {full ? (
             <p role="status">Можно указать до 20 файлов</p>
           ) : !current ? (
@@ -137,40 +215,13 @@ export default function AgentFileMentions({
                 Повторить
               </button>
             </div>
-          ) : files.length ? (
-            <>
-              <div
-                id={listId}
-                role="listbox"
-                aria-label="Файлы проекта"
-                className="agent-file-options"
-              >
-                {files.map((path, index) => (
-                  <button
-                    type="button"
-                    role="option"
-                    tabIndex={-1}
-                    key={path}
-                    id={`${listId}-${index}`}
-                    aria-selected={index === active}
-                    title={path}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onMouseEnter={() => setSelected(index)}
-                    onClick={() => choose(path)}
-                  >
-                    <FileText size={16} />
-                    <span>{path}</span>
-                  </button>
-                ))}
-              </div>
-              {current.truncated && (
-                <p className="agent-file-picker-hint">
-                  Уточните путь, чтобы найти другие файлы
-                </p>
-              )}
-            </>
-          ) : (
+          ) : !options.length ? (
             <p role="status">Файлы не найдены</p>
+          ) : null}
+          {current?.truncated && (
+            <p className="agent-file-picker-hint">
+              Уточните путь, чтобы найти другие файлы
+            </p>
           )}
         </div>
       )}
@@ -184,9 +235,9 @@ export default function AgentFileMentions({
         value={draft}
         placeholder="Что нужно сделать?"
         aria-autocomplete="list"
-        aria-controls={open && files.length ? listId : undefined}
+        aria-controls={open && options.length ? listId : undefined}
         aria-activedescendant={
-          open && files.length ? `${listId}-${active}` : undefined
+          open && options.length ? `${listId}-${active}` : undefined
         }
         onFocus={(e) => {
           setFocused(true);
@@ -212,22 +263,22 @@ export default function AgentFileMentions({
           }
           if (open && !e.metaKey && !e.ctrlKey && !e.altKey) {
             if (
-              files.length &&
+              options.length &&
               (e.key === "ArrowDown" || e.key === "ArrowUp")
             ) {
               e.preventDefault();
               setSelected(
-                (active + (e.key === "ArrowDown" ? 1 : -1) + files.length) %
-                  files.length,
+                (active + (e.key === "ArrowDown" ? 1 : -1) + options.length) %
+                  options.length,
               );
               return;
             }
             if (
-              files.length &&
+              options.length &&
               (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey))
             ) {
               e.preventDefault();
-              choose(files[active]);
+              choose(options[active]);
               return;
             }
           }
@@ -244,17 +295,42 @@ export default function AgentFileMentions({
 export function AgentContextChips({
   filePaths,
   onFilesChange,
+  editorTarget,
+  onEditorTargetChange,
   boardNodes,
   onDismissBoardNode,
 }: {
   filePaths: string[];
   onFilesChange?: (paths: string[]) => void;
+  editorTarget?: OpenEditorTab;
+  onEditorTargetChange?: (tab: OpenEditorTab | undefined) => void;
   boardNodes: { id: string; title: string }[];
   onDismissBoardNode?: (id: string) => void;
 }) {
-  if (!filePaths.length && !boardNodes.length) return null;
+  if (!filePaths.length && !boardNodes.length && !editorTarget) return null;
   return (
     <div className="agent-context-chips" aria-label="Контекст сообщения">
+      {editorTarget && !editorTarget.path && (
+        <span
+          className="agent-context-chip"
+          title={`Запрос для редактирования: ${editorTarget.name}`}
+        >
+          <Code size={14} />
+          <span>{editorTarget.name}</span>
+          {onEditorTargetChange && (
+            <button
+              type="button"
+              aria-label={`Убрать запрос ${editorTarget.name}`}
+              onClick={() => {
+                onEditorTargetChange(undefined);
+                document.getElementById("agent-message")?.focus();
+              }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </span>
+      )}
       {boardNodes.map((node) => (
         <span
           className="agent-context-chip"

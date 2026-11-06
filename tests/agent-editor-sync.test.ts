@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { EditorSync, documentToTab } from "../src/client/agents/editor-sync";
+import {
+  EditorSync,
+  documentToTab,
+  acknowledgeEditor,
+} from "../src/client/agents/editor-sync";
 import type { EditorDocument } from "../src/shared/agents";
 const doc = (revision = 1, sql = "select 1"): EditorDocument => ({
   id: "doc",
@@ -8,6 +12,93 @@ const doc = (revision = 1, sql = "select 1"): EditorDocument => ({
   connectionId: "connection",
   revision,
   updatedAt: "now",
+});
+describe("agent work fencing", () => {
+  it("retains a successful run acknowledgement while preserving newer source and name changes", () => {
+    const before = documentToTab(doc());
+    const latest = {
+      ...before,
+      sql: "agent SQL",
+      name: "agent.sql",
+      connectionId: "agent-connection",
+    };
+    expect(
+      acknowledgeEditor(
+        latest,
+        before,
+        { runId: "started", connectionId: "connection" },
+        ["runId"],
+      ),
+    ).toMatchObject({
+      runId: "started",
+      sql: "agent SQL",
+      name: "agent.sql",
+      connectionId: "agent-connection",
+    });
+    const replaced = { ...latest, runId: "new-agent-run" };
+    expect(
+      acknowledgeEditor(replaced, before, { runId: "started" }, ["runId"]),
+    ).toBe(replaced);
+  });
+  it("does not mix an old saved query revision into a newer query association", () => {
+    const before = {
+      ...documentToTab(doc()),
+      queryId: "old-query",
+      revision: 1,
+    };
+    const latest = { ...before, queryId: "agent-query" };
+    expect(
+      acknowledgeEditor(latest, before, { queryId: "old-query", revision: 2 }, [
+        "queryId",
+        "revision",
+      ]),
+    ).toBe(latest);
+  });
+  it("preserves a queued draft when a lock arrives during an earlier save", async () => {
+    let locked = false;
+    let complete!: (value: EditorDocument) => void;
+    const request = vi.fn(
+      () =>
+        new Promise<EditorDocument>((done) => {
+          complete = done;
+        }),
+    );
+    const sync = new EditorSync(
+      [doc()],
+      request as never,
+      vi.fn(),
+      () => locked,
+    );
+    sync.local([{ ...sync.tabs[0], sql: "first draft" }]);
+    const pending = sync.flush();
+    sync.local([{ ...sync.tabs[0], sql: "queued draft" }]);
+    locked = true;
+    complete(doc(2, "first draft"));
+    await expect(pending).rejects.toMatchObject({
+      status: 423,
+      code: "ENTITY_AGENT_LOCKED",
+    });
+    expect(request).toHaveBeenCalledOnce();
+    expect(sync.tabs[0].sql).toBe("queued draft");
+    expect(sync.conflicts.size).toBe(0);
+    sync.receive(doc(3, "agent SQL"));
+    locked = false;
+    expect(sync.tabs[0].sql).toBe("queued draft");
+    expect(sync.conflicts.has("doc")).toBe(true);
+  });
+  it("blocks deletion and retries a preserved draft after release", async () => {
+    let locked = true;
+    const request = vi.fn().mockResolvedValue(doc(2, "draft"));
+    const sync = new EditorSync([doc()], request, vi.fn(), () => locked);
+    sync.local([{ ...sync.tabs[0], sql: "draft" }]);
+    await expect(sync.remove("doc")).rejects.toMatchObject({ status: 423 });
+    await expect(sync.flush()).rejects.toMatchObject({ status: 423 });
+    expect(request).not.toHaveBeenCalled();
+    locked = false;
+    await sync.flush();
+    expect(sync.dirty(sync.tabs[0])).toBe(false);
+    expect(sync.tabs[0].sql).toBe("draft");
+  });
 });
 describe("revisioned editor synchronization", () => {
   it("ignores duplicate events, accepts clean changes and preserves concurrent drafts", () => {

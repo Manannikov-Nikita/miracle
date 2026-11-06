@@ -5,6 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ReactFlowProps } from "@xyflow/react";
 import type { Board } from "../src/shared/types";
 import BoardWorkspace from "../src/client/board/BoardWorkspace";
+import {
+  ProjectSync,
+  ProjectSyncContext,
+} from "../src/client/agents/ProjectSync";
 
 // Keep the workspace, XYFlow, cards and editors real. Observe the documented
 // XYFlow change boundary and editor renders; only browser layout and HTTP are fake.
@@ -36,7 +40,9 @@ vi.mock("../src/client/board/StickyNoteEditor", async (load) => {
 let host: HTMLDivElement;
 let root: Root;
 let board: Board;
+let project: ProjectSync;
 beforeEach(() => {
+  project = new ProjectSync();
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
@@ -115,12 +121,16 @@ afterEach(async () => {
 async function open() {
   await act(async () =>
     root.render(
-      createElement(BoardWorkspace, {
-        workspaceId: "drag-render",
-        onIncomingConsumed() {},
-        onOpenSource() {},
-        onNotify() {},
-      }),
+      createElement(
+        ProjectSyncContext.Provider,
+        { value: project },
+        createElement(BoardWorkspace, {
+          workspaceId: "drag-render",
+          onIncomingConsumed() {},
+          onOpenSource() {},
+          onNotify() {},
+        }),
+      ),
     ),
   );
   expect(host.querySelectorAll("textarea")).toHaveLength(2);
@@ -181,4 +191,63 @@ it("keeps card actions current and displays undo changes after a drag", async ()
     x: 123,
     y: 87,
   });
+});
+
+it("locks one card without blocking its neighbor or copying and selection", async () => {
+  await open();
+  await act(async () =>
+    project.emit({
+      id: 10,
+      type: "agent.work",
+      data: {
+        locks: [
+          {
+            target: { kind: "board-node", boardId: board.id, id: "moving" },
+            turnId: "turn",
+            chatId: "chat",
+            startedAt: "now",
+          },
+        ],
+      },
+    }),
+  );
+  const locked = host.querySelector('article[aria-label="moving"]')!;
+  expect(locked.classList.contains("agent-work-active")).toBe(true);
+  expect(locked.querySelector("textarea")!.readOnly).toBe(true);
+  expect(
+    host.querySelector<HTMLTextAreaElement>(
+      'article[aria-label="stationary"] textarea',
+    )!.readOnly,
+  ).toBe(false);
+  expect(
+    probe.flow.nodes!.find((node) => node.id === "moving")!.draggable,
+  ).toBe(false);
+  await move(99);
+  expect(
+    probe.flow.nodes!.find((node) => node.id === "moving")!.position.x,
+  ).toBe(0);
+  await act(async () =>
+    probe.flow.onNodesChange!([
+      {
+        type: "position",
+        id: "stationary",
+        position: { x: 700, y: 50 },
+        dragging: false,
+      },
+      { type: "remove", id: "moving" },
+    ]),
+  );
+  expect(host.querySelector('article[aria-label="moving"]')).not.toBeNull();
+  expect(
+    probe.flow.nodes!.find((node) => node.id === "stationary")!.position,
+  ).toEqual({ x: 700, y: 50 });
+  expect(probe.flow.elementsSelectable).toBe(true);
+  await act(async () =>
+    project.emit({ id: 11, type: "agent.work", data: { locks: [] } }),
+  );
+  expect(
+    host.querySelector<HTMLTextAreaElement>(
+      'article[aria-label="moving"] textarea',
+    )!.readOnly,
+  ).toBe(false);
 });

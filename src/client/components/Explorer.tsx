@@ -28,6 +28,8 @@ import type { MetadataStore } from "../metadata-store";
 import SourceSchemaTree, { type ExplorerSourceView } from "./SourceSchemaTree";
 import SearchHighlight from "./SearchHighlight";
 import ProjectFileTree from "./ProjectFileTree";
+import { useAgentWorkLocks } from "../agents/useAgentWork";
+import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import type { ProjectTextFile } from "../../shared/project-files";
 export type { ExplorerSourceView } from "./SourceSchemaTree";
 export type ExplorerKind = "sources" | "queries" | "history";
@@ -64,6 +66,7 @@ export default function Explorer({
   onOpenFile?: (file: ProjectTextFile) => void;
   fileRevision?: number;
 }) {
+  const workLocks = useAgentWorkLocks();
   const [filters, setFilters] = useState<Record<ExplorerKind, string>>({
     sources: "",
     queries: "",
@@ -74,6 +77,8 @@ export default function Explorer({
   const setFilter = (value: string) =>
     setFilters((current) => ({ ...current, [kind]: value }));
   const searchInput = useRef<HTMLInputElement>(null);
+  const [fileActionsTarget, setFileActionsTarget] =
+    useState<HTMLDivElement | null>(null);
   const [queries, setQueries] = useState<QueryDocument[]>([]);
   const [treeRevision, setTreeRevision] = useState(0);
   const [savedExpanded, setSavedExpanded] = useState(false);
@@ -154,10 +159,34 @@ export default function Explorer({
   return (
     <aside
       className={`explorer ${onClose ? "explorer-drawer" : ""}${kind === "sources" && fullNames ? " explorer-full-names" : ""}`}
+      aria-label={title}
     >
-      <div className="explorer-heading">
-        <strong>{title}</strong>
-        <div>
+      <div className="explorer-toolbar">
+        <div className="explorer-search">
+          <MagnifyingGlass size={14} aria-hidden="true" />
+          <input
+            ref={searchInput}
+            aria-label={`Поиск: ${title}`}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Поиск…"
+          />
+          {filter && (
+            <IconButton
+              label="Очистить поиск"
+              onClick={() => {
+                setFilter("");
+                searchInput.current?.focus();
+              }}
+            >
+              <X size={14} />
+            </IconButton>
+          )}
+        </div>
+        <div className="explorer-actions">
+          {kind === "queries" && onOpenFile && (
+            <div ref={setFileActionsTarget} className="project-tree-actions" />
+          )}
           {kind === "sources" && (
             <>
               <IconButton
@@ -194,27 +223,6 @@ export default function Explorer({
             </IconButton>
           )}
         </div>
-      </div>
-      <div className="explorer-search">
-        <MagnifyingGlass size={14} />
-        <input
-          ref={searchInput}
-          aria-label={`Поиск: ${title}`}
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Поиск…"
-        />
-        {filter && (
-          <IconButton
-            label="Очистить поиск"
-            onClick={() => {
-              setFilter("");
-              searchInput.current?.focus();
-            }}
-          >
-            <X size={14} />
-          </IconButton>
-        )}
       </div>
       <div className="explorer-body">
         {kind !== "sources" && error && (
@@ -279,9 +287,6 @@ export default function Explorer({
         )}
         {kind === "queries" && (
           <>
-            {!onOpenFile && (
-              <div className="explorer-section-label">ФАЙЛЫ ПРОЕКТА</div>
-            )}
             {onOpenFile && (
               <ProjectFileTree
                 workspaceId={workspaceId}
@@ -290,6 +295,7 @@ export default function Explorer({
                 onOpenFile={onOpenFile}
                 onNotify={onNotify}
                 onClearFilter={() => setFilter("")}
+                actionsTarget={fileActionsTarget}
               />
             )}
             {queries.length > 0 && (
@@ -313,7 +319,7 @@ export default function Explorer({
               visibleQueries.map((q) => (
                 <button
                   key={q.id}
-                  className="saved-query-item"
+                  className={`saved-query-item${workLocks.some((work) => work.target.kind === "query" && work.target.id === q.id) ? " agent-work-active" : ""}`}
                   title={q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
                   onClick={() => onOpenQuery(q)}
                 >
@@ -321,6 +327,13 @@ export default function Explorer({
                   <span>
                     {q.name.endsWith(".sql") ? q.name : q.name + ".sql"}
                   </span>
+                  <AgentWorkIndicator
+                    compact
+                    work={workLocks.find(
+                      (work) =>
+                        work.target.kind === "query" && work.target.id === q.id,
+                    )}
+                  />
                 </button>
               ))}
           </>

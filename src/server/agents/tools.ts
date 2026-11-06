@@ -1,15 +1,54 @@
 import { z } from "zod";
 import { customChartGuide } from "../custom-chart-guide.js";
 import { chartGuide, chartInputSchema } from "../chart-guide.js";
-import { sourceSchema } from "../validation.js";
+import { boardKindSchema, sourceSchema } from "../validation.js";
 import { problem } from "../project-store.js";
 import type { AgentManager, ActiveAgent } from "./manager.js";
+import { entityWorkInput } from "./entity-work.js";
+import { shapeSpecSchema } from "../../shared/shapes.js";
+import { textStyleSchema } from "../../shared/text-style.js";
+
+const shapeGuide =
+  "Shapes use data {title,kind:'shape',text,shape:{type,...}}. Shape type is rectangle|rounded-rectangle|ellipse|triangle|diamond|hexagon|arrow. Optional shape fields: fill (#RRGGBB or transparent), stroke/textColor (#RRGGBB), strokeWidth (0-12), strokeStyle (solid|dashed|dotted), opacity (0-1), cornerRadius (0-50 percent), fontSize (8-144), fontFamily (sans|serif|mono), bold/italic/underline (boolean), textAlign (left|center|right), verticalAlign (top|middle|bottom). Shape text is plain text, up to 200000 characters; do not supply SVG or HTML markup as geometry. Use node width/height to resize; interactive shapes have a 40×40 minimum.";
+const textGuide =
+  " Standalone text blocks have no container and use data {title,kind:'text',text,textStyle:{...}}. Text is plain multiline text, up to 200000 characters. Optional textStyle fields: textColor (#RRGGBB), fontSize (8-144), fontFamily (sans|serif|mono), bold/italic/underline (boolean), textAlign (left|center|right), verticalAlign (top|middle|bottom). Settings apply to the whole block. Choose textColor with sufficient contrast against the board or slide background.";
 
 const string = { type: "string" };
 const integer = { type: "integer", minimum: 0 };
 const object = { type: "object" };
 const id = { type: "string", format: "uuid" };
+const kind = { type: "string", enum: ["board", "presentation"] };
+const slideProperties = {
+  title: { type: "string", minLength: 1, maxLength: 200 },
+  background: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" },
+};
 const mutation = { baseRevision: integer, mutationId: id };
+const entityTargets = {
+  type: "array",
+  minItems: 1,
+  maxItems: 100,
+  items: {
+    type: "object",
+    properties: {
+      kind: {
+        type: "string",
+        enum: [
+          "editor",
+          "query",
+          "file",
+          "board",
+          "board-node",
+          "board-edge",
+          "board-slide",
+        ],
+      },
+      id: string,
+      boardId: id,
+    },
+    required: ["kind", "id"],
+    additionalProperties: false,
+  },
+};
 const nodePatchSchema = {
   type: "object",
   properties: {
@@ -38,7 +77,21 @@ const nodePatchSchema = {
       type: "object",
       properties: {
         title: string,
-        text: string,
+        kind: {
+          type: "string",
+          enum: ["result", "note", "markdown", "shape", "text"],
+        },
+        text: { type: "string", maxLength: 200000 },
+        textStyle: {
+          ...z.toJSONSchema(textStyleSchema),
+          description:
+            "Complete standalone text typography. Replaces the previous textStyle object; preserve unchanged settings from read_board.",
+        },
+        shape: {
+          ...z.toJSONSchema(shapeSpecSchema),
+          description:
+            "Complete shape settings, including type. Replaces the previous shape object; preserve unchanged settings from read_board.",
+        },
         view: { type: "string", enum: ["table", "chart", "custom"] },
         chart: chartInputSchema,
         table: object,
@@ -49,7 +102,7 @@ const nodePatchSchema = {
       additionalProperties: true,
     },
   },
-  // The same patch envelope is also used by update_edge for edge-specific fields.
+  // The same envelope is used by update_edge and update_slide.
   additionalProperties: true,
 };
 const textPaging = {
@@ -156,6 +209,20 @@ const tool = (
 });
 export const miracleTools = [
   tool(
+    "begin_entity_work",
+    "Before reading an entity for editing, claim the exact entities you will work on. Use board-node/board-edge with boardId for blocks and links; board-slide with boardId and the slide id for slide metadata; board for the name and slide list/order. Slide deletion also touches its blocks and links. File id is a project-relative path; claim before native file writes. Read fresh content after claiming. Locks remain until end_entity_work or task end.",
+    { entities: entityTargets },
+    ["entities"],
+    false,
+  ),
+  tool(
+    "end_entity_work",
+    "Release the exact entities whose work is complete, including their linked aliases. Other work remains locked.",
+    { entities: entityTargets },
+    ["entities"],
+    false,
+  ),
+  tool(
     "project_context",
     "Read project and task target IDs. Focus changes in the browser do not retarget this task.",
   ),
@@ -243,12 +310,17 @@ export const miracleTools = [
     },
     ["id"],
   ),
-  tool("list_boards", "List board IDs, names and revisions."),
+  tool(
+    "list_boards",
+    "List board and presentation IDs, names, kinds and revisions. Supply kind to filter.",
+    { kind },
+  ),
   tool(
     "read_board",
     "Read a board and revision. Large boards return a compact receipt. For any board, format json returns exact document JSON in UTF-16 character offset/limit chunks (default/max 64000); concatenate json fields until nextOffset is null and parse. Check revision remains unchanged across pages.",
     {
       id,
+      revision: integer,
       format: { type: "string", enum: ["document", "json"] },
       ...textPaging,
     },
@@ -256,14 +328,18 @@ export const miracleTools = [
   ),
   tool(
     "create_board",
-    "Create a named board. Optional document uses schemaVersion 1, nodes and edges arrays. For nodes: type artifact, position {x,y}, data {title,kind: result|note|markdown}; result nodes reference resultSetId. Use mutationId UUID.",
-    { name: string, document: object, mutationId: id },
+    "Create a named board or presentation. A new presentation starts with one slide unless a full document is supplied. Optional document uses schemaVersion 1 and flat nodes and edges arrays. A presentation document has kind:'presentation' and ordered slides [{id,title,background}], and every node and edge has slideId. For nodes: type artifact, position {x,y}, data {title,kind: result|note|markdown|shape|text}; result nodes reference resultSetId. Use mutationId UUID. " +
+      shapeGuide +
+      textGuide,
+    { name: string, kind, document: object, mutationId: id },
     ["name", "mutationId"],
     false,
   ),
   tool(
     "board_patch",
-    "Apply atomic board operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart are replaced as complete objects; read_board and preserve their unchanged fields. Positions and dimensions are board coordinates.",
+    "Apply atomic board or presentation operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Presentations also support add_slide {slide:{id,title,background}}, update_slide {id,patch:{title?,background?}}, remove_slide {id} (includes children), reorder_slides {slideIds} (a complete permutation). Use slideId on every new presentation node and edge, including free-ended links; an edge cannot span slides. Presentation coordinates are 1600×900. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart/shape/textStyle are replaced as complete objects; read_board and preserve their unchanged fields. " +
+      shapeGuide +
+      textGuide,
     {
       id,
       ...mutation,
@@ -282,12 +358,23 @@ export const miracleTools = [
                 "add_edge",
                 "update_edge",
                 "remove_edge",
+                "add_slide",
+                "update_slide",
+                "remove_slide",
+                "reorder_slides",
               ],
             },
             id: string,
             patch: nodePatchSchema,
             node: object,
             edge: object,
+            slide: {
+              type: "object",
+              properties: { id: string, ...slideProperties },
+              required: ["id", "title", "background"],
+              additionalProperties: false,
+            },
+            slideIds: { type: "array", maxItems: 100, items: string },
           },
           required: ["type"],
         },
@@ -338,6 +425,28 @@ export async function callMiracleTool(
   name: string,
   input: unknown,
 ) {
+  return manager.store.work.runAs(
+    {
+      turnId: active.turn.id,
+      chatId: active.turn.chatId,
+      isActive: () =>
+        manager.active === active &&
+        !active.cancelled &&
+        ["running", "waiting"].includes(
+          manager.store.turn(active.turn.id).status,
+        ),
+    },
+    () => executeMiracleTool(manager, active, name, input),
+  );
+}
+
+async function executeMiracleTool(
+  manager: AgentManager,
+  active: ActiveAgent,
+  name: string,
+  input: unknown,
+) {
+  manager.store.work.assertActor();
   if (manager.active !== active || active.cancelled)
     throw problem(401, "Agent task is no longer active");
   const args = z.record(z.string(), z.unknown()).parse(input || {});
@@ -347,6 +456,14 @@ export async function callMiracleTool(
     services = manager.services;
   let result: unknown;
   switch (name) {
+    case "begin_entity_work": {
+      const { entities } = entityWorkInput.parse(args);
+      result = store.work.begin(entities);
+      break;
+    }
+    case "end_entity_work":
+      result = store.work.end(entityWorkInput.parse(args).entities);
+      break;
     case "project_context":
       result = { ...store.context, targets: active.turn.context };
       break;
@@ -435,10 +552,16 @@ export async function callMiracleTool(
       break;
     }
     case "list_boards":
-      result = ops.boards();
+      result = ops.boards(boardKindSchema.optional().parse(args.kind));
       break;
     case "read_board": {
-      const board = ops.board(key());
+      const board =
+        args.revision === undefined
+          ? ops.board(key())
+          : ops.boardAtRevision(
+              key(),
+              z.number().int().nonnegative().parse(args.revision),
+            );
       const format = z
         .enum(["document", "json"])
         .default("document")
@@ -519,6 +642,7 @@ export async function callMiracleTool(
     default:
       throw problem(404, "Unknown Miracle tool");
   }
+  store.work.assertActor();
   if (manager.active !== active || active.cancelled)
     throw problem(401, "Agent task ended during tool call");
   store.message(active.turn.chatId, active.turn.id, "action", name, {

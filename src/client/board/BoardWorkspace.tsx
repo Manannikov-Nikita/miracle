@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ReactFlowProvider,
   Background,
@@ -6,6 +13,7 @@ import {
   Controls,
   ConnectionMode,
   MiniMap,
+  ViewportPortal,
   useReactFlow,
   type NodeChange,
   type EdgeChange,
@@ -18,6 +26,9 @@ import {
   ArrowCounterClockwise,
   ArrowClockwise,
   DotsThree,
+  CornersOut,
+  PresentationChart,
+  ProjectorScreen,
   FileMd,
   FloppyDisk,
   LinkSimple,
@@ -26,10 +37,13 @@ import {
   Plus,
   SlidersHorizontal,
   Trash,
+  TextT,
 } from "@phosphor-icons/react";
 import "@xyflow/react/dist/style.css";
 import type {
   BoardDocument,
+  BoardKind,
+  PresentationSlide,
   BoardEdge,
   BoardNode,
   BoardNodeData,
@@ -38,7 +52,25 @@ import type {
   ResultSet,
 } from "../../shared/types";
 import { api, waitForRun } from "../api";
+import {
+  useCanvasWorkspace,
+  type CanvasDestination,
+  type CanvasHandle,
+} from "../canvas-workspace";
+import {
+  PRESENTATION_HEIGHT,
+  PRESENTATION_WIDTH,
+} from "../../shared/presentation";
 import { useProjectSync } from "../agents/ProjectSync";
+import { useAgentWorkLocks } from "../agents/useAgentWork";
+import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
+import {
+  boardWork,
+  edgeWork,
+  nodeWork,
+  slideDeletionWork,
+  slideWork,
+} from "./agent-work";
 import { Select } from "../components/Select";
 import { ErrorBox } from "../components/UI";
 import DateBatchProgress from "../components/DateBatchProgress";
@@ -47,6 +79,9 @@ import ArtifactNode, {
   type ArtifactFlowNode,
 } from "./ArtifactNode";
 import Inspector from "./Inspector";
+import ShapePicker from "./ShapePicker";
+import { presentationColors } from "./presentation-colors";
+import { SHAPE_OPTIONS, type ShapeKind } from "../../shared/shapes";
 import BoardFlow from "./BoardFlow";
 import BoardEdgeView, {
   type BoardFlowEdge,
@@ -80,16 +115,37 @@ import { snapResizedNode, type ResizeSides } from "./resize-snapping";
 import { preserveResizeAspect } from "./resize-aspect";
 import {
   copyBoardSelection,
+  createBoardFragment,
+  type BoardFragment,
   nativeBoardClipboardTarget,
   pasteBoardFragment,
   readBoardClipboard,
 } from "./clipboard";
+import PresentationSlides from "./PresentationSlides";
+import PresentationShow from "./PresentationShow";
+import {
+  addPresentationSlide,
+  duplicatePresentationSlide,
+  fitPresentationSlide,
+  presentationSlideContent,
+  removePresentationSlide,
+  validateCanvasInsertion,
+} from "./presentation-model";
 import "./board.css";
+const slideSnapFrame = {
+  x: 0,
+  y: 0,
+  right: PRESENTATION_WIDTH,
+  bottom: PRESENTATION_HEIGHT,
+};
 export { createResultNode } from "./model";
 export interface BoardWorkspaceProps {
   workspaceId: string;
   incomingResult?: ResultSet | null;
-  onIncomingConsumed: () => void;
+  onIncomingConsumed?: () => void;
+  kind?: BoardKind;
+  active?: boolean;
+  onActivate?: () => void;
   onOpenSource: (source: QuerySource, title: string) => void;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
 }
@@ -97,6 +153,14 @@ const nodeTypes = { artifact: ArtifactNode, "edge-anchor": () => null };
 const edgeTypes = { board: BoardEdgeView };
 // Documents store explicit sizes, while transient React Flow measurements are not persisted.
 const boardFitOptions = { padding: 0.15, includeHiddenNodes: true };
+function canvasFocusTarget(target: EventTarget | null): target is Element {
+  return (
+    target instanceof Element &&
+    !target.closest(
+      "a[href],button,input,select,textarea,[contenteditable=true],[role=textbox],.cm-editor,.monaco-editor",
+    )
+  );
+}
 type PendingBoardRefresh = {
   runId: string;
   boardId: string;
@@ -105,12 +169,15 @@ type PendingBoardRefresh = {
   sourceRevision: number;
   resultSetId?: string;
 };
-const refreshStorageKey = (workspaceId: string) =>
-  `miracle:board-refreshes:${workspaceId}`;
-function readPendingRefreshes(workspaceId: string): PendingBoardRefresh[] {
+const refreshStorageKey = (workspaceId: string, kind: BoardKind) =>
+  `miracle:${kind}-refreshes:${workspaceId}`;
+function readPendingRefreshes(
+  workspaceId: string,
+  kind: BoardKind,
+): PendingBoardRefresh[] {
   try {
     const value = JSON.parse(
-      localStorage.getItem(refreshStorageKey(workspaceId)) || "[]",
+      localStorage.getItem(refreshStorageKey(workspaceId, kind)) || "[]",
     );
     return Array.isArray(value)
       ? value.filter(
@@ -135,6 +202,9 @@ function Workspace({
   onIncomingConsumed,
   onOpenSource,
   onNotify,
+  kind = "board",
+  active = true,
+  onActivate,
 }: BoardWorkspaceProps) {
   const notifyRef = useRef(onNotify);
   notifyRef.current = onNotify;
@@ -144,17 +214,62 @@ function Workspace({
     [],
   );
   const workspaceRef = useRef<HTMLElement>(null);
-  const store = useBoard(workspaceId, notify);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const registry = useCanvasWorkspace();
+  const store = useBoard(workspaceId, notify, kind, false);
   const { board, editable, change, flushDraft } = store;
-  // Choose the camera once per board; remote content updates must not move it.
+  const agentLocks = useAgentWorkLocks();
+  const presentation = kind === "presentation";
+  const canvasName = presentation ? "Презентация" : "Доска";
+  const [slideSelections, setSlideSelections] = useState<
+    Record<string, string>
+  >({});
+  const slide =
+    board?.document.slides?.find(
+      (slide) => slide.id === slideSelections[board.id],
+    ) ?? board?.document.slides?.[0];
+  const slideId = slide?.id;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const slideRef = useRef(slideId);
+  slideRef.current = slideId;
+  const selectSlide = (id: string) => {
+    const current = store.current.current;
+    if (!current) return;
+    slideRef.current = id;
+    setSlideSelections((values) => ({ ...values, [current.id]: id }));
+  };
+  const cameraId = board && (slideId ? `${board.id}:${slideId}` : board.id);
+  // Choose the camera once per canvas or slide; incoming revisions leave it in place.
   const initialViewport = useMemo(
     () =>
-      board
-        ? (readBoardViewport(workspaceId, board.id) ?? board.document.viewport)
+      cameraId
+        ? (readBoardViewport(workspaceId, cameraId) ??
+          (presentation ? undefined : board?.document.viewport))
         : undefined,
-    [workspaceId, board?.id],
+    [workspaceId, cameraId],
   );
+  const visibleContent = useMemo(
+    () =>
+      board
+        ? slideId
+          ? presentationSlideContent(board.document, slideId)
+          : board.document
+        : null,
+    [board?.document, slideId],
+  );
+  const [previewNodes, setPreviewNodes] = useState<BoardNode[] | null>(null);
+  const [localFocus, setLocalFocus] = useState(false);
+  const [show, setShow] = useState<{
+    boardId: string;
+    slideId: string;
+    trigger: HTMLElement;
+  } | null>(null);
+  const closeShow = useCallback(() => setShow(null), []);
+  const showPending = useRef(false);
+  const [startingShow, setStartingShow] = useState(false);
   const flow = useReactFlow<BoardCanvasNode, BoardFlowEdge>();
+  const flowId = useId();
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
     new Set(),
@@ -162,33 +277,83 @@ function Workspace({
   const renderedBoard = useMemo(
     () =>
       board
-        ? toBoardFlow(board.document, selectedIds)
+        ? (() => {
+            const rendered = toBoardFlow(
+              {
+                ...board.document,
+                ...visibleContent,
+                nodes: previewNodes ?? visibleContent!.nodes,
+              },
+              selectedIds,
+            );
+            return {
+              ...rendered,
+              nodes: rendered.nodes.map((original) => {
+                const node =
+                  presentation && original.type === "artifact"
+                    ? { ...original, dragHandle: ".presentation-artifact" }
+                    : original;
+                return node.type === "artifact" &&
+                  nodeWork(agentLocks, board.id, node.id)
+                  ? {
+                      ...node,
+                      draggable: false,
+                      connectable: false,
+                      deletable: false,
+                    }
+                  : node.type === "artifact" && !store.canRemoveNode(node.id)
+                    ? { ...node, deletable: false }
+                    : node;
+              }),
+            };
+          })()
         : { nodes: [], edges: [] },
-    [board?.document, selectedIds],
+    [
+      board?.document,
+      visibleContent,
+      previewNodes,
+      selectedIds,
+      agentLocks,
+      presentation,
+    ],
   );
   const selectionRef = useRef<ReadonlySet<string>>(selectedIds);
   const projectSync = useProjectSync();
   useEffect(
     () =>
-      projectSync?.register("board-selection", {
+      projectSync?.register(`canvas-context:${kind}`, {
         context: () => {
+          if (!activeRef.current) return {};
           const current = store.current.current;
+          if (!current) return {};
           return {
-            boardId: current?.id,
+            boardId: current.id,
+            ...(slideRef.current ? { slideId: slideRef.current } : {}),
             boardNodes:
               current?.document.nodes
-                .filter((node) => selectionRef.current.has(node.id))
+                .filter(
+                  (node) =>
+                    node.slideId === slideRef.current &&
+                    selectionRef.current.has(node.id),
+                )
                 .map((node) => ({ id: node.id, title: node.data.title })) || [],
           };
         },
         // useBoard registers the board's pending writes separately.
         flush: async () => {},
       }),
-    [projectSync, store.current],
+    [projectSync, store.current, kind],
   );
   useEffect(() => {
     projectSync?.contextChanged();
-  }, [projectSync, selectedIds, board?.id, board?.document.nodes]);
+  }, [
+    projectSync,
+    selectedIds,
+    board?.id,
+    board?.document.nodes,
+    slideId,
+    active,
+  ]);
   const selectNodes = (ids: ReadonlySet<string>) => {
     selectionRef.current = ids;
     setSelectedIds(ids);
@@ -207,9 +372,11 @@ function Workspace({
   const lastPaste = useRef<{
     copyId: string;
     boardId: string;
+    slideId?: string;
     nextIndex: number;
   } | null>(null);
   const snapCancelled = useRef(false);
+  const suppressDragClick = useRef(false);
   const [inspecting, setInspecting] = useState(false);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const hasSelection =
@@ -222,7 +389,7 @@ function Workspace({
   const [metadata, setMetadata] = useState<Record<string, ResultSet>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [pendingRefreshes, setPendingRefreshes] = useState(() =>
-    readPendingRefreshes(workspaceId),
+    readPendingRefreshes(workspaceId, kind),
   );
   const pendingRefreshesRef = useRef(pendingRefreshes);
   const [refreshRuns, setRefreshRuns] = useState<Record<string, QueryRun>>({});
@@ -248,6 +415,26 @@ function Workspace({
   const [rebind, setRebind] = useState<ResultSet | null>(null);
   const [latestResult, setLatestResult] = useState<ResultSet | null>(null);
   const gesture = useRef<BoardDocument | null>(null);
+  const pointer = useRef({ x: 0, y: 0 });
+  const transferDrag = useRef<{
+    boardId: string;
+    cancelled: boolean;
+    viewport: ReturnType<typeof flow.getViewport>;
+  } | null>(null);
+  const restoreDragViewport = useCallback(
+    (viewport: ReturnType<typeof flow.getViewport>) => {
+      const current = flow.getViewport();
+      if (
+        current.x !== viewport.x ||
+        current.y !== viewport.y ||
+        current.zoom !== viewport.zoom
+      )
+        void flow.setViewport(viewport);
+    },
+    [flow],
+  );
+  const gestureNodes = useRef(new Set<string>());
+  const gestureEdges = useRef(new Set<string>());
   const resizing = useRef<{
     boardId: string;
     id: string;
@@ -256,6 +443,7 @@ function Workspace({
     raw: ResizeParams;
     moved: boolean;
     canPreserveAspect: boolean;
+    minimum?: { width: number; height: number };
     proportional: boolean;
   } | null>(null);
   const editableRef = useRef(editable);
@@ -263,7 +451,7 @@ function Workspace({
   const resizeStart = useCallback(
     (id: string, sides: ResizeSides, raw: ResizeParams) => {
       const current = store.current.current;
-      if (!editableRef.current || !current) return;
+      if (!editableRef.current || !current || !store.canEditNode(id)) return;
       const node = current.document.nodes.find((item) => item.id === id);
       const corner =
         Boolean(sides.left) !== Boolean(sides.right) &&
@@ -277,11 +465,16 @@ function Workspace({
         moved: false,
         canPreserveAspect:
           corner &&
-          node?.data.kind === "result" &&
-          (node.data.view === "chart" || node.data.view === "custom"),
+          (node?.data.kind === "shape" ||
+            (node?.data.kind === "result" &&
+              (node.data.view === "chart" || node.data.view === "custom"))),
+        minimum:
+          node?.data.kind === "shape" ? { width: 40, height: 40 } : undefined,
         proportional: false,
       };
       gesture.current = current.document;
+      gestureNodes.current = new Set([id]);
+      gestureEdges.current.clear();
       movingIds.current = null;
       snapCancelled.current = false;
       setGuides([]);
@@ -293,6 +486,7 @@ function Workspace({
       const active = resizing.current;
       if (
         !editableRef.current ||
+        !store.canEditNode(id) ||
         !active ||
         active.id !== id ||
         active.boardId !== store.current.current?.id
@@ -333,13 +527,32 @@ function Workspace({
     movingIds.current = null;
     setCopyDragging(false);
   }, [change, store.current]);
+  useEffect(() => {
+    if (
+      !board ||
+      !gesture.current ||
+      ![...gestureNodes.current].some((id) =>
+        nodeWork(agentLocks, board.id, id),
+      )
+    )
+      return;
+    gesture.current = null;
+    resizing.current = null;
+    movingIds.current = null;
+    gestureNodes.current.clear();
+    gestureEdges.current.clear();
+    setGuides([]);
+  }, [agentLocks, board?.id]);
   const processing = useRef(false);
   const controllers = useRef(new Set<AbortController>());
   const mounted = useRef(true);
   // XYFlow emits position changes before its drag callbacks. Capture modifiers
   // before those changes, including mouseup, to keep the final snap consistent.
   useEffect(() => {
+    if (!active) return;
     const modifier = (event: MouseEvent | PointerEvent | KeyboardEvent) => {
+      if ("clientX" in event)
+        pointer.current = { x: event.clientX, y: event.clientY };
       altPressed.current = event.altKey;
       shiftPressed.current = event.shiftKey;
       if (event.altKey) setGuides([]);
@@ -349,6 +562,11 @@ function Workspace({
       shiftPressed.current = false;
       snapCancelled.current = true;
       cancelDuplicateDrag();
+      if (transferDrag.current) {
+        transferDrag.current.cancelled = true;
+        restoreDragViewport(transferDrag.current.viewport);
+        setPreviewNodes(null);
+      }
       flushDraft();
       setGuides([]);
     };
@@ -360,6 +578,7 @@ function Workspace({
     window.addEventListener("mousemove", modifier, true);
     window.addEventListener("mouseup", modifier, true);
     window.addEventListener("pointermove", modifier, true);
+    window.addEventListener("pointerup", modifier, true);
     window.addEventListener("keydown", keyDown, true);
     window.addEventListener("keyup", modifier, true);
     window.addEventListener("pointercancel", cancel, true);
@@ -369,12 +588,13 @@ function Workspace({
       window.removeEventListener("mousemove", modifier, true);
       window.removeEventListener("mouseup", modifier, true);
       window.removeEventListener("pointermove", modifier, true);
+      window.removeEventListener("pointerup", modifier, true);
       window.removeEventListener("keydown", keyDown, true);
       window.removeEventListener("keyup", modifier, true);
       window.removeEventListener("pointercancel", cancel, true);
       window.removeEventListener("blur", cancel);
     };
-  }, [cancelDuplicateDrag, flushDraft]);
+  }, [active, cancelDuplicateDrag, flushDraft, restoreDragViewport]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -382,29 +602,75 @@ function Workspace({
       for (const controller of controllers.current) controller.abort();
     };
   }, []);
+  const fitSlide = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return;
+    void flow.setViewport(
+      fitPresentationSlide(canvas.clientWidth, canvas.clientHeight),
+    );
+  }, [flow]);
+  const previousCamera = useRef<string | null>(null);
+  const rememberedSelections = useRef(
+    new Map<
+      string,
+      { ids: ReadonlySet<string>; primary: string | null; edge: string | null }
+    >(),
+  );
   useEffect(() => {
-    setSelected(null);
-    selectNodes(new Set());
+    if (presentation && previousCamera.current)
+      rememberedSelections.current.set(previousCamera.current, {
+        ids: selectionRef.current,
+        primary: selected,
+        edge: selectedEdge,
+      });
+    previousCamera.current = cameraId ?? null;
+    const remembered = cameraId
+      ? rememberedSelections.current.get(cameraId)
+      : undefined;
+    setSelected(remembered?.primary ?? null);
+    selectNodes(remembered?.ids ?? new Set());
+    setSelectedEdge(remembered?.edge ?? null);
     setGuides([]);
     gesture.current = null;
     resizing.current = null;
     movingIds.current = null;
     duplicateDrag.current = null;
+    transferDrag.current = null;
+    setPreviewNodes(null);
     setCopyDragging(false);
     snapCancelled.current = false;
     setInspecting(false);
-    setSelectedEdge(null);
     setEditingEdge(null);
     if (initialViewport) void flow.setViewport(initialViewport);
-    else if (board) {
+    else if (board && !presentation) {
       const frame = requestAnimationFrame(
         () => void flow.fitView(boardFitOptions),
       );
       return () => cancelAnimationFrame(frame);
     }
-  }, [workspaceId, board?.id]);
+  }, [workspaceId, cameraId]);
   useEffect(() => {
-    const available = new Set(board?.document.nodes.map((node) => node.id));
+    if (!presentation || !slideId || initialViewport) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const fitWhenVisible = () => {
+      if (!canvas.clientWidth || !canvas.clientHeight) return;
+      fitSlide();
+      observer?.disconnect();
+    };
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(fitWhenVisible);
+    observer?.observe(canvas);
+    const frame = requestAnimationFrame(fitWhenVisible);
+    return () => {
+      observer?.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [cameraId, fitSlide]);
+  useEffect(() => {
+    const available = new Set(visibleContent?.nodes.map((node) => node.id));
     const ids = new Set(
       [...selectionRef.current].filter((id) => available.has(id)),
     );
@@ -414,10 +680,312 @@ function Workspace({
         primary && ids.has(primary) ? primary : ([...ids].at(-1) ?? null),
       );
     }
-  }, [board?.document.nodes]);
+    if (
+      selectedEdge &&
+      !visibleContent?.edges.some((edge) => edge.id === selectedEdge)
+    )
+      setSelectedEdge(null);
+  }, [visibleContent]);
+  const startShow = async (trigger: HTMLElement) => {
+    const target = store.current.current;
+    const id = slideRef.current;
+    if (!target || !id || showPending.current) return;
+    showPending.current = true;
+    setStartingShow(true);
+    try {
+      await store.flush();
+      const current = store.current.current;
+      if (
+        current?.id !== target.id ||
+        !current.document.slides?.some((slide) => slide.id === id)
+      )
+        throw new Error("Слайд изменился перед показом. Выберите его снова.");
+      setShow({ boardId: target.id, slideId: id, trigger });
+    } catch (error) {
+      notify((error as Error).message, "error");
+    } finally {
+      showPending.current = false;
+      setStartingShow(false);
+    }
+  };
+  const slideMutation = (
+    transform: (document: BoardDocument) => {
+      document: BoardDocument;
+      selection?: string;
+    },
+  ) => {
+    const current = store.current.current;
+    if (!current || !editable || store.conflict) return;
+    try {
+      const result = transform(current.document);
+      change(result.document);
+      const accepted = store.current.current?.document;
+      if (
+        result.selection &&
+        accepted !== current.document &&
+        accepted?.slides?.some((slide) => slide.id === result.selection)
+      )
+        selectSlide(result.selection);
+    } catch (error) {
+      notify((error as Error).message, "error");
+    }
+  };
+  const updateSlide = (
+    id: string,
+    patch: Pick<PresentationSlide, "title" | "background">,
+  ) =>
+    slideMutation((document) => ({
+      document: {
+        ...document,
+        slides: document.slides?.map((slide) =>
+          slide.id === id ? { ...slide, ...patch } : slide,
+        ),
+      },
+    }));
+  const reorderSlide = (from: string, to: string) =>
+    slideMutation((document) => {
+      const slides = [...(document.slides ?? [])];
+      const a = slides.findIndex((slide) => slide.id === from);
+      const b = slides.findIndex((slide) => slide.id === to);
+      if (a < 0 || b < 0 || a === b) return { document };
+      const [slide] = slides.splice(a, 1);
+      slides.splice(b, 0, slide);
+      return { document: { ...document, slides } };
+    });
+  const createSlide = (duplicate = false) =>
+    slideMutation((document) => {
+      const result =
+        duplicate && slideRef.current
+          ? duplicatePresentationSlide(document, slideRef.current)
+          : addPresentationSlide(document);
+      return { document: result.document, selection: result.slide.id };
+    });
+  const deleteSlide = (id: string) =>
+    slideMutation((document) => {
+      const index =
+        document.slides?.findIndex((slide) => slide.id === id) ?? -1;
+      if (index < 0) return { document };
+      const result = removePresentationSlide(document, id);
+      const slides = result.slides!;
+      return {
+        document: result,
+        selection:
+          slideRef.current === id
+            ? slides[Math.min(index, slides.length - 1)].id
+            : undefined,
+      };
+    });
+  const canvasBounds = () => canvasRef.current?.getBoundingClientRect();
+  const visibleCanvasBounds = () => {
+    if (workspaceRef.current?.closest("[hidden], [inert]")) return undefined;
+    const bounds = canvasBounds();
+    return bounds && bounds.width > 0 && bounds.height > 0 ? bounds : undefined;
+  };
+  const canvasCenter = () => {
+    const bounds = canvasBounds();
+    return bounds
+      ? flow.screenToFlowPosition({
+          x: bounds.left + bounds.width / 2,
+          y: bounds.top + bounds.height / 2,
+        })
+      : { x: 0, y: 0 };
+  };
+  const insertionSlide = (
+    document: BoardDocument,
+    destination: CanvasDestination | null,
+  ) => {
+    if (!presentation) return undefined;
+    const id = destination ? destination.slideId : document.slides?.[0]?.id;
+    if (!id || !document.slides?.some((slide) => slide.id === id))
+      throw new Error("Слайд для вставки удалён.");
+    return id;
+  };
+  const selectInserted = (
+    ids: ReadonlySet<string>,
+    destination: CanvasDestination | null,
+    boardId: string,
+  ) => {
+    if (
+      store.current.current?.id !== boardId ||
+      (destination && destination.slideId !== slideRef.current)
+    )
+      return;
+    const primary = [...ids][0] ?? null;
+    const targetCamera = destination?.slideId
+      ? `${boardId}:${destination.slideId}`
+      : boardId;
+    if (presentation && targetCamera !== previousCamera.current) {
+      rememberedSelections.current.set(targetCamera, {
+        ids,
+        primary,
+        edge: null,
+      });
+      return;
+    }
+    selectNodes(ids);
+    setSelected(primary);
+    setSelectedEdge(null);
+    setInspecting(false);
+  };
+  const insertCanvasResult = async (
+    result: ResultSet,
+    destination: CanvasDestination | null,
+    position?: { x: number; y: number },
+    actionId?: string,
+  ) => {
+    if (!editable || (destination && destination.kind !== kind))
+      throw new Error("Выбранная панель недоступна для записи.");
+    const center = canvasCenter();
+    const updated = await store.applyTo(
+      destination?.boardId ?? null,
+      (target) => {
+        const id = insertionSlide(target.document, destination);
+        const centerPoint = id
+          ? {
+              x: (PRESENTATION_WIDTH - 540) / 2,
+              y: (PRESENTATION_HEIGHT - 350) / 2,
+            }
+          : destination
+            ? center
+            : { x: 80, y: 80 };
+        const node = createResultNode(
+          result,
+          position ?? centerPoint,
+          target.document.nodes,
+        );
+        node.slideId = id;
+        const document = {
+          ...target.document,
+          nodes: [...target.document.nodes, node],
+        };
+        validateCanvasInsertion(document);
+        return document;
+      },
+      actionId,
+    );
+    setLatestResult(result);
+    setMetadata((values) => ({ ...values, [result.id]: result }));
+    selectInserted(updated.ids, destination, updated.boardId);
+  };
+  const insertCanvasFragment = async (
+    fragment: BoardFragment,
+    destination: CanvasDestination | null,
+    position?: { x: number; y: number },
+    actionId?: string,
+  ) => {
+    if (!editable || (destination && destination.kind !== kind))
+      throw new Error("Выбранная панель недоступна для записи.");
+    if (fragment.workspaceId !== workspaceId)
+      throw new Error("Нельзя вставить блоки из другого проекта.");
+    const center = presentation
+      ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
+      : canvasCenter();
+    const originalSlide = slideRef.current;
+    const selectionSequence = store.selectionSequence();
+    const selectionUnchanged = () =>
+      store.selectionSequence() === selectionSequence &&
+      slideRef.current === originalSlide;
+    const updated = await store.applyTo(
+      destination?.boardId ?? null,
+      (target) => {
+        const pasted = pasteBoardFragment(
+          fragment,
+          target,
+          position ?? center,
+          0,
+          {
+            slideId: insertionSlide(target.document, destination),
+            placement: position ? "pointer" : "center",
+          },
+        );
+        return pasted.document;
+      },
+      actionId,
+    );
+    if (
+      presentation &&
+      destination?.slideId &&
+      !position &&
+      selectionUnchanged()
+    ) {
+      let expectedSequence = selectionSequence;
+      if (store.current.current?.id !== updated.boardId) {
+        try {
+          await store.flush();
+          if (selectionUnchanged()) {
+            const opening = store.select(updated.boardId);
+            expectedSequence = store.selectionSequence();
+            await opening;
+          }
+        } catch (error) {
+          notify((error as Error).message, "info");
+        }
+      }
+      if (
+        store.current.current?.id === updated.boardId &&
+        store.selectionSequence() === expectedSequence &&
+        store.current.current.document.slides?.some(
+          (item) => item.id === destination.slideId,
+        )
+      ) {
+        selectSlide(destination.slideId);
+        store.recordInsertion(updated);
+      }
+    }
+    selectInserted(updated.ids, destination, updated.boardId);
+  };
+  const registryHandle = useRef<CanvasHandle | null>(null);
+  registryHandle.current = {
+    destination: () => {
+      const current = store.current.current;
+      return current
+        ? { kind, boardId: current.id, slideId: slideRef.current }
+        : null;
+    },
+    ready: () => store.ready,
+    visible: () => !!visibleCanvasBounds(),
+    insertResult: (result, destination, actionId) =>
+      insertCanvasResult(result, destination, undefined, actionId),
+    insertFragment: insertCanvasFragment,
+    containsPoint: ({ x, y }) => {
+      const bounds = visibleCanvasBounds();
+      return (
+        !!bounds &&
+        x >= bounds.left &&
+        x <= bounds.right &&
+        y >= bounds.top &&
+        y <= bounds.bottom
+      );
+    },
+    screenToCanvas: (point) => flow.screenToFlowPosition(point),
+  };
+  useEffect(
+    () =>
+      registry?.register(kind, {
+        destination: () => registryHandle.current!.destination(),
+        ready: () => registryHandle.current!.ready!(),
+        visible: () => registryHandle.current!.visible!(),
+        insertResult: (...args) =>
+          registryHandle.current!.insertResult(...args),
+        insertFragment: (...args) =>
+          registryHandle.current!.insertFragment(...args),
+        containsPoint: (point) => registryHandle.current!.containsPoint(point),
+        screenToCanvas: (point) =>
+          registryHandle.current!.screenToCanvas(point),
+      }),
+    [registry, kind],
+  );
   const addResult = useCallback(
     async (result: ResultSet, position?: { x: number; y: number }) => {
       if (!editable) return;
+      if (presentation) {
+        await insertCanvasResult(
+          result,
+          registryHandle.current!.destination(),
+          position,
+        );
+        return;
+      }
       setLatestResult(result);
       const existing = store.current.current;
       if (!existing) {
@@ -441,12 +1009,12 @@ function Workspace({
       setSelected(node.id);
       selectNodes(new Set([node.id]));
     },
-    [editable, change, flow, store.create],
+    [editable, change, flow, store.create, presentation, insertCanvasResult],
   );
   useEffect(() => {
     if (!incomingResult || store.loading || processing.current) return;
     if (!editable) {
-      onIncomingConsumed();
+      onIncomingConsumed?.();
       notify("У наблюдателя нет прав на изменение доски.", "info");
       return;
     }
@@ -455,13 +1023,13 @@ function Workspace({
       .catch((e) => notify(e.message, "error"))
       .finally(() => {
         processing.current = false;
-        onIncomingConsumed();
+        onIncomingConsumed?.();
       });
   }, [incomingResult, store.loading, editable]);
   const update = useCallback(
     (id: string, patch: Partial<BoardNodeData>) => {
       const current = store.current.current;
-      if (current)
+      if (current && store.canEditNode(id))
         change({
           ...current.document,
           nodes: current.document.nodes.map((n) =>
@@ -474,7 +1042,8 @@ function Workspace({
   const remove = useCallback(
     (id: string) => {
       const current = store.current.current;
-      if (current) change(removeNode(current.document, id));
+      if (!current || !store.canRemoveNode(id)) return;
+      change(removeNode(current.document, id));
       if (selected === id) setSelected(null);
       selectNodes(
         new Set([...selectionRef.current].filter((value) => value !== id)),
@@ -486,7 +1055,7 @@ function Workspace({
     update: (current: PendingBoardRefresh[]) => PendingBoardRefresh[],
   ) {
     // Merge with current storage so another browser tab's pending runs are retained.
-    let current = readPendingRefreshes(workspaceId);
+    let current = readPendingRefreshes(workspaceId, kind);
     for (const entry of pendingRefreshesRef.current)
       if (!current.some((other) => other.runId === entry.runId))
         current.push(entry);
@@ -494,7 +1063,7 @@ function Workspace({
     pendingRefreshesRef.current = next;
     try {
       localStorage.setItem(
-        refreshStorageKey(workspaceId),
+        refreshStorageKey(workspaceId, kind),
         JSON.stringify(next),
       );
     } catch {
@@ -538,6 +1107,7 @@ function Workspace({
         if (
           latest?.id !== pending.boardId ||
           !editableRef.current ||
+          !store.canEditNode(pending.nodeId) ||
           conflictRef.current
         )
           return;
@@ -588,6 +1158,7 @@ function Workspace({
       const run = refreshRuns[pending.runId];
       if (
         pending.boardId === board.id &&
+        store.canEditNode(pending.nodeId) &&
         !refreshErrors[pending.runId] &&
         (!run || ["running", "cancelling", "completed"].includes(run.status))
       )
@@ -601,6 +1172,7 @@ function Workspace({
     pendingRefreshes,
     refreshRuns,
     refreshErrors,
+    agentLocks,
   ]);
   async function resolveRefresh(
     pending: PendingBoardRefresh,
@@ -650,6 +1222,7 @@ function Workspace({
         !current ||
         !node ||
         !editable ||
+        !store.canEditNode(id) ||
         busy[id] ||
         store.conflict ||
         refreshStarts.current.has(`${current.id}:${id}`) ||
@@ -671,6 +1244,7 @@ function Workspace({
           !live ||
           live.id !== boardId ||
           !liveNode ||
+          !store.canEditNode(id) ||
           (liveNode.data.sourceRevision ?? 0) !== sourceRevision
         )
           throw new Error("Источник изменился. Повторите обновление.");
@@ -700,46 +1274,147 @@ function Workspace({
     },
     [editable, busy, change, store.save, notify],
   );
-  const addText = (kind: "note" | "markdown") => {
-    if (!board || !editable) return;
+  const addShape = (type: ShapeKind) => {
+    const current = store.current.current;
+    if (!current || current.id !== board?.id || !editable || store.conflict)
+      return;
+    const width = type === "triangle" || type === "diamond" ? 180 : 240;
+    const height = type === "triangle" || type === "diamond" ? 180 : 160;
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    const center = slideId
+      ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
+      : flow.screenToFlowPosition({
+          x: bounds ? bounds.left + bounds.width / 2 : window.innerWidth / 2,
+          y: bounds ? bounds.top + bounds.height / 2 : window.innerHeight / 2,
+        });
     const node: BoardNode = {
       id: crypto.randomUUID(),
       type: "artifact",
-      position: flow.screenToFlowPosition({
-        x: window.innerWidth * 0.65,
-        y: window.innerHeight * 0.35,
-      }),
-      width: 360,
-      height: 260,
+      slideId,
+      position: { x: center.x - width / 2, y: center.y - height / 2 },
+      width,
+      height,
+      data: {
+        kind: "shape",
+        title: SHAPE_OPTIONS.find((option) => option.type === type)!.label,
+        text: "",
+        shape: { type },
+      },
+    };
+    const document = {
+      ...current.document,
+      nodes: [...current.document.nodes, node],
+    };
+    try {
+      validateCanvasInsertion(document);
+      change(document);
+    } catch (error) {
+      notify((error as Error).message, "error");
+      return;
+    }
+    setSelected(node.id);
+    selectNodes(new Set([node.id]));
+    setSelectedEdge(null);
+    setInspecting(true);
+  };
+  const addText = (kind: "note" | "markdown" | "text") => {
+    if (!board || !editable || store.conflict) return;
+    const plainText = kind === "text";
+    const width = 360;
+    const height = plainText ? 120 : 260;
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    const center =
+      plainText && bounds
+        ? flow.screenToFlowPosition({
+            x: bounds.left + bounds.width / 2,
+            y: bounds.top + bounds.height / 2,
+          })
+        : null;
+    const boardText = workspaceRef.current
+      ? getComputedStyle(workspaceRef.current)
+          .getPropertyValue("--board-text")
+          .trim()
+      : "";
+    const node: BoardNode = {
+      id: crypto.randomUUID(),
+      type: "artifact",
+      slideId,
+      position: slideId
+        ? {
+            x: (PRESENTATION_WIDTH - width) / 2,
+            y: (PRESENTATION_HEIGHT - height) / 2,
+          }
+        : center
+          ? { x: center.x - width / 2, y: center.y - height / 2 }
+          : flow.screenToFlowPosition({
+              x: window.innerWidth * 0.65,
+              y: window.innerHeight * 0.35,
+            }),
+      width,
+      height,
       data: {
         kind,
-        title: kind === "note" ? "Заметка" : "Markdown",
+        title: plainText ? "Текст" : kind === "note" ? "Заметка" : "Markdown",
         text:
           kind === "markdown"
             ? "## Наблюдение\n\nДобавьте контекст к данным."
-            : "",
+            : plainText
+              ? "Текст"
+              : "",
+        ...(plainText && {
+          textStyle: {
+            fontFamily: "sans" as const,
+            fontSize: 32,
+            textAlign: "left" as const,
+            verticalAlign: "top" as const,
+            textColor: slide
+              ? presentationColors(slide.background).text
+              : /^#[0-9a-f]{6}$/i.test(boardText)
+                ? boardText
+                : "#eeeff0",
+          },
+        }),
       },
     };
-    change({ ...board.document, nodes: [...board.document.nodes, node] });
+    const document = {
+      ...board.document,
+      nodes: [...board.document.nodes, node],
+    };
+    try {
+      if (presentation || plainText) validateCanvasInsertion(document);
+      change(document);
+    } catch (error) {
+      notify((error as Error).message, "error");
+      return;
+    }
     setSelected(node.id);
     selectNodes(new Set([node.id]));
+    if (plainText) {
+      setSelectedEdge(null);
+      setInspecting(true);
+    }
   };
   const onNodesChange = (incoming: NodeChange<BoardCanvasNode>[]) => {
     const current = store.current.current;
     if (!current || current.id !== board?.id) return;
-    const nodeIds = new Set(current.document.nodes.map((node) => node.id));
+    const slideNodes = current.document.nodes.filter(
+      (node) => node.slideId === slideId,
+    );
+    const nodeIds = new Set(slideNodes.map((node) => node.id));
     const changes = incoming.filter(
       (item) =>
         item.type !== "add" && item.type !== "replace" && nodeIds.has(item.id),
     ) as NodeChange<ArtifactFlowNode>[];
     const selectionChanges = changes.filter(
-      (c) => c.type === "select" || c.type === "remove",
+      (c) =>
+        c.type === "select" ||
+        (c.type === "remove" && store.canRemoveNode(c.id)),
     );
     if (selectionChanges.length) {
       const ids = new Set(selectionRef.current);
       for (const item of selectionChanges) {
         if (item.type === "select" && item.selected) ids.add(item.id);
-        else ids.delete(item.id);
+        else if ("id" in item) ids.delete(item.id);
       }
       selectNodes(ids);
       setSelected((primary) =>
@@ -751,9 +1426,67 @@ function Workspace({
     let meaningful = changes.filter(
       (c) =>
         c.type !== "select" &&
-        !(c.type === "dimensions" && c.resizing === undefined),
+        !(c.type === "dimensions" && c.resizing === undefined) &&
+        "id" in c &&
+        store.canEditNode(c.id),
     );
     if (!meaningful.length) return;
+    const positions = meaningful.flatMap((item) =>
+      item.type === "position" && item.dragging !== undefined ? [item] : [],
+    );
+    const draggingAcross = positions.some((item) => item.dragging);
+    const presentationTarget = registry?.getCanvas("presentation");
+    if (
+      !presentation &&
+      presentationTarget &&
+      draggingAcross &&
+      !transferDrag.current &&
+      !gesture.current &&
+      !altPressed.current &&
+      !resizing.current &&
+      presentationTarget.visible?.() !== false
+    )
+      transferDrag.current = {
+        boardId: current.id,
+        cancelled: false,
+        viewport: flow.getViewport(),
+      };
+    const transfer = transferDrag.current;
+    if (transfer?.boardId === current.id && positions.length) {
+      const finished = positions.some((item) => item.dragging === false);
+      const point = pointer.current;
+      const transferDrop =
+        finished && registry && presentationTarget?.containsPoint(point);
+      const outOfPane =
+        finished && !registryHandle.current?.containsPoint(point);
+      if (finished) {
+        transferDrag.current = null;
+        setPreviewNodes(null);
+        setGuides([]);
+        if (transfer.cancelled || transferDrop || outOfPane)
+          restoreDragViewport(transfer.viewport);
+      }
+      if (transfer.cancelled) return;
+      const ids = new Set(positions.map((item) => item.id));
+      if (transferDrop) {
+        const fragment = createBoardFragment(current, workspaceId, ids);
+        if (fragment)
+          void registry
+            .drop(fragment, point)
+            .catch((error) => notify(error.message, "error"));
+        return;
+      }
+      if (outOfPane) return;
+      let nodes = applyBoardNodeChanges(positions, slideNodes);
+      if (!altPressed.current && !snapCancelled.current) {
+        const snapped = snapBoardNodes(nodes, ids, flow.getZoom());
+        nodes = snapped.nodes;
+        if (!finished) setGuides(snapped.guides);
+      }
+      if (finished) change({ ...current.document, nodes });
+      else setPreviewNodes(nodes);
+      return;
+    }
     const ongoing = meaningful.some(
       (c) =>
         (c.type === "position" && c.dragging) ||
@@ -764,7 +1497,14 @@ function Workspace({
         (c.type === "position" && c.dragging === false) ||
         (c.type === "dimensions" && c.resizing === false),
     );
-    if (ongoing && !gesture.current) gesture.current = current.document;
+    if (ongoing && !gesture.current) {
+      gesture.current = current.document;
+      gestureNodes.current.clear();
+      gestureEdges.current.clear();
+    }
+    if (gesture.current)
+      for (const item of meaningful)
+        if ("id" in item) gestureNodes.current.add(item.id);
     let dragging = meaningful.flatMap((c) =>
       c.type === "position" && c.dragging === true ? [c.id] : [],
     );
@@ -807,6 +1547,8 @@ function Workspace({
           source: ids.get(edge.source!)!,
           target: ids.get(edge.target!)!,
         }));
+      for (const id of ids.values()) gestureNodes.current.add(id);
+      for (const edge of edges) gestureEdges.current.add(edge.id);
       duplicateDrag.current = {
         boardId: current.id,
         ids,
@@ -818,6 +1560,14 @@ function Workspace({
         nodes: [...current.document.nodes, ...copies],
         edges: [...current.document.edges, ...edges],
       };
+      try {
+        if (presentation) validateCanvasInsertion(workingDocument);
+      } catch (error) {
+        duplicateDrag.current.cancelled = true;
+        gesture.current = null;
+        notify((error as Error).message, "error");
+        return;
+      }
       selectNodes(new Set(ids.values()));
       setSelected([...ids.values()][0] ?? null);
       setSelectedEdge(null);
@@ -858,6 +1608,7 @@ function Workspace({
             activeResize.raw,
             activeResize.start,
             activeResize.sides,
+            activeResize.minimum,
           )
         : activeResize.raw;
       // Raw callbacks contain the full rectangle; individual XYFlow changes
@@ -878,12 +1629,14 @@ function Workspace({
         !snapCancelled.current
       ) {
         const snapped = snapResizedNode(
-          next,
+          next.filter((node) => node.slideId === slideId),
           activeResize.id,
           activeResize.sides,
           flow.getZoom(),
+          presentation ? slideSnapFrame : undefined,
         );
-        next = snapped.nodes;
+        const visible = new Map(snapped.nodes.map((node) => [node.id, node]));
+        next = next.map((node) => visible.get(node.id) ?? node);
         setGuides(completed ? [] : snapped.guides);
       } else setGuides([]);
     }
@@ -896,12 +1649,18 @@ function Workspace({
       !altPressed.current &&
       !snapCancelled.current
     ) {
-      const snapped = snapBoardNodes(next, movingIds.current, flow.getZoom());
-      next = snapped.nodes;
+      const snapped = snapBoardNodes(
+        next.filter((node) => node.slideId === slideId),
+        movingIds.current,
+        flow.getZoom(),
+        presentation ? slideSnapFrame : undefined,
+      );
+      const visible = new Map(snapped.nodes.map((node) => [node.id, node]));
+      next = next.map((node) => visible.get(node.id) ?? node);
       setGuides(completed ? [] : snapped.guides);
     } else if (dragPositions || completed) setGuides([]);
     const removed = new Set(
-      changes.filter((c) => c.type === "remove").map((c) => c.id),
+      meaningful.filter((c) => c.type === "remove").map((c) => c.id),
     );
     const document = {
       ...workingDocument,
@@ -918,7 +1677,10 @@ function Workspace({
     if (completed) flushDraft();
     if (completed && gesture.current) {
       if (JSON.stringify(gesture.current) !== JSON.stringify(document))
-        store.recordHistory(gesture.current);
+        store.recordHistory(gesture.current, {
+          nodeIds: [...gestureNodes.current],
+          edgeIds: [...gestureEdges.current],
+        });
       gesture.current = null;
     }
     if (completed && movingIds.current) movingIds.current = null;
@@ -933,7 +1695,7 @@ function Workspace({
     if (!current || !editable || selectionRef.current.size < 2) return;
     const nodes = alignBoardNodes(
       current.document.nodes,
-      selectionRef.current,
+      new Set([...selectionRef.current].filter((id) => store.canEditNode(id))),
       action,
     );
     change({ ...current.document, nodes });
@@ -946,15 +1708,24 @@ function Workspace({
       !editable ||
       !connection.source ||
       !connection.target ||
+      !store.canEditNode(connection.source) ||
+      !store.canEditNode(connection.target) ||
+      !document.nodes.some(
+        (node) => node.id === connection.source && node.slideId === slideId,
+      ) ||
+      !document.nodes.some(
+        (node) => node.id === connection.target && node.slideId === slideId,
+      ) ||
       connection.source === connection.target
     )
       return;
-    change({
+    const connected = {
       ...document,
       edges: [
         ...document.edges,
         {
           id: crypto.randomUUID(),
+          slideId,
           source: connection.source,
           target: connection.target,
           sourceHandle: boardHandleSide(connection.sourceHandle, "right"),
@@ -962,18 +1733,30 @@ function Workspace({
           label: "label" in connection ? connection.label : undefined,
         },
       ],
-    });
+    };
+    try {
+      if (presentation) validateCanvasInsertion(connected);
+      change(connected);
+    } catch (error) {
+      notify((error as Error).message, "error");
+    }
   };
-  const selectedNode = board?.document.nodes.find((n) => n.id === selected);
+  const selectedNode = visibleContent?.nodes.find((n) => n.id === selected);
   const canInspectSelected =
-    !!selectedNode && selectedNode.data.kind !== "note";
+    !!selectedNode && (presentation || selectedNode.data.kind !== "note");
   const updateEdge = (
     boardId: string,
     id: string,
     patch: Partial<Pick<BoardEdge, "label" | "appearance">>,
   ) => {
     const current = store.current.current;
-    if (!editableRef.current || !current || current.id !== boardId) return;
+    if (
+      !editableRef.current ||
+      !current ||
+      current.id !== boardId ||
+      !store.canEditEdge(id)
+    )
+      return;
     change({
       ...current.document,
       edges: current.document.edges.map((edge) =>
@@ -993,7 +1776,13 @@ function Workspace({
   };
   const removeEdge = (boardId: string, id: string) => {
     const current = store.current.current;
-    if (!editableRef.current || !current || current.id !== boardId) return;
+    if (
+      !editableRef.current ||
+      !current ||
+      current.id !== boardId ||
+      !store.canEditEdge(id)
+    )
+      return;
     change({
       ...current.document,
       edges: current.document.edges.filter((edge) => edge.id !== id),
@@ -1009,7 +1798,13 @@ function Workspace({
     expected?: BoardEdge,
   ) => {
     const current = store.current.current;
-    if (!editableRef.current || !current || current.id !== boardId) return;
+    if (
+      !editableRef.current ||
+      !current ||
+      current.id !== boardId ||
+      !store.canEditEdge(id)
+    )
+      return;
     const edge = current.document.edges.find((item) => item.id === id);
     if (
       !edge ||
@@ -1045,8 +1840,10 @@ function Workspace({
       kind === "rename"
         ? (board?.name ?? "")
         : kind === "copy"
-          ? `${board?.name ?? "Доска"} — копия`
-          : "Новая доска",
+          ? `${board?.name ?? canvasName} — копия`
+          : presentation
+            ? "Новая презентация"
+            : "Новая доска",
     );
     setDialogError(null);
     setDialog(kind);
@@ -1056,7 +1853,7 @@ function Workspace({
     setDialogError(null);
     try {
       if (dialog === "delete") await store.remove();
-      else if (!name.trim()) throw new Error("Введите название доски.");
+      else if (!name.trim()) throw new Error("Введите название.");
       else if (dialog === "rename") await store.rename(name.trim());
       else if (dialog === "copy") {
         await store.create(name.trim(), board!.document);
@@ -1083,12 +1880,12 @@ function Workspace({
       const node = store.current.current?.document.nodes.find(
         (n) => n.id === id,
       );
-      if (!node || node.data.kind === "note") return;
+      if (!node || (!presentation && node.data.kind === "note")) return;
       setSelected(id);
       selectNodes(new Set([id]));
       setInspecting(true);
     },
-    [store.current],
+    [store.current, presentation],
   );
   const recordMetadata = useCallback(
     (result: ResultSet) =>
@@ -1112,6 +1909,12 @@ function Workspace({
     () => ({
       boardId: board?.id ?? "",
       editable,
+      presentation,
+      slideBackground: slide?.background,
+      canEditNode: store.canEditNode,
+      canRemoveNode: store.canRemoveNode,
+      nodeWork: (id: string) =>
+        board ? nodeWork(agentLocks, board.id, id) : undefined,
       resizeStart,
       resize,
       update,
@@ -1124,7 +1927,10 @@ function Workspace({
     }),
     [
       board?.id,
+      agentLocks,
       editable,
+      presentation,
+      slide?.background,
       resizeStart,
       resize,
       update,
@@ -1140,10 +1946,46 @@ function Workspace({
     <section
       ref={workspaceRef}
       tabIndex={-1}
+      onPointerDownCapture={() => {
+        suppressDragClick.current = false;
+        onActivate?.();
+      }}
+      onMouseDownCapture={(event) => {
+        if (
+          event.button !== 0 ||
+          !canvasFocusTarget(event.target) ||
+          !canvasRef.current?.contains(event.target) ||
+          !event.target.closest(
+            ".board-node-header,.board-shape-content,.board-text-content,.presentation-artifact,.react-flow__pane,.react-flow__nodesselection-rect",
+          )
+        )
+          return;
+        // The drag library can suppress the subsequent click. Prevent the
+        // browser's mousedown focus default while leaving the drag listener live.
+        event.preventDefault();
+        workspaceRef.current?.focus({ preventScroll: true });
+      }}
+      onClickCapture={(event) => {
+        if (
+          canvasFocusTarget(event.target) &&
+          canvasRef.current?.contains(event.target)
+        )
+          workspaceRef.current?.focus({ preventScroll: true });
+      }}
+      onFocusCapture={(event) => {
+        if (!workspaceRef.current?.contains(event.target)) return;
+        setLocalFocus(true);
+        onActivate?.();
+      }}
+      onBlurCapture={(event) => {
+        if (!workspaceRef.current?.contains(event.relatedTarget as Node | null))
+          setLocalFocus(false);
+      }}
       onCopy={(event) => {
         const current = store.current.current;
         if (
           event.defaultPrevented ||
+          !active ||
           !current ||
           nativeBoardClipboardTarget(event.target)
         )
@@ -1155,6 +1997,7 @@ function Workspace({
               current,
               workspaceId,
               selectionRef.current,
+              slideId,
             )
           )
             event.preventDefault();
@@ -1166,11 +2009,13 @@ function Workspace({
         const current = store.current.current;
         if (
           event.defaultPrevented ||
+          !active ||
           !current ||
           !editable ||
           store.loading ||
           store.conflict ||
           gesture.current ||
+          transferDrag.current ||
           nativeBoardClipboardTarget(event.target)
         )
           return;
@@ -1185,18 +2030,23 @@ function Workspace({
           ?.querySelector(".board-canvas")
           ?.getBoundingClientRect();
         if (!canvas) return;
-        const center = flow.screenToFlowPosition({
-          x: canvas.left + canvas.width / 2,
-          y: canvas.top + canvas.height / 2,
-        });
+        const center = slideId
+          ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
+          : flow.screenToFlowPosition({
+              x: canvas.left + canvas.width / 2,
+              y: canvas.top + canvas.height / 2,
+            });
         const previous = lastPaste.current;
         const index =
           previous?.copyId === fragment.copyId &&
-          previous.boardId === current.id
+          previous.boardId === current.id &&
+          previous.slideId === slideId
             ? previous.nextIndex
             : 0;
         try {
-          const pasted = pasteBoardFragment(fragment, current, center, index);
+          const pasted = pasteBoardFragment(fragment, current, center, index, {
+            slideId,
+          });
           change(pasted.document);
           selectNodes(pasted.ids);
           setSelected([...pasted.ids][0] ?? null);
@@ -1205,6 +2055,7 @@ function Workspace({
           lastPaste.current = {
             copyId: fragment.copyId,
             boardId: current.id,
+            slideId,
             nextIndex: pasted.nextIndex,
           };
           workspaceRef.current?.focus({ preventScroll: true });
@@ -1214,12 +2065,35 @@ function Workspace({
       }}
       onKeyDown={(e) => {
         if (
+          e.defaultPrevented ||
+          e.nativeEvent.isComposing ||
+          !active ||
+          !workspaceRef.current?.contains(e.target as Node) ||
           (e.target as HTMLElement).closest(
             "input,textarea,[contenteditable=true]",
           )
         )
           return;
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        if (
+          presentation &&
+          editable &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey &&
+          (e.key === "Backspace" || e.key === "Delete")
+        ) {
+          if (gesture.current || store.loading || store.conflict) return;
+          const ids = [...selectionRef.current].filter((id) =>
+            store.canRemoveNode(id),
+          );
+          if (ids.length) {
+            e.preventDefault();
+            onNodesChange(ids.map((id) => ({ type: "remove", id })));
+          } else if (selectedEdge && board && store.canEditEdge(selectedEdge)) {
+            e.preventDefault();
+            removeEdge(board.id, selectedEdge);
+          }
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
           e.preventDefault();
           if (e.shiftKey) store.redo();
           else store.undo();
@@ -1228,15 +2102,19 @@ function Workspace({
           store.redo();
         }
       }}
-      className={`board-workspace${hasSelection ? " board-has-selection" : ""}${copyDragging ? " board-copy-dragging" : ""}`}
-      aria-label="Аналитическая доска"
+      className={`board-workspace${presentation ? " presentation-workspace" : ""}${hasSelection ? " board-has-selection" : ""}${copyDragging ? " board-copy-dragging" : ""}`}
+      aria-label={presentation ? "Презентация" : "Аналитическая доска"}
     >
       <div className="board-header">
-        <span className="board-heading">Доска</span>
+        <span className="board-heading">{canvasName}</span>
+        <AgentWorkIndicator
+          work={board ? boardWork(agentLocks, board.id) : undefined}
+          compact
+        />
         <Select
-          aria-label="Выбрать доску"
+          aria-label={presentation ? "Выбрать презентацию" : "Выбрать доску"}
           value={board?.id ?? ""}
-          placeholder="Выберите доску"
+          placeholder={presentation ? "Выберите презентацию" : "Выберите доску"}
           onValueChange={(selectedId) => {
             void store.save().then(() => store.select(selectedId));
           }}
@@ -1249,12 +2127,25 @@ function Workspace({
         >
           {editable ? store.state : "Только просмотр"}
         </span>
+        {slide && (
+          <button
+            className="board-header-icon presentation-show-button"
+            title="Начать показ"
+            aria-label="Начать показ"
+            disabled={startingShow || store.loading || store.conflict}
+            onClick={(event) => void startShow(event.currentTarget)}
+          >
+            <ProjectorScreen size={18} aria-hidden="true" />
+          </button>
+        )}
         {editable && (
           <>
             <button
               onClick={() => openDialog("new")}
-              title="Создать доску"
-              aria-label="Создать доску"
+              title={presentation ? "Создать презентацию" : "Создать доску"}
+              aria-label={
+                presentation ? "Создать презентацию" : "Создать доску"
+              }
               className="board-header-icon"
             >
               <Plus size={17} aria-hidden="true" />
@@ -1265,8 +2156,16 @@ function Workspace({
                   <button
                     ref={boardMenuTrigger}
                     className="board-header-icon"
-                    title="Действия с доской"
-                    aria-label="Действия с доской"
+                    title={
+                      presentation
+                        ? "Действия с презентацией"
+                        : "Действия с доской"
+                    }
+                    aria-label={
+                      presentation
+                        ? "Действия с презентацией"
+                        : "Действия с доской"
+                    }
                   >
                     <DotsThree size={19} weight="bold" aria-hidden="true" />
                   </button>
@@ -1284,22 +2183,26 @@ function Workspace({
                     onKeyUp={(event) => event.stopPropagation()}
                   >
                     <DropdownMenu.Item
+                      disabled={!store.canRename()}
                       onSelect={() =>
                         openDialog("rename", boardMenuTrigger.current)
                       }
                     >
                       <PencilSimple size={16} aria-hidden="true" />
-                      Переименовать доску
+                      {presentation
+                        ? "Переименовать презентацию"
+                        : "Переименовать доску"}
                     </DropdownMenu.Item>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
                       className="board-menu-danger"
+                      disabled={!store.canDelete()}
                       onSelect={() =>
                         openDialog("delete", boardMenuTrigger.current)
                       }
                     >
                       <Trash size={16} aria-hidden="true" />
-                      Удалить доску
+                      {presentation ? "Удалить презентацию" : "Удалить доску"}
                     </DropdownMenu.Item>
                   </DropdownMenu.Content>
                 </DropdownMenu.Portal>
@@ -1308,10 +2211,49 @@ function Workspace({
           </>
         )}
       </div>
+      {store.parkedDrafts.length > 0 && (
+        <div className="board-agent-recovery" role="status">
+          <span>
+            Агент занял блок с вашим черновиком. Черновик сохранён отдельно;
+            остальные блоки доступны.
+          </span>
+          <button
+            onClick={() => {
+              const blob = new Blob(
+                [JSON.stringify(store.parkedDrafts, null, 2)],
+                { type: "application/json" },
+              );
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = "board-drafts.json";
+              link.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }}
+          >
+            Скачать черновики
+          </button>
+          <button
+            onClick={() =>
+              void store
+                .create(
+                  `${board?.name || "Доска"} — черновик`,
+                  store.parkedDrafts.at(-1)!.document,
+                )
+                .catch((error) => notify(error.message, "error"))
+            }
+          >
+            Открыть последний как копию
+          </button>
+        </div>
+      )}
       {store.conflict && (
         <div className="board-conflict" role="alert">
           <span>
-            Доска изменена в другой вкладке. Ваш черновик сохранён локально.
+            {presentation
+              ? "Презентация изменена в другой вкладке."
+              : "Доска изменена в другой вкладке."}{" "}
+            Ваш черновик сохранён локально.
           </span>
           <button onClick={() => openDialog("copy")}>Сохранить копию</button>
           <button onClick={() => void store.reload()}>
@@ -1321,6 +2263,16 @@ function Workspace({
       )}
       {board && (
         <div className="board-tools">
+          <ShapePicker disabled={!editable} onSelect={addShape} />
+          <button
+            disabled={!editable}
+            onClick={() => addText("text")}
+            title="Добавить текст"
+            aria-label="Добавить текст"
+            className="board-tools-icon"
+          >
+            <TextT size={18} aria-hidden="true" />
+          </button>
           <button
             disabled={!editable}
             onClick={() => addText("note")}
@@ -1339,6 +2291,37 @@ function Workspace({
           >
             <FileMd size={18} aria-hidden="true" />
           </button>
+          {slide && (
+            <button
+              className="board-tools-icon"
+              aria-label="Вписать слайд"
+              title="Вписать слайд в окно"
+              onClick={fitSlide}
+            >
+              <CornersOut size={17} aria-hidden="true" />
+            </button>
+          )}
+          {!presentation && registry && (
+            <button
+              className="board-tools-icon"
+              aria-label="Добавить в презентацию"
+              title="Добавить в презентацию"
+              disabled={!selectedIds.size}
+              onClick={() => {
+                const current = store.current.current;
+                const fragment =
+                  current &&
+                  createBoardFragment(
+                    current,
+                    workspaceId,
+                    selectionRef.current,
+                  );
+                if (fragment) registry.transfer(fragment);
+              }}
+            >
+              <PresentationChart size={18} aria-hidden="true" />
+            </button>
+          )}
           <span className="board-tools-divider" />
           <button
             disabled={!editable || !store.canUndo}
@@ -1368,20 +2351,22 @@ function Workspace({
           >
             <SlidersHorizontal size={16} aria-hidden="true" />
           </button>
-          {editable && selectedNode?.data.kind === "result" && (
-            <button
-              disabled={
-                !latestResult ||
-                latestResult.id === selectedNode.data.resultSetId
-              }
-              title="Заменить источник выбранного блока последним добавленным SQL-результатом"
-              className="board-tools-icon"
-              aria-label="Перепривязать"
-              onClick={() => setRebind(latestResult)}
-            >
-              <LinkSimple size={16} aria-hidden="true" />
-            </button>
-          )}
+          {editable &&
+            selectedNode?.data.kind === "result" &&
+            store.canEditNode(selectedNode.id) && (
+              <button
+                disabled={
+                  !latestResult ||
+                  latestResult.id === selectedNode.data.resultSetId
+                }
+                title="Заменить источник выбранного блока последним добавленным SQL-результатом"
+                className="board-tools-icon"
+                aria-label="Перепривязать"
+                onClick={() => setRebind(latestResult)}
+              >
+                <LinkSimple size={16} aria-hidden="true" />
+              </button>
+            )}
           {editable && store.state.includes("Не сохранено") && (
             <button
               onClick={() => void store.save()}
@@ -1437,267 +2422,414 @@ function Workspace({
             ))}
         </div>
       )}
-      <div
-        className="board-canvas"
-        onDragOver={(e) => {
-          if (
-            editable &&
-            e.dataTransfer.types.includes("application/x-miracle-result")
-          ) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "copy";
-          }
-        }}
-        onDrop={(e) => {
-          const raw = e.dataTransfer.getData("application/x-miracle-result");
-          if (!raw || !editable) return;
-          e.preventDefault();
-          try {
-            const result = JSON.parse(raw) as ResultSet;
-            if (
-              typeof result.id !== "string" ||
-              !Array.isArray(result.columns) ||
-              typeof result.source?.sql !== "string"
-            )
-              throw new Error("Некорректный результат запроса.");
-            void addResult(
-              result,
-              flow.screenToFlowPosition({ x: e.clientX, y: e.clientY }),
-            ).catch((error) => notify(error.message, "error"));
-          } catch (error) {
-            notify((error as Error).message, "error");
-          }
-        }}
-      >
-        {board ? (
-          <BoardActions.Provider value={actionContext}>
-            <BoardFlow
-              gestureScope={`${workspaceId}:${board.id}`}
-              colorMode="dark"
-              nodes={renderedBoard.nodes}
-              edges={renderedBoard.edges.map(
-                ({ edge: e, source, target }): BoardFlowEdge => ({
-                  ...e,
-                  source,
-                  target,
-                  ariaLabel: e.label ? `Стрелка: ${e.label}` : "Стрелка",
-                  sourceHandle: e.sourceHandle ?? "right",
-                  targetHandle: e.targetHandle ?? "left",
-                  selected: e.id === selectedEdge,
-                  type: "board",
-                  data: {
-                    edge: e,
-                    gestureScope: `${workspaceId}:${board.id}`,
-                    editable,
-                    editing: editingEdge === e.id,
-                    onSelect: () => {
-                      setSelectedEdge(e.id);
-                      setSelected(null);
-                      selectNodes(new Set());
-                      setInspecting(false);
-                    },
-                    onEdit: () => {
-                      if (!editable) return;
-                      setSelectedEdge(e.id);
-                      setEditingEdge(e.id);
-                      setSelected(null);
-                      selectNodes(new Set());
-                      setInspecting(false);
-                    },
-                    onFinishEdit: () =>
-                      setEditingEdge((current) =>
-                        current === e.id ? null : current,
-                      ),
-                    onChange: (patch) => updateEdge(board.id, e.id, patch),
-                    onGeometryChange: (patch, expected) =>
-                      updateEdgeGeometry(board.id, e.id, patch, expected),
-                    onDelete: () => removeEdge(board.id, e.id),
-                    onClose: () => {
-                      setSelectedEdge(null);
-                      setEditingEdge(null);
-                      workspaceRef.current?.focus({ preventScroll: true });
-                    },
-                  },
-                }),
-              )}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={(changes: EdgeChange<BoardFlowEdge>[]) => {
-                const selection = [...changes]
-                  .reverse()
-                  .find((item) => item.type === "select" && item.selected);
-                // Marquee selection also reports links between selected nodes.
-                // Keep that node group; an explicit edge click selects it below.
-                if (
-                  selection?.type === "select" &&
-                  !selectionRef.current.size
-                ) {
-                  setSelectedEdge(selection.id);
-                  setSelected(null);
-                  selectNodes(new Set());
-                } else if (
-                  changes.some(
-                    (item) =>
-                      item.type === "select" &&
-                      !item.selected &&
-                      item.id === selectedEdge,
-                  )
-                )
-                  setSelectedEdge(null);
-                const current = store.current.current;
-                if (
-                  editableRef.current &&
-                  current?.id === board.id &&
-                  changes.some((c) => c.type === "remove")
-                )
-                  change({
-                    ...current.document,
-                    edges: current.document.edges.filter(
-                      (edge) =>
-                        !changes.some(
-                          (item) =>
-                            item.type === "remove" && item.id === edge.id,
-                        ),
-                    ),
-                  });
-              }}
-              onConnect={connect}
-              connectionMode={ConnectionMode.Loose}
-              isValidConnection={(connection) =>
-                connection.source !== connection.target
-              }
-              onNodeClick={(_, node) => {
-                if (node.type !== "artifact") return;
-                if (selectionRef.current.has(node.id)) setSelected(node.id);
-                setSelectedEdge(null);
-              }}
-              onNodeDragStart={() => {
-                duplicateDrag.current = null;
-                movingIds.current = null;
-                snapCancelled.current = false;
-              }}
-              onSelectionDragStart={() => {
-                duplicateDrag.current = null;
-                movingIds.current = null;
-                snapCancelled.current = false;
-              }}
-              onNodeDragStop={() => {
-                movingIds.current = null;
-                duplicateDrag.current = null;
-                setCopyDragging(false);
-                setGuides([]);
-              }}
-              onSelectionDragStop={() => {
-                movingIds.current = null;
-                duplicateDrag.current = null;
-                setCopyDragging(false);
-                setGuides([]);
-              }}
-              onEdgeClick={(_, edge) => {
-                setSelectedEdge(edge.id);
-                setSelected(null);
-                selectNodes(new Set());
-              }}
-              onPaneClick={() => {
-                workspaceRef.current?.focus({ preventScroll: true });
-                setSelected(null);
-                selectNodes(new Set());
-                setSelectedEdge(null);
-                setInspecting(false);
-              }}
-              onMoveEnd={(_, viewport) => {
-                if (store.current.current?.id === board.id)
-                  saveBoardViewport(workspaceId, board.id, viewport);
-              }}
-              nodesDraggable={editable}
-              nodesConnectable={editable}
-              elementsSelectable
-              selectionOnDrag
-              selectionKeyCode={null}
-              multiSelectionKeyCode={["Shift", "Meta", "Control"]}
-              panOnDrag={[1, 2]}
-              panOnScroll
-              zoomOnDoubleClick={false}
-              deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
-              minZoom={0.15}
-              maxZoom={2}
-              defaultViewport={initialViewport}
-              proOptions={{ hideAttribution: true }}
-            >
-              <AlignmentGuides guides={guides} />
-              <Background
-                variant={BackgroundVariant.Dots}
-                gap={24}
-                size={1}
-                color="var(--board-border)"
-              />
-              <Controls
-                showInteractive={false}
-                fitViewOptions={boardFitOptions}
-              />
-              <MiniMap
-                style={{ width: 120, height: 75 }}
-                pannable
-                zoomable
-                nodeColor="var(--board-border)"
-                maskColor="color-mix(in srgb, var(--board-bg) 72%, transparent)"
-              />
-              {!board.document.nodes.length && !board.document.edges.length && (
-                <div className="board-canvas-empty">
-                  <strong>Начните с результата запроса</strong>
-                  <span>
-                    Нажмите «На доску» в SQL-панели или перетащите результат
-                    сюда.
-                  </span>
-                  <span>
-                    Добавьте заметки, графики и стрелки для контекста.
-                  </span>
-                </div>
-              )}
-            </BoardFlow>
-          </BoardActions.Provider>
-        ) : (
-          <div className="board-canvas-empty">
-            <strong>
-              {store.loading ? "Загрузка досок…" : "Аналитическая доска"}
-            </strong>
-            <span>
-              {editable
-                ? "Создайте доску и добавьте результат SQL-запроса."
-                : "В рабочем пространстве пока нет досок."}
-            </span>
-            {editable && !store.loading && (
-              <button onClick={() => openDialog("new")}>Создать доску</button>
-            )}
-          </div>
-        )}
-        {editable && selectedIds.size >= 2 && (
-          <AlignmentToolbar count={selectedIds.size} onAlign={alignSelection} />
-        )}
-        {selectedNode && canInspectSelected && inspecting && board && (
-          <Inspector
+      <div className="board-body">
+        {board && slide && (
+          <PresentationSlides
+            key={board.id}
             boardId={board.id}
-            node={selectedNode}
-            result={
-              selectedNode.data.resultSetId
-                ? metadata[selectedNode.data.resultSetId]
-                : undefined
+            document={board.document}
+            selected={slide}
+            structureEditable={
+              editable && !store.conflict && !boardWork(agentLocks, board.id)
             }
-            editable={editable}
-            close={() => setInspecting(false)}
-            change={(node) =>
-              change({
-                ...board.document,
-                nodes: board.document.nodes.map((n) =>
-                  n.id === node.id ? node : n,
-                ),
-              })
+            metadataEditable={
+              editable &&
+              !store.conflict &&
+              !slideWork(agentLocks, board.id, slide.id)
             }
-            openSource={() => actionContext.openSource(selectedNode.id)}
+            deletionEditable={
+              editable &&
+              !store.conflict &&
+              !slideDeletionWork(agentLocks, board.id, slide.id, board.document)
+            }
+            work={slideWork(agentLocks, board.id, slide.id)}
+            onSelect={selectSlide}
+            onAdd={() => createSlide()}
+            onDuplicate={() => createSlide(true)}
+            onUpdate={updateSlide}
+            onRemove={deleteSlide}
+            onReorder={reorderSlide}
           />
         )}
+        <div
+          ref={canvasRef}
+          className="board-canvas"
+          onDragOver={(e) => {
+            if (
+              editable &&
+              (!registry || store.ready) &&
+              e.dataTransfer.types.includes("application/x-miracle-result")
+            ) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+            }
+          }}
+          onDrop={(e) => {
+            const raw = e.dataTransfer.getData("application/x-miracle-result");
+            if (!raw || !editable) return;
+            e.preventDefault();
+            try {
+              const result = JSON.parse(raw) as ResultSet;
+              if (
+                typeof result.id !== "string" ||
+                !Array.isArray(result.columns) ||
+                typeof result.source?.sql !== "string"
+              )
+                throw new Error("Некорректный результат запроса.");
+              const point = flow.screenToFlowPosition({
+                x: e.clientX,
+                y: e.clientY,
+              });
+              if (registry && !store.ready)
+                throw new Error("Дождитесь загрузки документа.");
+              const insertion = registry
+                ? insertCanvasResult(
+                    result,
+                    registryHandle.current!.destination(),
+                    point,
+                  )
+                : addResult(result, point);
+              void insertion.catch((error) => notify(error.message, "error"));
+            } catch (error) {
+              notify((error as Error).message, "error");
+            }
+          }}
+        >
+          {board ? (
+            <BoardActions.Provider value={actionContext}>
+              <BoardFlow
+                id={flowId}
+                gestureScope={`${workspaceId}:${cameraId}`}
+                colorMode="dark"
+                nodes={renderedBoard.nodes}
+                edges={renderedBoard.edges.map(
+                  ({ edge: e, source, target }): BoardFlowEdge => ({
+                    ...e,
+                    source,
+                    target,
+                    ariaLabel: e.label ? `Стрелка: ${e.label}` : "Стрелка",
+                    sourceHandle: e.sourceHandle ?? "right",
+                    targetHandle: e.targetHandle ?? "left",
+                    selected: e.id === selectedEdge,
+                    type: "board",
+                    data: {
+                      edge: e,
+                      gestureScope: `${workspaceId}:${cameraId}`,
+                      editable: store.canEditEdge(e.id),
+                      work: edgeWork(
+                        agentLocks,
+                        board.id,
+                        e.id,
+                        board.document,
+                      ),
+                      editing: editingEdge === e.id,
+                      onSelect: () => {
+                        setSelectedEdge(e.id);
+                        setSelected(null);
+                        selectNodes(new Set());
+                        setInspecting(false);
+                      },
+                      onEdit: () => {
+                        if (!editable || !store.canEditEdge(e.id)) return;
+                        setSelectedEdge(e.id);
+                        setEditingEdge(e.id);
+                        setSelected(null);
+                        selectNodes(new Set());
+                        setInspecting(false);
+                      },
+                      onFinishEdit: () =>
+                        setEditingEdge((current) =>
+                          current === e.id ? null : current,
+                        ),
+                      onChange: (patch) => updateEdge(board.id, e.id, patch),
+                      onGeometryChange: (patch, expected) =>
+                        updateEdgeGeometry(board.id, e.id, patch, expected),
+                      onDelete: () => removeEdge(board.id, e.id),
+                      onClose: () => {
+                        setSelectedEdge(null);
+                        setEditingEdge(null);
+                        workspaceRef.current?.focus({ preventScroll: true });
+                      },
+                    },
+                  }),
+                )}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={(changes: EdgeChange<BoardFlowEdge>[]) => {
+                  const selection = [...changes]
+                    .reverse()
+                    .find((item) => item.type === "select" && item.selected);
+                  // Marquee selection also reports links between selected nodes.
+                  // Keep that node group; an explicit edge click selects it below.
+                  if (
+                    selection?.type === "select" &&
+                    !selectionRef.current.size
+                  ) {
+                    setSelectedEdge(selection.id);
+                    setSelected(null);
+                    selectNodes(new Set());
+                  } else if (
+                    changes.some(
+                      (item) =>
+                        item.type === "select" &&
+                        !item.selected &&
+                        item.id === selectedEdge,
+                    )
+                  )
+                    setSelectedEdge(null);
+                  const current = store.current.current;
+                  if (
+                    editableRef.current &&
+                    current?.id === board.id &&
+                    changes.some((c) => c.type === "remove")
+                  )
+                    change({
+                      ...current.document,
+                      edges: current.document.edges.filter(
+                        (edge) =>
+                          !changes.some(
+                            (item) =>
+                              item.type === "remove" &&
+                              item.id === edge.id &&
+                              store.canEditEdge(edge.id),
+                          ),
+                      ),
+                    });
+                }}
+                onConnect={connect}
+                connectionMode={ConnectionMode.Loose}
+                isValidConnection={(connection) =>
+                  connection.source !== connection.target &&
+                  store.canEditNode(connection.source) &&
+                  store.canEditNode(connection.target)
+                }
+                onNodeClick={(event, node) => {
+                  if (node.type !== "artifact") return;
+                  if (selectionRef.current.has(node.id)) setSelected(node.id);
+                  setSelectedEdge(null);
+                  if (
+                    presentation ||
+                    node.data.kind === "shape" ||
+                    node.data.kind === "text"
+                  ) {
+                    if (!presentation && !canvasFocusTarget(event.target))
+                      return;
+                    // Some pointer adapters emit a click after drag-end. Keep
+                    // the drag selection without opening editing for that click.
+                    if (suppressDragClick.current) {
+                      suppressDragClick.current = false;
+                      return;
+                    }
+                    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+                      setInspecting(false);
+                      return;
+                    }
+                    workspaceRef.current?.focus({ preventScroll: true });
+                    inspectNode(node.id);
+                  }
+                }}
+                onNodeDragStart={(event) => {
+                  suppressDragClick.current = true;
+                  if (canvasFocusTarget(event.target))
+                    workspaceRef.current?.focus({ preventScroll: true });
+                  duplicateDrag.current = null;
+                  movingIds.current = null;
+                  snapCancelled.current = false;
+                }}
+                onSelectionDragStart={() => {
+                  suppressDragClick.current = true;
+                  duplicateDrag.current = null;
+                  movingIds.current = null;
+                  snapCancelled.current = false;
+                }}
+                onNodeDragStop={() => {
+                  transferDrag.current = null;
+                  setPreviewNodes(null);
+                  movingIds.current = null;
+                  duplicateDrag.current = null;
+                  setCopyDragging(false);
+                  setGuides([]);
+                }}
+                onSelectionDragStop={() => {
+                  transferDrag.current = null;
+                  setPreviewNodes(null);
+                  movingIds.current = null;
+                  duplicateDrag.current = null;
+                  setCopyDragging(false);
+                  setGuides([]);
+                }}
+                onEdgeClick={(_, edge) => {
+                  setSelectedEdge(edge.id);
+                  setSelected(null);
+                  selectNodes(new Set());
+                }}
+                onPaneClick={() => {
+                  workspaceRef.current?.focus({ preventScroll: true });
+                  setSelected(null);
+                  selectNodes(new Set());
+                  setSelectedEdge(null);
+                  setInspecting(false);
+                }}
+                onMoveEnd={(_, viewport) => {
+                  if (
+                    cameraId &&
+                    store.current.current?.id === board.id &&
+                    slideId === slideRef.current
+                  )
+                    saveBoardViewport(workspaceId, cameraId, viewport);
+                }}
+                nodesDraggable={editable}
+                autoPanOnNodeDrag={!transferDrag.current}
+                nodesConnectable={editable}
+                elementsSelectable
+                selectionOnDrag
+                selectionKeyCode={null}
+                multiSelectionKeyCode={
+                  active ? ["Shift", "Meta", "Control"] : null
+                }
+                panActivationKeyCode={active ? undefined : null}
+                zoomActivationKeyCode={active ? undefined : null}
+                panOnDrag={[1, 2]}
+                panOnScroll
+                zoomOnDoubleClick={false}
+                deleteKeyCode={
+                  !presentation &&
+                  editable &&
+                  active &&
+                  (!registry || localFocus)
+                    ? ["Backspace", "Delete"]
+                    : null
+                }
+                minZoom={presentation ? 0.01 : 0.15}
+                maxZoom={2}
+                defaultViewport={initialViewport}
+                proOptions={{ hideAttribution: true }}
+              >
+                {slide && (
+                  <ViewportPortal>
+                    <div
+                      className="presentation-slide-background"
+                      aria-hidden="true"
+                      style={{
+                        width: PRESENTATION_WIDTH,
+                        height: PRESENTATION_HEIGHT,
+                        background: slide.background,
+                      }}
+                    />
+                  </ViewportPortal>
+                )}
+                <AlignmentGuides guides={guides} />
+                <Background
+                  variant={BackgroundVariant.Dots}
+                  gap={24}
+                  size={1}
+                  color="var(--board-border)"
+                />
+                <Controls
+                  showInteractive={false}
+                  showFitView={!slide}
+                  fitViewOptions={boardFitOptions}
+                />
+                {!presentation && (
+                  <MiniMap
+                    style={{ width: 120, height: 75 }}
+                    pannable
+                    zoomable
+                    nodeColor="var(--board-border)"
+                    maskColor="color-mix(in srgb, var(--board-bg) 72%, transparent)"
+                  />
+                )}
+                {!presentation &&
+                  !board.document.nodes.length &&
+                  !board.document.edges.length && (
+                    <div className="board-canvas-empty">
+                      <strong>Начните с результата запроса</strong>
+                      <span>
+                        Нажмите «На доску» в SQL-панели или перетащите результат
+                        сюда.
+                      </span>
+                      <span>
+                        Добавьте заметки, графики и стрелки для контекста.
+                      </span>
+                    </div>
+                  )}
+              </BoardFlow>
+            </BoardActions.Provider>
+          ) : (
+            <div className="board-canvas-empty">
+              <strong>
+                {store.loading
+                  ? presentation
+                    ? "Загрузка презентаций…"
+                    : "Загрузка досок…"
+                  : presentation
+                    ? "Презентации"
+                    : "Аналитическая доска"}
+              </strong>
+              <span>
+                {presentation
+                  ? "Создайте презентацию и добавьте блоки с доски или результаты SQL."
+                  : editable
+                    ? "Создайте доску и добавьте результат SQL-запроса."
+                    : "В рабочем пространстве пока нет досок."}
+              </span>
+              {editable && !store.loading && (
+                <button onClick={() => openDialog("new")}>
+                  {presentation ? "Создать презентацию" : "Создать доску"}
+                </button>
+              )}
+            </div>
+          )}
+          {editable && selectedIds.size >= 2 && (
+            <AlignmentToolbar
+              count={selectedIds.size}
+              onAlign={alignSelection}
+            />
+          )}
+          {selectedNode && canInspectSelected && inspecting && board && (
+            <Inspector
+              boardId={board.id}
+              node={selectedNode}
+              presentation={presentation}
+              autoFocus={!presentation}
+              refresh={() => actionContext.refresh(selectedNode.id)}
+              refreshing={Boolean(nodeBusy[selectedNode.id])}
+              result={
+                selectedNode.data.resultSetId
+                  ? metadata[selectedNode.data.resultSetId]
+                  : undefined
+              }
+              editable={editable && store.canEditNode(selectedNode.id)}
+              close={() => setInspecting(false)}
+              change={(node) => {
+                const current = store.current.current;
+                if (
+                  !current ||
+                  current.id !== board.id ||
+                  !store.canEditNode(node.id)
+                )
+                  return;
+                change({
+                  ...current.document,
+                  nodes: current.document.nodes.map((n) =>
+                    n.id === node.id ? node : n,
+                  ),
+                });
+              }}
+              openSource={() => actionContext.openSource(selectedNode.id)}
+            />
+          )}
+        </div>
       </div>
+      {show && store.persisted?.id === show.boardId && (
+        <PresentationShow
+          board={store.persisted}
+          initialSlideId={show.slideId}
+          onClose={closeShow}
+          trigger={show.trigger}
+        />
+      )}
       <Dialog.Root
         open={!!dialog}
         onOpenChange={(open) => {
@@ -1717,19 +2849,25 @@ function Workspace({
           >
             <Dialog.Title>
               {dialog === "delete"
-                ? "Удалить доску?"
+                ? presentation
+                  ? "Удалить презентацию?"
+                  : "Удалить доску?"
                 : dialog === "rename"
-                  ? "Название доски"
+                  ? presentation
+                    ? "Название презентации"
+                    : "Название доски"
                   : dialog === "copy"
                     ? "Копия вашего черновика"
-                    : "Новая доска"}
+                    : presentation
+                      ? "Новая презентация"
+                      : "Новая доска"}
             </Dialog.Title>
             <Dialog.Description>
               {dialog === "delete"
-                ? `Доска «${board?.name}» будет удалена.`
+                ? `${canvasName} «${board?.name}» будет удалена.`
                 : dialog === "copy"
                   ? "Копия сохранит ваши блоки и закреплённые снимки."
-                  : "Доска сохранится в вашей рабочей области."}
+                  : `${canvasName} сохранится в вашей рабочей области.`}
             </Dialog.Description>
             <form
               onSubmit={(e) => {
@@ -1753,16 +2891,22 @@ function Workspace({
                   error={dialogError}
                   title={
                     dialog === "delete"
-                      ? "Не удалось удалить доску."
+                      ? presentation
+                        ? "Не удалось удалить презентацию."
+                        : "Не удалось удалить доску."
                       : dialog === "rename"
-                        ? "Не удалось переименовать доску."
+                        ? presentation
+                          ? "Не удалось переименовать презентацию."
+                          : "Не удалось переименовать доску."
                         : dialog === "copy"
                           ? "Не удалось сохранить копию."
-                          : "Не удалось создать доску."
+                          : presentation
+                            ? "Не удалось создать презентацию."
+                            : "Не удалось создать доску."
                   }
                   hint={
-                    dialogError.message === "Введите название доски."
-                      ? "Введите название и сохраните доску."
+                    dialogError.message === "Введите название."
+                      ? "Введите название и сохраните документ."
                       : dialog === "delete"
                         ? "Повторите удаление. Если доска изменилась, закройте диалог и загрузите актуальную версию."
                         : "Проверьте название и повторите сохранение."
@@ -1815,7 +2959,12 @@ function Workspace({
               <button
                 className="board-primary"
                 onClick={() => {
-                  if (selectedNode && board && rebind)
+                  if (
+                    selectedNode &&
+                    board &&
+                    rebind &&
+                    store.canEditNode(selectedNode.id)
+                  )
                     change({
                       ...board.document,
                       nodes: board.document.nodes.map((node) =>
@@ -1839,7 +2988,10 @@ function Workspace({
 export default function BoardWorkspace(props: BoardWorkspaceProps) {
   return (
     <ReactFlowProvider>
-      <Workspace key={props.workspaceId} {...props} />
+      <Workspace
+        key={`${props.workspaceId}:${props.kind ?? "board"}`}
+        {...props}
+      />
     </ReactFlowProvider>
   );
 }

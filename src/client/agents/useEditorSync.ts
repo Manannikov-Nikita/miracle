@@ -9,6 +9,7 @@ import type { EditorDocument } from "../../shared/agents";
 import { api, json } from "../api";
 import { EditorSync, type EditorTab } from "./editor-sync";
 import { useProjectSync } from "./ProjectSync";
+import { currentAgentWork, editorAgentWork } from "./useAgentWork";
 export const recoveryKey = (workspaceId: string) =>
   `miracle:sql-recovery:${workspaceId}`;
 
@@ -92,29 +93,44 @@ export function useEditorSync(
   tabs: EditorTab[],
   setTabs: Dispatch<SetStateAction<EditorTab[]>>,
   notify: (message: string, tone?: "error" | "success" | "info") => void,
+  filePathForTab?: (id: string) => string | undefined,
 ) {
   const project = useProjectSync();
+  const filePath = useRef(filePathForTab);
+  filePath.current = filePathForTab;
+  const lockCheck = useRef<(tab: EditorTab) => boolean>(() => false);
+  const reconciling = useRef(0);
+  lockCheck.current = (tab) =>
+    reconciling.current > 0 ||
+    Boolean(
+      editorAgentWork(currentAgentWork(project), tab, filePathForTab?.(tab.id)),
+    );
   const [tick, update] = useState(0);
   const [error, setError] = useState("");
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
   const syncRef = useRef<EditorSync | null>(null);
   if (!syncRef.current) {
-    syncRef.current = new EditorSync(documents, api, (next) => {
-      setTabs(
-        next.length
-          ? next
-          : [
-              {
-                id: crypto.randomUUID(),
-                name: "query_1.sql",
-                sql: "",
-                connectionId: "",
-              },
-            ],
-      );
-      update((n) => n + 1);
-    });
+    syncRef.current = new EditorSync(
+      documents,
+      api,
+      (next) => {
+        setTabs(
+          next.length
+            ? next
+            : [
+                {
+                  id: crypto.randomUUID(),
+                  name: "query_1.sql",
+                  sql: "",
+                  connectionId: "",
+                },
+              ],
+        );
+        update((n) => n + 1);
+      },
+      (tab) => lockCheck.current(tab),
+    );
     syncRef.current.restore(tabs);
   }
   const sync = syncRef.current;
@@ -159,15 +175,50 @@ export function useEditorSync(
       if (event.type === "editor.deleted")
         sync.deleted(event.entityId || (event.data as { id: string }).id);
     });
-    const reconnect = project.onReconnect(() => {
+    const refresh = () => {
       const revisions = sync.revisions();
-      void api<EditorDocument[]>("/api/editor-documents")
-        .then((docs) => sync.reconcile(docs, revisions))
-        .catch((e) => setError(e.message));
+      reconciling.current++;
+      return api<EditorDocument[]>("/api/editor-documents")
+        .then((docs) => {
+          sync.reconcile(docs, revisions);
+          return true;
+        })
+        .catch((e) => {
+          setError(e.message);
+          return false;
+        })
+        .finally(() => {
+          reconciling.current--;
+        });
+    };
+    const reconnect = project.onReconnect(() => {
+      void refresh().then((ok) => {
+        if (ok) void saveRef.current().catch(() => {});
+      });
+    });
+    let previous = currentAgentWork(project);
+    const workChanged = project.subscribeWork?.((snapshot) => {
+      const released = previous.some(
+        (work) =>
+          sync.tabs.some((tab) =>
+            editorAgentWork([work], tab, filePath.current?.(tab.id)),
+          ) &&
+          !snapshot.locks.some(
+            (next) =>
+              next.turnId === work.turnId &&
+              JSON.stringify(next.target) === JSON.stringify(work.target),
+          ),
+      );
+      previous = snapshot.locks;
+      if (released)
+        void refresh().then((ok) => {
+          if (ok) void saveRef.current().catch(() => {});
+        });
     });
     return () => {
       changed();
       reconnect();
+      workChanged?.();
     };
   }, [project, sync]);
   useEffect(() => {

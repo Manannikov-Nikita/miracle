@@ -33,6 +33,7 @@ import { loadKey, SecretBox, verifyEncryptionKey } from "./secrets.js";
 import { resolveDataDir, resolvePort } from "./config.js";
 import { ProjectStore } from "./project-store.js";
 import { registerProjectRoutes } from "./project-routes.js";
+import { registerProjectGitRoutes } from "./project-git-routes.js";
 import { WorkspaceOperations } from "./workspace-operations.js";
 import {
   mergeClickHouseOptions,
@@ -65,7 +66,7 @@ import {
 import {
   sourceSchema,
   connectionSchema,
-  boardDocumentSchema,
+  boardKindSchema,
 } from "./validation.js";
 import type {
   QuerySource,
@@ -397,6 +398,7 @@ export async function buildApp(
     const uuid = (req: FastifyRequest, key = "id") =>
       z.uuid().parse((req.params as any)[key]);
     registerProjectRoutes(app, projectStore, need);
+    registerProjectGitRoutes(app, projectStore, need);
     app.get("/api/health", async () => ({ ok: true }));
     app.get("/api/session", async (_req, reply) => {
       if (!browserSession || browserSession.expires <= Date.now()) {
@@ -1194,7 +1196,10 @@ export async function buildApp(
     });
     app.get("/api/boards", async (req) => {
       need(req);
-      return operations.boards();
+      const { kind } = z
+        .object({ kind: boardKindSchema.optional() })
+        .parse(req.query);
+      return operations.boards(kind);
     });
     app.get("/api/boards/:id", async (req) => {
       need(req);
@@ -1208,7 +1213,13 @@ export async function buildApp(
     });
     app.patch("/api/boards/:id", async (req) => {
       need(req);
-      return operations.updateBoard(uuid(req), req.body);
+      const id = uuid(req);
+      const body = req.body;
+      if (body && typeof body === "object" && "operations" in body) {
+        if ("document" in body) throw err(400, "Укажите документ или операции");
+        return operations.patchBoard(id, body);
+      }
+      return operations.updateBoard(id, body);
     });
     app.delete("/api/boards/:id", async (req) => {
       need(req);

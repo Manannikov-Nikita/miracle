@@ -285,6 +285,33 @@ function explorerPath(context: FileContext, path: string, directory = false) {
   return absolute;
 }
 
+/** Use filesystem identity spelling for claims; missing files need a valid parent. */
+export function projectFileWorkPath(
+  context: FileContext,
+  path: string,
+): string {
+  try {
+    let absolute: string;
+    try {
+      absolute = realpathSync(explorerPath(context, path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!validRelativePath(path)) throw error;
+      const parent = dirname(path) === "." ? "" : dirname(path);
+      absolute = join(
+        realpathSync(explorerPath(context, parent, true)),
+        basename(path),
+      );
+      const { allowed } = scope(context);
+      if (!allowed(absolute) || internalNames.has(basename(path).toLowerCase()))
+        throw problem(403, "Служебный путь недоступен", "INVALID_FILE_PATH");
+    }
+    return relative(scope(context).root, absolute).split(sep).join("/");
+  } catch (error) {
+    return fileError(error);
+  }
+}
+
 export async function listProjectTree(
   context: FileContext,
   path = "",
@@ -419,6 +446,7 @@ export function readProjectFile(
 export function createProjectFile(
   context: FileContext,
   input: CreateProjectFile,
+  beforeWrite?: (path: string) => void,
 ): ProjectTextFile {
   try {
     const { directory, name } = input;
@@ -447,6 +475,7 @@ export function createProjectFile(
         "Служебный путь недоступен в проводнике",
         "INVALID_FILE_PATH",
       );
+    beforeWrite?.(path);
     // Exclusive creation keeps an existing file, directory or link untouched.
     const fd = openSync(
       absolute,

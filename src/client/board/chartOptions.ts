@@ -1,6 +1,7 @@
 import type { ChartSpec, Column } from "../../shared/types";
 import type { chartSeries } from "./model";
 import { chartPalette, chartSeriesColor } from "../../shared/chart-appearance";
+import { presentationColors } from "./presentation-colors";
 
 function insideLabelColor(color: string) {
   const channels = [1, 3, 5].map((start) => {
@@ -51,7 +52,11 @@ export function chartOptions(
   columns: Column[],
   spec: ChartSpec,
   series: ReturnType<typeof chartSeries>,
+  presentationBackground?: string,
 ) {
+  const ink = presentationBackground
+    ? presentationColors(presentationBackground)
+    : { text: "#eeeff0", muted: "#a9adb1", grid: "#3b3e43" };
   const position = spec.legendPosition ?? "top";
   const align = spec.legendAlign ?? "center";
   const vertical = position === "left" || position === "right";
@@ -257,7 +262,7 @@ export function chartOptions(
       itemHeight: 10,
       pageIconSize: 10,
       pageButtonItemGap: 4,
-      pageTextStyle: { color: "#a9adb1" },
+      pageTextStyle: { color: ink.muted },
       tooltip: {
         show: true,
         formatter: (parameters: { name?: string }) =>
@@ -271,7 +276,7 @@ export function chartOptions(
         (legendDisplayNames.get(name) ?? name).replace(/\s+/g, " "),
       textStyle: {
         ...normalLayout.legend.textStyle,
-        color: "#a9adb1",
+        color: ink.muted,
         overflow: "truncate",
       },
     },
@@ -290,9 +295,12 @@ export function chartOptions(
       nameGap: 32,
       nameMoveOverlap: true,
       nameTruncate: { maxWidth: 180 },
+      ...(presentationBackground
+        ? { nameTextStyle: { color: ink.muted } }
+        : {}),
       axisLabel: {
         show: showX,
-        color: "#a9adb1",
+        color: ink.muted,
         formatter:
           horizontalBar || spec.kind === "scatter"
             ? formatter
@@ -303,13 +311,13 @@ export function chartOptions(
       },
       axisLine: {
         ...(!showX ? { show: false } : {}),
-        lineStyle: { color: "#3b3e43" },
+        lineStyle: { color: ink.grid },
       },
       axisTick: !showX ? { show: false } : undefined,
       minorTick: { show: false },
       splitLine: {
         show: showGrid && (horizontalBar || spec.kind === "scatter"),
-        lineStyle: { color: "#3b3e43" },
+        lineStyle: { color: ink.grid },
       },
       minorSplitLine: { show: false },
     },
@@ -323,9 +331,12 @@ export function chartOptions(
       nameGap: 20,
       nameMoveOverlap: true,
       nameTruncate: { maxWidth: 150 },
+      ...(presentationBackground
+        ? { nameTextStyle: { color: ink.muted } }
+        : {}),
       axisLabel: {
         show: showY,
-        color: "#a9adb1",
+        color: ink.muted,
         formatter: horizontalBar ? categoryFormatter : formatter,
         ...(horizontalBar
           ? { width: 120, overflow: "truncate", hideOverlap: true }
@@ -334,13 +345,13 @@ export function chartOptions(
       axisLine: !showY
         ? { show: false }
         : horizontalBar
-          ? { lineStyle: { color: "#3b3e43" } }
+          ? { lineStyle: { color: ink.grid } }
           : undefined,
       axisTick: !showY ? { show: false } : undefined,
       minorTick: { show: false },
       splitLine: {
         show: showGrid && !horizontalBar,
-        lineStyle: { color: "#3b3e43" },
+        lineStyle: { color: ink.grid },
       },
       minorSplitLine: { show: false },
     },
@@ -393,7 +404,7 @@ export function chartOptions(
             formatter: (params: { value?: unknown; dataIndex?: number }) =>
               displayData?.[params.dataIndex ?? -1]?.value ??
               labelFormatter(params),
-            color: insideLabels ? insideLabelColor(color) : "#eeeff0",
+            color: insideLabels ? insideLabelColor(color) : ink.text,
             fontSize: 11,
             distance: 5,
             width: outsideLabels ? resolvedLabelWidth(160) : undefined,

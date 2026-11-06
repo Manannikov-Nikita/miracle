@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { Database } from "./db.js";
 import type { SecretBox } from "./secrets.js";
 import { dateRangeSchema } from "./validation.js";
+import { EntityWork } from "./agents/entity-work.js";
 import type {
   AgentChat,
   AgentConversation,
@@ -44,6 +45,7 @@ export const profileFields = z.object({
 
 export class ProjectStore {
   readonly events = new EventEmitter();
+  readonly work = new EntityWork(this);
   private readonly trustDir: string;
   private closed = false;
   constructor(
@@ -106,6 +108,7 @@ export class ProjectStore {
   }
   once<T>(scope: string, id: string, input: unknown, run: () => T): T {
     return this.atomic(() => {
+      this.work.assertActor();
       const digest = hash(JSON.stringify(input));
       const saved = this.db.query(
         "SELECT * FROM project_mutations WHERE scope=?1 AND id=?2",
@@ -154,6 +157,14 @@ export class ProjectStore {
     const id = b.id || randomUUID();
     const { id: _, ...document } = b;
     return this.atomic(() => {
+      this.work.write([
+        { kind: "editor", id },
+        // Opening another editor is a read of its saved query. Later edits
+        // check the stored queryId alias, so this view remains protected.
+        ...(b.queryId && this.work.assertActor()
+          ? [{ kind: "query" as const, id: b.queryId }]
+          : []),
+      ]);
       const existing = this.db.query(
         "SELECT id FROM editor_documents WHERE id=?1",
         [id],
@@ -193,6 +204,10 @@ export class ProjectStore {
       })
       .parse(input);
     return this.once(`editor:${id}`, b.mutationId, b, () => {
+      this.work.write([
+        { kind: "editor", id },
+        ...(b.queryId ? [{ kind: "query" as const, id: b.queryId }] : []),
+      ]);
       const current = this.editor(id);
       if (current.revision !== b.baseRevision)
         throw problem(
@@ -222,6 +237,7 @@ export class ProjectStore {
       })
       .parse(input);
     return this.once(`editor-delete:${id}`, b.mutationId, b, () => {
+      this.work.write([{ kind: "editor", id }]);
       if (this.editor(id).revision !== b.baseRevision)
         throw problem(409, "Документ изменён", "REVISION_CONFLICT");
       this.db.query("DELETE FROM editor_documents WHERE id=?1", [id]);

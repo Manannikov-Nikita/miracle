@@ -5,7 +5,12 @@ import AgentChatView from "./AgentChatView";
 import { ErrorBox, Spinner } from "../components/UI";
 import AgentProfiles from "./AgentProfiles";
 import { useAgentChat } from "./useAgentChat";
-import { useProjectSync, useProjectTargetContext } from "./ProjectSync";
+import {
+  useProjectSync,
+  useProjectTargetContext,
+  useOpenEditorTabs,
+  type OpenEditorTab,
+} from "./ProjectSync";
 import { useAgentImageDrafts } from "./useAgentImageDrafts";
 import { useAgentPortalContainer } from "./useAgentPortalContainer";
 import "./agents.css";
@@ -15,11 +20,15 @@ export default function AgentAssistant() {
   const portalContainer = useAgentPortalContainer(state.open);
   const project = useProjectSync();
   const targetContext = useProjectTargetContext();
+  const editorTabs = useOpenEditorTabs();
   const [settings, setSettings] = useState(false),
     [settingsBusy, setSettingsBusy] = useState(false),
     [profileId, setProfileId] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<Record<string, string[]>>({});
+  const [editorTargets, setEditorTargets] = useState<
+    Record<string, OpenEditorTab | undefined>
+  >({});
   const [dismissed, setDismissed] = useState({ key: "", ids: [] as string[] });
   const toggle = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(false);
@@ -36,6 +45,7 @@ export default function AgentAssistant() {
     JSON.stringify([
       key,
       context.boardId,
+      context.slideId,
       (context.boardNodes || []).map((node) => node.id),
     ]);
   const currentSelection = selectionKey(targetContext);
@@ -81,9 +91,17 @@ export default function AgentAssistant() {
       return;
     const current = project?.context() || targetContext;
     const filePaths = [...(files[draftKey] || [])];
+    const editorTarget = editorTargets[draftKey];
     const references = {
+      ...(editorTarget
+        ? {
+            editorDocumentId: editorTarget.path ? undefined : editorTarget.id,
+            selection: undefined,
+          }
+        : {}),
       filePaths,
       boardId: current.boardId,
+      slideId: current.slideId,
       boardNodes: (current.boardNodes || []).filter(
         (node) =>
           dismissed.key !== selectionKey(current) ||
@@ -94,6 +112,10 @@ export default function AgentAssistant() {
       content,
       filePaths,
       boardId: references.boardId,
+      slideId: references.slideId,
+      editorTarget: editorTarget
+        ? { id: editorTarget.id, path: editorTarget.path }
+        : undefined,
       boardNodeIds: references.boardNodes.map((node) => node.id),
       imageIds: images.map((image) => image.localId),
     });
@@ -115,6 +137,7 @@ export default function AgentAssistant() {
             [id]: items[draftKey] || content,
           }));
           setFiles((items) => ({ ...items, [id]: filePaths }));
+          setEditorTargets((items) => ({ ...items, [id]: editorTarget }));
           imageDraft.move(id, images);
           // Creating a chat only moves this draft. Keep its omitted targets
           // so a failed message POST can be retried with the same identity.
@@ -140,6 +163,12 @@ export default function AgentAssistant() {
         ...(createdId ? { [createdId]: [] } : {}),
       }));
       setDismissed({ key: "", ids: [] });
+      setEditorTargets((items) => {
+        const next = { ...items };
+        for (const key of [draftKey, ...(createdId ? [createdId] : [])])
+          if (next[key]?.id === editorTarget?.id) delete next[key];
+        return next;
+      });
       imageDraft.clear([draftKey, ...(createdId ? [createdId] : [])], images);
       if (createdId) requestIds.current.delete(createdId);
       requestIds.current.delete(draftKey);
@@ -217,8 +246,19 @@ export default function AgentAssistant() {
               onImagesAdd={imageDraft.add}
               onImageRemove={imageDraft.remove}
               filePaths={files[draftKey] || []}
-              onFilesChange={(paths) =>
-                setFiles((items) => ({ ...items, [draftKey]: paths }))
+              onFilesChange={(paths) => {
+                setFiles((items) => ({ ...items, [draftKey]: paths }));
+                setEditorTargets((items) =>
+                  items[draftKey]?.path &&
+                  !paths.includes(items[draftKey]!.path!)
+                    ? { ...items, [draftKey]: undefined }
+                    : items,
+                );
+              }}
+              editorTabs={editorTabs}
+              editorTarget={editorTargets[draftKey]}
+              onEditorTargetChange={(tab) =>
+                setEditorTargets((items) => ({ ...items, [draftKey]: tab }))
               }
               boardNodes={selectedNodes}
               onDismissBoardNode={(id) =>

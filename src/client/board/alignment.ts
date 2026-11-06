@@ -18,7 +18,8 @@ export type AlignmentGuide = {
 };
 
 type Axis = "x" | "y";
-type Bounds = { x: number; y: number; right: number; bottom: number };
+export type SnapFrame = { x: number; y: number; right: number; bottom: number };
+type Bounds = SnapFrame;
 
 function size(node: BoardNode, axis: Axis): number {
   return axis === "x" ? (node.width ?? 480) : (node.height ?? 300);
@@ -107,7 +108,13 @@ export function alignBoardNodes(
   return updatePositions(nodes, positions);
 }
 
-type Snap = { delta: number; coordinate: number; target: BoardNode };
+type Snap = {
+  delta: number;
+  coordinate: number;
+  target: Bounds;
+  id: string;
+  frame?: boolean;
+};
 
 function anchors(box: Bounds, axis: Axis): number[] {
   const start = box[axis];
@@ -120,6 +127,7 @@ function nearestSnap(
   stationary: BoardNode[],
   axis: Axis,
   threshold: number,
+  frame?: SnapFrame,
 ): Snap | undefined {
   let best: Snap | undefined;
   for (const target of stationary) {
@@ -134,10 +142,26 @@ function nearestSnap(
           (Math.abs(delta) === Math.abs(best.delta) &&
             (coordinate < best.coordinate ||
               (coordinate === best.coordinate &&
-                target.id.localeCompare(best.target.id) < 0)))
+                target.id.localeCompare(best.id) < 0)))
         ) {
-          best = { delta, coordinate, target };
+          best = { delta, coordinate, target: bounds([target]), id: target.id };
         }
+      }
+    }
+  }
+  if (frame) {
+    const end = axis === "x" ? "right" : "bottom";
+    for (const coordinate of [frame[axis], frame[end]]) {
+      for (const anchor of [moving[axis], moving[end]]) {
+        const delta = coordinate - anchor;
+        if (Math.abs(delta) > threshold) continue;
+        if (
+          !best ||
+          Math.abs(delta) < Math.abs(best.delta) ||
+          (Math.abs(delta) === Math.abs(best.delta) &&
+            (!best.frame || coordinate < best.coordinate))
+        )
+          best = { delta, coordinate, target: frame, id: "", frame: true };
       }
     }
   }
@@ -148,15 +172,17 @@ export function snapBoardNodes(
   nodes: BoardNode[],
   movingIds: ReadonlySet<string>,
   zoom: number,
+  frame?: SnapFrame,
 ): { nodes: BoardNode[]; guides: AlignmentGuide[] } {
   const moving = nodes.filter((node) => movingIds.has(node.id));
   const stationary = nodes.filter((node) => !movingIds.has(node.id));
-  if (!moving.length || !stationary.length) return { nodes, guides: [] };
+  if (!moving.length || (!stationary.length && !frame))
+    return { nodes, guides: [] };
 
   const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
   const box = bounds(moving);
-  const snapX = nearestSnap(box, stationary, "x", 6 / scale);
-  const snapY = nearestSnap(box, stationary, "y", 6 / scale);
+  const snapX = nearestSnap(box, stationary, "x", 6 / scale, frame);
+  const snapY = nearestSnap(box, stationary, "y", 6 / scale, frame);
   const dx = snapX?.delta ?? 0;
   const dy = snapY?.delta ?? 0;
   const positions = new Map(
@@ -169,21 +195,25 @@ export function snapBoardNodes(
   const padding = 8 / scale;
   const guides: AlignmentGuide[] = [];
   if (snapX) {
-    const target = bounds([snapX.target]);
+    const target = snapX.target;
     guides.push({
       axis: "x",
       coordinate: snapX.coordinate,
-      from: Math.min(box.y + dy, target.y) - padding,
-      to: Math.max(box.bottom + dy, target.bottom) + padding,
+      from: snapX.frame ? target.y : Math.min(box.y + dy, target.y) - padding,
+      to: snapX.frame
+        ? target.bottom
+        : Math.max(box.bottom + dy, target.bottom) + padding,
     });
   }
   if (snapY) {
-    const target = bounds([snapY.target]);
+    const target = snapY.target;
     guides.push({
       axis: "y",
       coordinate: snapY.coordinate,
-      from: Math.min(box.x + dx, target.x) - padding,
-      to: Math.max(box.right + dx, target.right) + padding,
+      from: snapY.frame ? target.x : Math.min(box.x + dx, target.x) - padding,
+      to: snapY.frame
+        ? target.right
+        : Math.max(box.right + dx, target.right) + padding,
     });
   }
   return { nodes: result, guides };

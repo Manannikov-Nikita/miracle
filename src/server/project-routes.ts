@@ -9,6 +9,7 @@ import {
   searchProjectFiles,
 } from "./project-files.js";
 import { MAX_PROJECT_FILE_BYTES } from "../shared/project-files.js";
+import { assertProjectGitIdle } from "./project-git.js";
 
 export function registerProjectRoutes(
   app: FastifyInstance,
@@ -44,10 +45,13 @@ export function registerProjectRoutes(
   });
   app.post("/api/project/file", async (req, reply) => {
     need(req);
+    assertProjectGitIdle(store.context);
     const input = z
       .object({ directory: z.string().max(4096), name: z.string().max(255) })
       .parse(req.body);
-    const file = createProjectFile(store.context, input);
+    const file = createProjectFile(store.context, input, (path) =>
+      store.work.check([{ kind: "file", id: path }]),
+    );
     reply.code(201);
     return file;
   });
@@ -56,6 +60,7 @@ export function registerProjectRoutes(
     { bodyLimit: MAX_PROJECT_FILE_BYTES * 6 + 1024 },
     async (req) => {
       need(req);
+      assertProjectGitIdle(store.context);
       const { path } = z
         .object({ path: z.string().min(1).max(4096) })
         .parse(req.query);
@@ -65,6 +70,7 @@ export function registerProjectRoutes(
           baseRevision: z.string().regex(/^[0-9a-f]{64}$/),
         })
         .parse(req.body);
+      store.work.check([{ kind: "file", id: path }]);
       return saveProjectFile(store.context, path, input);
     },
   );
@@ -155,6 +161,10 @@ export function registerProjectRoutes(
   app.get("/api/agent-state", async (req) => {
     need(req);
     return { activeTurn: store.activeTurn() };
+  });
+  app.get("/api/agent-work", async (req) => {
+    need(req);
+    return store.work.snapshot();
   });
   const streams = new Set<() => void>();
   app.get("/api/events", async (req, reply) => {

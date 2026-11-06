@@ -50,6 +50,7 @@ export type AgentTurnStatus =
 export interface AgentTargetContext {
   editorDocumentId?: string;
   boardId?: string;
+  slideId?: string;
   selection?: string;
   filePaths?: string[];
   boardNodes?: { id: string; title: string }[];
