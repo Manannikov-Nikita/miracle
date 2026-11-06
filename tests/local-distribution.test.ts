@@ -28,11 +28,11 @@ function fixture() {
   mkdirSync(join(payload, "dist/server/server"), { recursive: true });
   writeFileSync(
     join(payload, "package.json"),
-    JSON.stringify({ version: "0.2.0", type: "module" }),
+    JSON.stringify({ version: "0.3.0", type: "module" }),
   );
   writeFileSync(
     join(payload, "dist/server/server/cli.js"),
-    'console.log("0.2.0")',
+    'console.log("0.3.0")',
   );
   return {
     root,
@@ -65,6 +65,30 @@ it("rejects direct Windows installation before touching the workspace", () => {
   expect(existsSync(f.install)).toBe(false);
   expect(existsSync(f.bin)).toBe(false);
 });
+it("rejects direct macOS x64 installation before touching the workspace", () => {
+  const f = fixture();
+  const platform = join(f.root, "platform.mjs");
+  writeFileSync(
+    platform,
+    "Object.defineProperty(process, 'platform', { value: 'darwin' });\nObject.defineProperty(process, 'arch', { value: 'x64' });\n",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      pathToFileURL(platform).href,
+      resolve("release/install.mjs"),
+      f.payload,
+      f.install,
+      f.bin,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/macOS.*Apple Silicon.*ARM64/);
+  expect(existsSync(f.install)).toBe(false);
+  expect(existsSync(f.bin)).toBe(false);
+});
 it("activates immutable code, preserves data, and runs without system Node from Unicode paths", () => {
   const f = fixture();
   mkdirSync(join(f.install, "data"), { recursive: true });
@@ -77,15 +101,15 @@ it("activates immutable code, preserves data, and runs without system Node from 
     );
   let result = install();
   expect(result.status, result.stderr).toBe(0);
-  writeFileSync(join(f.install, "versions", "0.2.0", "marker"), "immutable");
+  writeFileSync(join(f.install, "versions", "0.3.0", "marker"), "immutable");
   result = install();
   expect(result.status, result.stderr).toBe(0);
   expect(
-    readFileSync(join(f.install, "versions", "0.2.0", "marker"), "utf8"),
+    readFileSync(join(f.install, "versions", "0.3.0", "marker"), "utf8"),
   ).toBe("immutable");
   expect(readFileSync(join(f.install, "data", "key"), "utf8")).toBe("retained");
   expect(readFileSync(join(f.install, "current-version"), "utf8").trim()).toBe(
-    "0.2.0",
+    "0.3.0",
   );
   const launch = spawnSync(join(f.bin, "miracle"), ["--version"], {
     encoding: "utf8",
@@ -93,7 +117,7 @@ it("activates immutable code, preserves data, and runs without system Node from 
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
   expect(launch.status, launch.stderr).toBe(0);
-  expect(launch.stdout.trim()).toBe("0.2.0");
+  expect(launch.stdout.trim()).toBe("0.3.0");
 });
 it("failed staged validation leaves prior pointer and data intact", () => {
   const f = fixture();
@@ -123,7 +147,7 @@ it.each(["download", "checksum", "extraction"])(
     mkdirSync(join(f.install, "data"));
     writeFileSync(join(f.install, "data", "encryption.key"), "private key");
     const template = readFileSync(resolve("release/install.sh"), "utf8")
-      .replaceAll("__VERSION__", "0.2.0")
+      .replaceAll("__VERSION__", "0.3.0")
       .replaceAll("__REPOSITORY__", "Example/Miracle");
     const script = join(f.root, "install.sh");
     writeFileSync(script, template);
@@ -273,7 +297,7 @@ it("authenticates and gracefully stops every registered project before activatio
     expect(result.code, result.out).toBe(0);
     expect(stops.sort()).toEqual(["first", "second"]);
     expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
-      "0.2.0\n",
+      "0.3.0\n",
     );
     expect(existsSync(join(f.root, "first", "moved storage"))).toBe(false);
     expect(existsSync(join(f.install, "run", "first.json"))).toBe(false);
@@ -349,7 +373,7 @@ it("waits for the authenticated project's SQLite ownership to drain before activ
     expect(result.code, result.out).toBe(0);
     expect(released).toBe(true);
     expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
-      "0.2.0\n",
+      "0.3.0\n",
     );
   } finally {
     if (timer) clearTimeout(timer);
@@ -418,7 +442,7 @@ it("rechecks a reset connection after authenticated shutdown before declaring th
     expect(reset).toBe(true);
     expect(server.listening).toBe(false);
     expect(readFileSync(join(f.install, "current-version"), "utf8")).toBe(
-      "0.2.0\n",
+      "0.3.0\n",
     );
   } finally {
     server.closeAllConnections();

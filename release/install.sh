@@ -9,6 +9,7 @@ case "$(uname -s)" in
  *) fail 'Unsupported operating system. On Windows, run this installer inside WSL2.';;
 esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=x64;; *) fail 'Supported architectures: arm64 and x64.';; esac
+[ "$os-$arch" != "darwin-x64" ] || fail 'Miracle for macOS requires Apple Silicon (arm64).'
 root=${MIRACLE_INSTALL_ROOT:-$default_root}
 bin=${MIRACLE_BIN_DIR:-$HOME/.local/bin}
 asset="miracle-$VERSION-$os-$arch.tar.gz"

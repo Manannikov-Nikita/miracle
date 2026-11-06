@@ -18,24 +18,62 @@ import { create as createTar, extract as extractTar } from "tar";
 const releaseVersion = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"),
 ).version;
-it("rejects a native Windows release target before producing artifacts", () => {
-  const root = mkdtempSync(join(tmpdir(), "miracle unsupported release "));
-  const output = join(root, "output");
+it.each(["win-x64", "darwin-x64"])(
+  "rejects unsupported release target %s before producing artifacts",
+  (target) => {
+    const root = mkdtempSync(join(tmpdir(), "miracle unsupported release "));
+    const output = join(root, "output");
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/build-release.mjs",
+          "Example/Miracle",
+          releaseVersion,
+          output,
+          target,
+        ],
+        { cwd: resolve(import.meta.dirname, ".."), encoding: "utf8" },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/Unsupported release target/);
+      expect(existsSync(output)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+it("rejects macOS Intel installation before downloading or changing files", () => {
+  const root = mkdtempSync(join(tmpdir(), "miracle unsupported install "));
+  const tools = join(root, "tools");
+  const download = join(root, "download");
+  const install = join(root, "install");
   try {
-    const result = spawnSync(
-      process.execPath,
-      [
-        "scripts/build-release.mjs",
-        "Example/Miracle",
-        releaseVersion,
-        output,
-        "win-x64",
-      ],
-      { cwd: resolve(import.meta.dirname, ".."), encoding: "utf8" },
+    mkdirSync(tools);
+    writeFileSync(
+      join(tools, "uname"),
+      '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo x86_64;; esac\n',
+      { mode: 0o755 },
     );
+    writeFileSync(
+      join(tools, "curl"),
+      '#!/bin/sh\nprintf download > "$DOWNLOAD_MARKER"\nexit 1\n',
+      { mode: 0o755 },
+    );
+    const result = spawnSync("/bin/sh", ["release/install.sh"], {
+      cwd: resolve(import.meta.dirname, ".."),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${tools}:/usr/bin:/bin`,
+        MIRACLE_INSTALL_ROOT: install,
+        DOWNLOAD_MARKER: download,
+      },
+    });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/Unsupported release target/);
-    expect(existsSync(output)).toBe(false);
+    expect(result.stderr).toMatch(/macOS.*Apple Silicon|macOS.*arm64/i);
+    expect(existsSync(download)).toBe(false);
+    expect(existsSync(install)).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -77,15 +115,15 @@ it.each([
       );
       writeFileSync(
         join(fixture, "package.json"),
-        JSON.stringify({ name: "release-fixture", version: "0.2.0" }),
+        JSON.stringify({ name: "release-fixture", version: "0.8.0" }),
       );
       writeFileSync(
         join(fixture, "package-lock.json"),
         JSON.stringify({
           name: "release-fixture",
-          version: "0.2.0",
+          version: "0.8.0",
           lockfileVersion: 3,
-          packages: { "": { name: "release-fixture", version: "0.2.0" } },
+          packages: { "": { name: "release-fixture", version: "0.8.0" } },
         }),
       );
       for (const path of [
@@ -150,7 +188,7 @@ syncBuiltinESMExports();
             : []),
           "scripts/build-release.mjs",
           "Example/Miracle",
-          "0.2.0",
+          "0.8.0",
           output,
           String(target),
           runtime,
@@ -160,12 +198,12 @@ syncBuiltinESMExports();
       expect(built.status, built.stderr).toBe(0);
       const extracted = join(fixture, "extracted");
       mkdirSync(extracted);
-      const archive = join(output, `miracle-0.2.0-${target}.${extension}`);
+      const archive = join(output, `miracle-0.8.0-${target}.${extension}`);
       expect(existsSync(archive), "platform-specific release archive").toBe(
         true,
       );
       await extractTar({ file: archive, cwd: extracted, chmod: true });
-      const payload = join(extracted, `miracle-0.2.0-${target}`);
+      const payload = join(extracted, `miracle-0.8.0-${target}`);
       expect(
         readFileSync(join(payload, "dist/client/snow ☃/данные.txt"), "utf8"),
       ).toBe("Unicode payload\n");
@@ -176,13 +214,13 @@ syncBuiltinESMExports();
         statSync(join(payload, "dist/server/executable.sh")).mode & 0o777,
       ).toBe(0o755);
       expect(readFileSync(join(output, "install.sh"), "utf8")).toBe(
-        "#!/bin/sh\nprintf '%s\\n' 'Example/Miracle 0.2.0'\n",
+        "#!/bin/sh\nprintf '%s\\n' 'Example/Miracle 0.8.0'\n",
       );
       const installed = spawnSync("sh", [join(output, "install.sh")], {
         encoding: "utf8",
       });
       expect(installed.status, installed.stderr).toBe(0);
-      expect(installed.stdout).toBe("Example/Miracle 0.2.0\n");
+      expect(installed.stdout).toBe("Example/Miracle 0.8.0\n");
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
@@ -231,7 +269,7 @@ it("refuses to replace assets of an existing GitHub release", () => {
     );
     const result = spawnSync(
       process.execPath,
-      ["scripts/publish-release.mjs", "v0.2.0", folder],
+      ["scripts/publish-release.mjs", "v0.8.0", folder],
       {
         cwd: resolve(import.meta.dirname, ".."),
         encoding: "utf8",
@@ -249,3 +287,56 @@ it("refuses to replace assets of an existing GitHub release", () => {
     rmSync(folder, { recursive: true, force: true });
   }
 });
+it.each([undefined, "darwin-arm64", "linux-arm64", "linux-x64"])(
+  "publishes only when all three supported artifacts exist (missing: %s)",
+  (missing) => {
+    const folder = mkdtempSync(join(tmpdir(), "miracle release artifacts "));
+    try {
+      const tools = join(folder, "tools");
+      const mutation = join(folder, "mutation.json");
+      mkdirSync(tools);
+      writeFileSync(
+        join(tools, "gh"),
+        '#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 1; fi\nprintf "%s\\n" "$@" > "$RELEASE_MUTATION"\n',
+        { mode: 0o755 },
+      );
+      for (const target of ["darwin-arm64", "linux-arm64", "linux-x64"]) {
+        if (target === missing) continue;
+        const name = `miracle-0.8.0-${target}.tar.gz`;
+        writeFileSync(join(folder, name), "verified artifact");
+        writeFileSync(join(folder, name + ".sha256"), "verified checksum");
+      }
+      writeFileSync(join(folder, "install.sh"), "#!/bin/sh\n");
+      const result = spawnSync(
+        process.execPath,
+        ["scripts/publish-release.mjs", "v0.8.0", folder],
+        {
+          cwd: resolve(import.meta.dirname, ".."),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${tools}:${process.env.PATH}`,
+            RELEASE_MUTATION: mutation,
+          },
+        },
+      );
+      if (missing) {
+        expect(result.status).not.toBe(0);
+        expect(existsSync(mutation)).toBe(false);
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        const uploaded = readFileSync(mutation, "utf8").split("\n");
+        expect(uploaded.filter((arg) => arg.endsWith(".tar.gz"))).toHaveLength(
+          3,
+        );
+        expect(uploaded.filter((arg) => arg.endsWith(".sha256"))).toHaveLength(
+          3,
+        );
+        expect(uploaded).toContain(join(folder, "install.sh"));
+        expect(uploaded.join("\n")).not.toContain("darwin-x64");
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  },
+);

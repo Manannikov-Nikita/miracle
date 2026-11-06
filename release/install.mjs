@@ -20,6 +20,8 @@ if (!["darwin", "linux"].includes(process.platform))
   throw new Error(
     "Miracle supports macOS and Linux. On Windows, run the Linux installer inside WSL2.",
   );
+if (process.platform === "darwin" && process.arch !== "arm64")
+  throw new Error("Miracle supports macOS on Apple Silicon (ARM64) only.");
 
 const [sourceArgument, rootArgument, binArgument] = process.argv.slice(2);
 if (!sourceArgument || !rootArgument)

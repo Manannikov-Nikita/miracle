@@ -15,12 +15,7 @@ if (existing.status === 0)
   );
 const version = tag.slice(1),
   output = resolve(directory);
-const files = [
-  "darwin-arm64",
-  "darwin-x64",
-  "linux-arm64",
-  "linux-x64",
-].flatMap((target) => {
+const files = ["darwin-arm64", "linux-arm64", "linux-x64"].flatMap((target) => {
   const name = `miracle-${version}-${target}.tar.gz`;
   return [join(output, name), join(output, name + ".sha256")];
 });
