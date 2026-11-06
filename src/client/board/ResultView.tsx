@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Cell, ChartSpec, ResultSet, TableSpec } from "../../shared/types";
-import { api, getResultRows } from "../api";
+import { getResultRows } from "../api";
 import { Select } from "../components/Select";
 import { ErrorBox } from "../components/UI";
-import { chartSeries, defaultChart, isNumericColumn } from "./model";
+import { isNumericColumn } from "./model";
 import { chartOptions } from "./chartOptions";
 import ChartCanvas from "./ChartCanvas";
 import TableView from "./TableView";
@@ -11,37 +11,40 @@ import ChartTypePicker from "./ChartTypePicker";
 import type { CustomChartSpec } from "../../shared/custom-charts";
 import CustomChart from "./CustomChart";
 import ChartColors from "./ChartColors";
+import LegendPositionPicker from "./LegendPositionPicker";
+import { normalizeChartSpec, tableChartSeries } from "./chartTableModel";
+import { useChartTableData } from "./useChartTableData";
 
-function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
-  const [rows, setRows] = useState<Cell[][] | null>(null);
-  const [error, setError] = useState<Error | null>(null);
-  const [retry, setRetry] = useState(0);
-  useEffect(() => {
-    let live = true;
-    setRows(null);
-    setError(null);
-    api<{ result: ResultSet; rows: Cell[][] }>(
-      `/api/result-sets/${result.id}/chart`,
-    )
-      .then((data) => {
-        if (live) setRows(data.rows);
-      })
-      .catch((e) => {
-        if (live) setError(e instanceof Error ? e : new Error(String(e)));
-      });
-    return () => {
-      live = false;
-    };
-  }, [result.id, retry]);
+function Chart({
+  result,
+  spec: savedSpec,
+  table,
+  visibleColumns,
+}: {
+  result: ResultSet;
+  spec?: ChartSpec;
+  table?: TableSpec;
+  visibleColumns?: string[];
+}) {
+  const { data, error, preparationError, retry } = useChartTableData(
+    result,
+    table,
+    visibleColumns,
+  );
+  const spec = useMemo(
+    () => normalizeChartSpec(data?.columns ?? result.columns, savedSpec),
+    [data?.columns, result.columns, savedSpec],
+  );
   const prepared = useMemo(() => {
-    if (!rows) return null;
+    if (preparationError) return { error: preparationError };
+    if (!data || !data.rows.length) return null;
     try {
-      const series = chartSeries(result.columns, rows, spec);
-      return { option: chartOptions(result.columns, spec, series) };
+      const series = tableChartSeries(data, spec);
+      return { option: chartOptions(data.columns, spec, series) };
     } catch (e) {
       return { error: (e as Error).message };
     }
-  }, [result, rows, spec]);
+  }, [data, spec, preparationError]);
   if (error || prepared?.error)
     return (
       <ErrorBox
@@ -55,51 +58,112 @@ function Chart({ result, spec }: { result: ResultSet; spec: ChartSpec }) {
         hint={
           error
             ? "Повторите загрузку сохранённого снимка."
-            : "Проверьте выбранные столбцы и тип графика в свойствах блока."
+            : (preparationError ??
+              "Проверьте выбранные столбцы и тип графика в свойствах блока.")
         }
         actions={
           error ? (
-            <button type="button" onClick={() => setRetry((n) => n + 1)}>
+            <button type="button" onClick={retry}>
               Повторить загрузку
             </button>
           ) : undefined
         }
       />
     );
-  if (!rows)
+  if (!data)
     return (
       <div className="board-loading" role="status">
         Загрузка полного снимка…
       </div>
     );
-  if (!rows.length)
-    return <div className="board-loading">В результате нет строк.</div>;
+  if (!data.rows.length)
+    return (
+      <div className="board-loading">
+        {table?.filters?.length
+          ? "Нет строк, подходящих под фильтры."
+          : "В результате нет строк."}
+      </div>
+    );
   if (!prepared?.option) return null;
   return (
     <ChartCanvas
       option={prepared.option}
-      label={`График: ${spec.kind}${spec.kind === "bar" && spec.orientation === "horizontal" ? ", горизонтальный" : ""}, ${rows.length} строк полного снимка`}
+      label={`График: ${spec.kind}${spec.kind === "bar" && spec.orientation === "horizontal" ? ", горизонтальный" : ""}, ${data.rows.length} строк таблицы`}
     />
   );
 }
-export function ChartSettings({
+type ChartSettingsProps = {
+  result: ResultSet;
+  spec: ChartSpec;
+  table?: TableSpec;
+  visibleColumns?: string[];
+  onChange: (value: ChartSpec) => void;
+  disabled?: boolean;
+};
+export function ChartSettings(props: ChartSettingsProps) {
+  const { data, error, preparationError, retry } = useChartTableData(
+    props.result,
+    props.table,
+    props.visibleColumns,
+    false,
+  );
+  const transformed =
+    props.table !== undefined || props.visibleColumns !== undefined;
+  const spec = useMemo(
+    () => normalizeChartSpec(data?.columns ?? props.result.columns, props.spec),
+    [data?.columns, props.result.columns, props.spec],
+  );
+  const series = useMemo(() => {
+    if (!data || !transformed) return undefined;
+    try {
+      return tableChartSeries(data, spec);
+    } catch {
+      return [];
+    } // Invalid axes remain editable below.
+  }, [data, transformed, spec]);
+  if (error || preparationError)
+    return (
+      <ErrorBox
+        title="Не удалось подготовить данные графика."
+        error={error ?? preparationError}
+        hint={preparationError ?? "Повторите загрузку сохранённого снимка."}
+        actions={
+          error ? (
+            <button type="button" onClick={retry}>
+              Повторить загрузку
+            </button>
+          ) : undefined
+        }
+      />
+    );
+  if (!data) return <p role="status">Загрузка столбцов таблицы…</p>;
+  return (
+    <ChartSettingsFields
+      {...props}
+      result={{
+        ...props.result,
+        columns: data.columns,
+        rowCount: data.rows.length,
+      }}
+      spec={spec}
+      preparedSeries={series}
+    />
+  );
+}
+function ChartSettingsFields({
   result,
   spec,
   onChange,
   disabled = false,
-}: {
-  result: ResultSet;
-  spec: ChartSpec;
-  onChange: (value: ChartSpec) => void;
-  disabled?: boolean;
+  preparedSeries,
+}: ChartSettingsProps & {
+  preparedSeries?: ReturnType<typeof tableChartSeries>;
 }) {
   const set = (patch: Partial<ChartSpec>) => onChange({ ...spec, ...patch });
   const horizontal = spec.kind === "bar" && spec.orientation === "horizontal";
   const categoryAxis = horizontal ? "Ось Y" : "Ось X";
   const metricAxis = horizontal ? "Ось X" : "Ось Y";
   const sortLabel = horizontal ? "Порядок Y" : "Порядок X";
-  const verticalLegend =
-    spec.legendPosition === "left" || spec.legendPosition === "right";
   return (
     <fieldset className="board-chart-settings" disabled={disabled}>
       <legend>Настройки графика · весь снимок</legend>
@@ -183,7 +247,7 @@ export function ChartSettings({
           value={spec.sort ?? "none"}
           onValueChange={(value) => set({ sort: value as ChartSpec["sort"] })}
           options={[
-            { value: "none", label: "Как в SQL" },
+            { value: "none", label: "Как в таблице" },
             { value: "asc", label: "По возрастанию" },
             { value: "desc", label: "По убыванию" },
           ]}
@@ -273,53 +337,12 @@ export function ChartSettings({
             Легенда
           </label>
           {spec.legend && (
-            <>
-              <label>
-                Положение легенды
-                <Select
-                  aria-label="Положение легенды"
-                  disabled={disabled}
-                  value={spec.legendPosition ?? "top"}
-                  onValueChange={(value) =>
-                    set({
-                      legendPosition: value as ChartSpec["legendPosition"],
-                    })
-                  }
-                  options={[
-                    { value: "top", label: "Сверху" },
-                    { value: "bottom", label: "Снизу" },
-                    { value: "left", label: "Слева" },
-                    { value: "right", label: "Справа" },
-                  ]}
-                />
-              </label>
-              <label>
-                Выравнивание легенды
-                <Select
-                  aria-label="Выравнивание легенды"
-                  disabled={disabled}
-                  value={spec.legendAlign ?? "center"}
-                  onValueChange={(value) =>
-                    set({ legendAlign: value as ChartSpec["legendAlign"] })
-                  }
-                  options={[
-                    {
-                      value: "start",
-                      label: verticalLegend
-                        ? "По верхнему краю"
-                        : "По левому краю",
-                    },
-                    { value: "center", label: "По центру" },
-                    {
-                      value: "end",
-                      label: verticalLegend
-                        ? "По нижнему краю"
-                        : "По правому краю",
-                    },
-                  ]}
-                />
-              </label>
-            </>
+            <LegendPositionPicker
+              position={spec.legendPosition}
+              align={spec.legendAlign}
+              disabled={disabled}
+              onChange={set}
+            />
           )}
           <ChartColors
             key={result.id}
@@ -327,10 +350,11 @@ export function ChartSettings({
             spec={spec}
             disabled={disabled}
             onChange={set}
+            preparedSeries={preparedSeries}
           />
         </div>
       </details>
-      <p>До 5 000 точек. Агрегация и округление задаются в SQL.</p>
+      <p>До 5 000 точек. Данные учитывают преобразования таблицы.</p>
     </fieldset>
   );
 }
@@ -344,6 +368,7 @@ export default function ResultView({
   visibleColumns,
   table,
   onMetadata,
+  onTableChange,
 }: {
   boardId?: string;
   nodeId?: string;
@@ -354,6 +379,7 @@ export default function ResultView({
   visibleColumns?: string[];
   table?: TableSpec;
   onMetadata?: (result: ResultSet) => void;
+  onTableChange?: (table: TableSpec) => void;
 }) {
   const [result, setResult] = useState<ResultSet | null>(null);
   const [rows, setRows] = useState<Cell[][]>([]);
@@ -403,6 +429,8 @@ export default function ResultView({
         nodeId={nodeId}
         resultSetId={id}
         spec={customChart}
+        table={table}
+        visibleColumns={visibleColumns}
         onShowTable={() => setShowCustomTable(true)}
       />
     );
@@ -424,7 +452,12 @@ export default function ResultView({
       Загрузка снимка…
     </div>
   ) : view === "chart" ? (
-    <Chart result={result} spec={chart ?? defaultChart(result.columns)} />
+    <Chart
+      result={result}
+      spec={chart}
+      table={table}
+      visibleColumns={visibleColumns}
+    />
   ) : (
     <TableView
       key={id}
@@ -432,6 +465,7 @@ export default function ResultView({
       initialRows={rows}
       spec={table}
       visibleColumns={visibleColumns}
+      onChange={onTableChange}
     />
   );
   return view === "custom" ? (

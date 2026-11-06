@@ -48,6 +48,7 @@ describe("agent transcript", () => {
     messages: AgentMessage[],
     status: AgentTurn["status"] = "running",
     turns: AgentTurn[] = [turn(status)],
+    resolvedApprovals = new Map<string, "allow" | "deny">(),
   ) => {
     const state = {
       conversation: {
@@ -61,12 +62,32 @@ describe("agent transcript", () => {
         turns,
       },
       active: ["running", "waiting"].includes(status) ? turn(status) : null,
-      resolvedApprovals: new Map(),
+      resolvedApprovals,
       busy: false,
       approve,
     } as unknown as AgentChatState;
     await act(async () => root.render(createElement(AgentMessages, { state })));
   };
+
+  it("renders safe inline and display math while preserving Markdown code examples", async () => {
+    await render(
+      [
+        message(
+          "answer",
+          "assistant",
+          "Inline $x^2$\n\n$$y^2$$\n\n$$\n\\frac{1}{2}\n$$\n\n`$code$`\n\n```math\n$example$\n```\n\n$\\frac{$\n\n$\\href{javascript:alert(1)}{bad}$",
+        ),
+      ],
+      "completed",
+    );
+    expect(host.querySelectorAll(".katex-display")).toHaveLength(2);
+    expect(host.querySelectorAll(".katex")).toHaveLength(4);
+    expect(host.querySelector(".katex-error")).not.toBeNull();
+    expect(host.querySelector("a")).toBeNull();
+    expect(
+      [...host.querySelectorAll("code")].map((code) => code.textContent),
+    ).toEqual(["$code$", "$example$\n"]);
+  });
 
   it("keeps file and chart references visible in saved user messages without removal controls", async () => {
     await render(
@@ -282,7 +303,8 @@ describe("agent transcript", () => {
       ],
       "running",
     );
-    expect(host.textContent).toContain("Разрешено");
+    expect(host.textContent).toContain("Разрешения · 1");
+    expect(host.querySelector("article.approval")).toBeNull();
     expect(
       [...host.querySelectorAll("button")].some(
         (button) => button.textContent === "Разрешить",
@@ -349,6 +371,15 @@ describe("agent transcript", () => {
       ],
       "completed",
     );
+    const summary = host.querySelector<HTMLButtonElement>(
+      ".agent-approvals-summary",
+    )!;
+    expect(summary.textContent).toContain("Разрешения · 3");
+    expect(summary.textContent).toContain("Отклонено: 1");
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelectorAll("article.approval")).toHaveLength(0);
+    await act(async () => summary.click());
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
     const approvals = host.querySelectorAll("article.approval");
     expect(approvals[0]!.textContent).toContain("Разрешено автоматически");
     expect(approvals[1]!.textContent).toContain("Отклонено");
@@ -360,6 +391,69 @@ describe("agent transcript", () => {
       ).toBe("false");
       expect(approval.querySelector(".agent-markdown")).toBeNull();
     }
+  });
+
+  it("compresses resolved permissions per turn while keeping a new request immediately actionable", async () => {
+    const previous = { ...turn("completed"), id: "previous" };
+    const receipts = Array.from({ length: 100 }, (_, index) =>
+      message(`resolved-${index}`, "approval", `Run command ${index}`, {
+        approvalId: `approval-${index}`,
+        decision: "allow",
+        resolved: true,
+        automatic: true,
+      }),
+    );
+    await render(
+      [
+        { ...receipts[0]!, id: "previous-approval", turnId: "previous" },
+        ...receipts,
+        message("pending", "approval", "Run the final command", {
+          approvalId: "pending-approval",
+        }),
+      ],
+      "waiting",
+      [previous, turn("waiting")],
+    );
+    const summaries = host.querySelectorAll(".agent-approvals-summary");
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]!.textContent).toContain("Разрешения · 1");
+    expect(summaries[1]!.textContent).toContain("Разрешения · 100");
+    expect(host.querySelectorAll("article.approval")).toHaveLength(1);
+    expect(host.textContent).not.toContain("Run command");
+    const allow = [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === "Разрешить",
+    )!;
+    expect(allow).toBeDefined();
+    expect(allow.closest("[hidden]")).toBeNull();
+    await act(async () => allow.click());
+    expect(approve).toHaveBeenCalledWith("pending-approval", "allow");
+    await act(async () => (summaries[1] as HTMLButtonElement).click());
+    expect(host.querySelectorAll("article.approval")).toHaveLength(101);
+    expect(
+      host.querySelector('[data-turn-id="previous"] article.approval'),
+    ).toBeNull();
+    await act(async () => (summaries[1] as HTMLButtonElement).click());
+    expect(host.querySelectorAll("article.approval")).toHaveLength(1);
+  });
+
+  it("compacts a permission as soon as its live decision arrives", async () => {
+    const messages = [
+      message("pending", "approval", "Run the command", {
+        approvalId: "permission",
+      }),
+    ];
+    await render(messages, "waiting");
+    expect(host.querySelector("article.pending")).not.toBeNull();
+    await render(
+      messages,
+      "waiting",
+      [turn("waiting")],
+      new Map([["permission", "deny"]]),
+    );
+    expect(host.querySelector("article.pending")).toBeNull();
+    expect(
+      host.querySelector(".agent-approvals-summary")!.textContent,
+    ).toContain("Отклонено: 1");
   });
 
   it("preserves independent server audit receipts and reports them as completed during a running turn", async () => {

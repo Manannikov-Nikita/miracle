@@ -3,7 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Inspector from "../src/client/board/Inspector";
+import {
+  createTableSpec,
+  formatTableCell,
+} from "../src/client/board/tableModel";
 import type { BoardNode, ResultSet, TableSpec } from "../src/shared/types";
+import type { TableColumnOptions } from "../src/shared/tableTypes";
+
+// Chart settings read the full saved table to discover columns produced by pivot.
+vi.mock("../src/client/api", () => ({
+  api: vi.fn(async () => ({
+    result,
+    rows: [
+      ["2026-09-01", 10],
+      ["2026-10-01", 20],
+    ],
+  })),
+  getResultRows: vi.fn(),
+}));
 
 const result: ResultSet = {
   id: "result-inspector",
@@ -51,6 +68,10 @@ describe("board inspector settings integration", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     uncaught = [];
@@ -62,19 +83,26 @@ describe("board inspector settings integration", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     vi.unstubAllGlobals();
   });
 
   async function render(
     node: BoardNode,
-    options: { editable?: boolean; missingMetadata?: boolean } = {},
+    options: {
+      editable?: boolean;
+      missingMetadata?: boolean;
+      result?: ResultSet;
+    } = {},
   ) {
     function Board() {
       const [value, setValue] = useState(node);
       current = value;
       return createElement(Inspector, {
         node: value,
-        result: options.missingMetadata ? undefined : result,
+        result: options.missingMetadata
+          ? undefined
+          : (options.result ?? result),
         editable: options.editable ?? true,
         change(next) {
           changes.push(next);
@@ -106,6 +134,94 @@ describe("board inspector settings integration", () => {
   async function click(element: HTMLElement) {
     await act(async () => element.click());
   }
+  function select(label: string) {
+    const found = container.querySelector<HTMLButtonElement>(
+      `button[role="combobox"][aria-label="${label}"]`,
+    );
+    expect(found, `select ${label}`).not.toBeNull();
+    return found!;
+  }
+  async function choose(label: string, text: string) {
+    const trigger = select(label);
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    const option = [
+      ...document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ].find((item) => item.textContent?.trim() === text);
+    expect(option, `option ${text}`).toBeDefined();
+    await act(async () => {
+      option!.focus();
+      option!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  }
+  const reshapeResult: ResultSet = {
+    ...result,
+    columns: [
+      result.columns[0],
+      { id: "category", name: "Категория", type: "String" },
+      result.columns[1],
+      { id: "cost", name: "Расход", type: "Float64" },
+    ],
+  };
+  function withColumnOptions(options: TableColumnOptions): BoardNode {
+    const node = fixture("table");
+    node.data.table = {
+      ...table,
+      columns: { ...table.columns, month: options },
+    };
+    return node;
+  }
+  function mappingRules(): HTMLElement[] {
+    const disclosure = [...container.querySelectorAll("details")].find((item) =>
+      item
+        .querySelector("summary")
+        ?.textContent?.startsWith("Подстановка значений"),
+    );
+    expect(disclosure).toBeDefined();
+    return [
+      ...disclosure!.querySelectorAll<HTMLElement>(".table-setting-rule"),
+    ];
+  }
+  function input(
+    label: string,
+    scope: ParentNode = container,
+  ): HTMLInputElement {
+    const found = scope.querySelector<HTMLInputElement>(
+      `input[aria-label="${label}"]`,
+    );
+    expect(found, `input ${label}`).not.toBeNull();
+    return found!;
+  }
+  async function edit(field: HTMLInputElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+  }
+  const currentColumn = () => current.data.table!.columns!.month;
+  const formatted = (value: string | null) =>
+    formatTableCell(value, result.columns[0], currentColumn());
 
   it("switches custom charts to tables and back without losing their source", async () => {
     const customChart = {
@@ -256,6 +372,349 @@ describe("board inspector settings integration", () => {
     expect(uncaught).toEqual([]);
   });
 
+  it("switches table forms without losing source formatting or filters", async () => {
+    const node = fixture("table");
+    node.data.table = {
+      ...createTableSpec(reshapeResult.columns),
+      columns: {
+        revenue: { format: "currency", currency: "RUB" },
+        "pivot:string:West": { label: "Устаревший итог" },
+      },
+      order: ["pivot:string:West", "revenue", "month"],
+      filters: [{ column: "month", op: "notNull" }],
+      pivot: {
+        row: "month",
+        column: "category",
+        value: "revenue",
+        aggregate: "sum",
+      },
+      sort: { column: "pivot:string:West", direction: "desc" },
+    };
+    await render(node, { result: reshapeResult });
+    await click(button("Данные"));
+    expect(select("Форма таблицы").textContent).toBe("Сводная с расчётом");
+    await choose("Форма таблицы", "В длинную · melt");
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(current.data.table?.sort).toBeUndefined();
+    expect(current.data.table?.reshape?.kind).toBe("melt");
+    expect(current.data.table?.columns).toEqual({
+      revenue: { format: "currency", currency: "RUB" },
+    });
+    expect(current.data.table?.order).toEqual(["revenue", "month"]);
+    expect(current.data.table?.filters).toEqual([
+      { column: "month", op: "notNull" },
+    ]);
+    await click(input("В строки: Расход"));
+    await edit(input("Название столбца ключей"), "Показатель");
+    await edit(input("Название столбца значений"), "Сумма");
+    expect(current.data.table?.reshape).toEqual({
+      kind: "melt",
+      columns: ["revenue"],
+      keyName: "Показатель",
+      valueName: "Сумма",
+    });
+    expect(container.querySelector('[aria-label="Расчёт сводной"]')).toBeNull();
+    await choose("Форма таблицы", "В широкую · pivot");
+    expect(current.data.table?.reshape?.kind).toBe("pivot");
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(container.querySelector('[aria-label="Расчёт сводной"]')).toBeNull();
+    await choose("Форма таблицы", "Сводная с расчётом");
+    expect(current.data.table?.reshape).toBeUndefined();
+    expect(current.data.table?.pivot?.aggregate).toBe("sum");
+    expect(
+      container.querySelector('[aria-label="Расчёт сводной"]'),
+    ).not.toBeNull();
+    await choose("Форма таблицы", "Как в SQL");
+    expect(current.data.table?.reshape).toBeUndefined();
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(current.data.table?.columns).toEqual({
+      revenue: { format: "currency", currency: "RUB" },
+    });
+    expect(current.data.table?.filters).toEqual([
+      { column: "month", op: "notNull" },
+    ]);
+    expect(current.data.chart).toEqual(node.data.chart);
+    expect(uncaught).toEqual([]);
+  });
+
+  it("edits raw pivot row keys, headings and string values without introducing aggregation", async () => {
+    const node = fixture("table");
+    node.data.table = {
+      ...createTableSpec(reshapeResult.columns),
+      reshape: {
+        kind: "pivot",
+        rows: ["month"],
+        column: "category",
+        value: "revenue",
+      },
+      sort: { column: "month", direction: "desc" },
+    };
+    await render(node, { result: reshapeResult });
+    await click(button("Данные"));
+    expect(select("Форма таблицы").textContent).toBe("В широкую · pivot");
+    expect(input("Ключ строки: Месяц").checked).toBe(true);
+    await click(input("Ключ строки: Месяц"));
+    expect(current.data.table?.reshape).toEqual({
+      kind: "pivot",
+      rows: [],
+      column: "category",
+      value: "revenue",
+    });
+    expect(current.data.table?.sort).toBeUndefined();
+    await click(input("Ключ строки: Месяц"));
+    await choose("Заголовки столбцов", "Расход");
+    await choose("Значения", "Категория");
+    expect(current.data.table?.reshape).toEqual({
+      kind: "pivot",
+      rows: ["month"],
+      column: "cost",
+      value: "category",
+    });
+    expect(current.data.table?.pivot).toBeUndefined();
+    expect(container.querySelector('[aria-label="Расчёт сводной"]')).toBeNull();
+    expect(uncaught).toEqual([]);
+  });
+
+  it("preserves generated column formatting and order when renaming melted fields", async () => {
+    const node = fixture("table");
+    node.data.table = {
+      ...createTableSpec(reshapeResult.columns),
+      reshape: { kind: "melt", columns: ["revenue"], keyName: "Показатель" },
+      columns: {
+        "reshape:melt:value": { format: "currency", currency: "USD" },
+      },
+      order: ["reshape:melt:value", "month", "reshape:melt:key"],
+    };
+    await render(node, { result: reshapeResult });
+    await click(button("Данные"));
+    await edit(input("Название столбца ключей"), "Метрика");
+    expect(current.data.table?.reshape).toEqual({
+      kind: "melt",
+      columns: ["revenue"],
+      keyName: "Метрика",
+    });
+    expect(current.data.table?.columns).toEqual({
+      "reshape:melt:value": { format: "currency", currency: "USD" },
+    });
+    expect(current.data.table?.order).toEqual([
+      "reshape:melt:value",
+      "month",
+      "reshape:melt:key",
+    ]);
+    await choose("Форма таблицы", "Как в SQL");
+    expect(current.data.table?.columns).toEqual({});
+    expect(current.data.table?.order).toEqual(["month"]);
+    expect(uncaught).toEqual([]);
+  });
+
+  it.each(["melt", "pivot"] as const)(
+    "prevents a viewer changing the %s configuration",
+    async (kind) => {
+      const node = fixture("table");
+      node.data.table = {
+        ...createTableSpec(reshapeResult.columns),
+        reshape:
+          kind === "melt"
+            ? {
+                kind,
+                columns: ["revenue"],
+                keyName: "Показатель",
+                valueName: "Сумма",
+              }
+            : { kind, rows: ["month"], column: "category", value: "revenue" },
+      };
+      await render(node, { result: reshapeResult, editable: false });
+      await click(button("Данные"));
+      expect(select("Форма таблицы").matches(":disabled")).toBe(true);
+      await click(select("Форма таблицы"));
+      expect(document.querySelector('[role="listbox"]')).toBeNull();
+      if (kind === "melt") {
+        expect(input("В строки: Выручка").matches(":disabled")).toBe(true);
+        expect(input("Название столбца ключей").matches(":disabled")).toBe(
+          true,
+        );
+        expect(input("Название столбца значений").matches(":disabled")).toBe(
+          true,
+        );
+        await click(input("В строки: Выручка"));
+      } else {
+        expect(input("Ключ строки: Месяц").matches(":disabled")).toBe(true);
+        expect(select("Заголовки столбцов").matches(":disabled")).toBe(true);
+        expect(select("Значения").matches(":disabled")).toBe(true);
+        await click(input("Ключ строки: Месяц"));
+      }
+      expect(changes).toEqual([]);
+      expect(current).toEqual(node);
+      expect(uncaught).toEqual([]);
+    },
+  );
+
+  it("adds a NULL mapping that can be edited into literal NULL and an empty string", async () => {
+    await render(withColumnOptions({}));
+    await click(button(" Подстановка"));
+    expect(currentColumn().mappings).toEqual([{ value: null, text: "" }]);
+    const rule = mappingRules()[0];
+    const source = input("Исходное значение", rule);
+    expect(source.value).toBe("");
+    expect(source.placeholder).toBe("NULL");
+    expect(rule.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Вместо NULL"]')).toBeNull();
+    await act(async () => source.focus());
+    await act(async () => source.blur());
+    expect(currentColumn().mappings![0].value).toBeNull();
+    await edit(input("Отображать вместо значения", rule), "замена");
+    expect(formatted(null)).toEqual({ text: "замена" });
+    expect(formatted("")).toEqual({ text: "" });
+    await edit(source, "NULL");
+    expect(currentColumn().mappings![0].value).toBe("NULL");
+    expect(formatted("NULL")).toEqual({ text: "замена" });
+    expect(formatted(null)).toEqual({ text: "—" });
+    await edit(source, "");
+    expect(currentColumn().mappings![0].value).toBe("");
+    expect(source.placeholder).not.toBe("NULL");
+    expect(formatted("")).toEqual({ text: "замена" });
+    expect(formatted(null)).toEqual({ text: "—" });
+    await click(
+      rule.querySelector<HTMLButtonElement>(
+        '[aria-label="Использовать NULL"]',
+      )!,
+    );
+    expect(currentColumn().mappings![0].value).toBeNull();
+    expect(source.placeholder).toBe("NULL");
+    expect(formatted(null)).toEqual({ text: "замена" });
+    expect(formatted("")).toEqual({ text: "" });
+    expect(uncaught).toEqual([]);
+  });
+
+  it.each(["Нет данных", ""])(
+    "exposes legacy NULL replacement %j without rewriting it until the mapping changes",
+    async (nullText) => {
+      const node = withColumnOptions({ nullText, suffix: "!" });
+      await render(node);
+      expect(mappingRules()).toHaveLength(1);
+      expect(input("Исходное значение", mappingRules()[0]).placeholder).toBe(
+        "NULL",
+      );
+      expect(input("Отображать вместо значения", mappingRules()[0]).value).toBe(
+        nullText,
+      );
+      expect(changes).toEqual([]);
+      expect(formatted(null)).toEqual({ text: nullText });
+      await edit(input("Перед значением"), "~");
+      expect(currentColumn()).toEqual({ nullText, suffix: "!", prefix: "~" });
+      await edit(
+        input("Отображать вместо значения", mappingRules()[0]),
+        "Пусто",
+      );
+      expect(currentColumn()).toEqual({
+        nullText: undefined,
+        suffix: "!",
+        prefix: "~",
+        mappings: [{ value: null, text: "Пусто" }],
+      });
+      expect(formatted(null)).toEqual({ text: "Пусто" });
+      expect(current.data.table!.columns!.revenue).toEqual(
+        table.columns!.revenue,
+      );
+      expect(uncaught).toEqual([]);
+    },
+  );
+
+  it("deletes a virtual legacy mapping without leaving its NULL fallback active", async () => {
+    await render(
+      withColumnOptions({ nullText: "Старое значение", prefix: "~" }),
+    );
+    expect(mappingRules()).toHaveLength(1);
+    await click(
+      mappingRules()[0].querySelector<HTMLButtonElement>(
+        '[aria-label="Удалить подстановку 1"]',
+      )!,
+    );
+    expect(mappingRules()).toHaveLength(0);
+    expect(currentColumn().nullText).toBeUndefined();
+    expect(currentColumn().prefix).toBe("~");
+    expect(formatted(null)).toEqual({ text: "—" });
+  });
+
+  it("keeps NULL mapping priority ahead of the legacy fallback while editing other values", async () => {
+    await render(
+      withColumnOptions({
+        nullText: "Резерв",
+        mappings: [
+          { value: null, text: "Первый", color: "red" },
+          { value: "NULL", text: "Строка" },
+        ],
+      }),
+    );
+    expect(mappingRules()).toHaveLength(3);
+    expect(input("Отображать вместо значения", mappingRules()[2]).value).toBe(
+      "Резерв",
+    );
+    expect(formatted(null)).toEqual({ text: "Первый", color: "red" });
+    await edit(
+      input("Отображать вместо значения", mappingRules()[1]),
+      "Новая строка",
+    );
+    expect(formatted(null)).toEqual({ text: "Первый", color: "red" });
+    expect(formatted("NULL")).toEqual({ text: "Новая строка" });
+    await click(
+      mappingRules()[0].querySelector<HTMLButtonElement>(
+        '[aria-label="Удалить подстановку 1"]',
+      )!,
+    );
+    expect(formatted(null)).toEqual({ text: "Резерв" });
+    expect(formatted("NULL")).toEqual({ text: "Новая строка" });
+  });
+
+  it("prevents viewers from editing or deleting value mappings", async () => {
+    const node = withColumnOptions({ nullText: "Нет данных" });
+    await render(node, { editable: false });
+    expect(mappingRules()).toHaveLength(1);
+    const controls = [
+      ...mappingRules()[0].querySelectorAll<
+        HTMLInputElement | HTMLButtonElement
+      >("input, button"),
+    ];
+    expect(controls.length).toBeGreaterThan(2);
+    for (const control of controls) {
+      expect(control.matches(":disabled")).toBe(true);
+      if (control instanceof HTMLButtonElement) await click(control);
+    }
+    expect(changes).toEqual([]);
+    expect(current).toEqual(node);
+  });
+
+  it("keeps a full set of mappings and its editable legacy fallback within the save limit", async () => {
+    const mappings = Array.from({ length: 20 }, (_, index) => ({
+      value: String(index),
+      text: `Значение ${index}`,
+    }));
+    await render(withColumnOptions({ mappings, nullText: "Резерв" }));
+    expect(mappingRules()).toHaveLength(21);
+    expect(button(" Подстановка").disabled).toBe(true);
+    const legacy = mappingRules()[20];
+    expect(input("Исходное значение", legacy).disabled).toBe(true);
+    expect(input("Отображать вместо значения", legacy).disabled).toBe(false);
+    await edit(input("Отображать вместо значения", legacy), "Пусто");
+    expect(currentColumn().mappings).toEqual(mappings);
+    expect(currentColumn().nullText).toBe("Пусто");
+    expect(formatted(null)).toEqual({ text: "Пусто" });
+    await click(
+      mappingRules()[0].querySelector<HTMLButtonElement>(
+        '[aria-label="Удалить подстановку 1"]',
+      )!,
+    );
+    expect(mappingRules()).toHaveLength(20);
+    expect(currentColumn().mappings).toEqual([
+      ...mappings.slice(1),
+      { value: null, text: "Пусто" },
+    ]);
+    expect(currentColumn().nullText).toBeUndefined();
+    expect(formatted(null)).toEqual({ text: "Пусто" });
+    expect(button(" Подстановка").disabled).toBe(true);
+    expect(uncaught).toEqual([]);
+  });
+
   it("switches bar orientation without changing its columns or table settings", async () => {
     const node = fixture();
     node.data.chart = {
@@ -356,19 +815,28 @@ describe("board inspector settings integration", () => {
     await render(node);
     const placement = () =>
       container.querySelector('[aria-label="Положение легенды"]');
-    const alignment = () =>
-      container.querySelector('[aria-label="Выравнивание легенды"]');
-    expect(placement()?.textContent).toBe("Справа");
-    expect(alignment()?.textContent).toBe("По нижнему краю");
+    const bottomRight = () =>
+      placement()?.querySelector<HTMLInputElement>(
+        'input[type="radio"][aria-label="Снизу справа"]',
+      );
+    expect(bottomRight()?.checked).toBe(true);
+    expect(changes).toEqual([]);
     await click(checkbox("Легенда"));
     expect(placement()).toBeNull();
     expect(current.data.chart).toEqual({ ...node.data.chart, legend: false });
     await click(button("Таблица"));
     await click(button("График"));
     await click(checkbox("Легенда"));
-    expect(placement()?.textContent).toBe("Справа");
-    expect(alignment()?.textContent).toBe("По нижнему краю");
+    expect(bottomRight()?.checked).toBe(true);
     expect(current.data.chart).toEqual(node.data.chart);
+    // A legacy vertical corner stays untouched until the user explicitly picks
+    // its visually equivalent horizontal position, even if already selected.
+    await click(bottomRight()!);
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      legendPosition: "bottom",
+      legendAlign: "end",
+    });
     expect(current.data.table).toBe(table);
     expect(uncaught).toEqual([]);
   });
@@ -458,6 +926,11 @@ describe("board inspector settings integration", () => {
           container.querySelector('[aria-label="Ось X"]')?.matches(":disabled"),
         ).toBe(true);
         expect(checkbox("Легенда").matches(":disabled")).toBe(true);
+        const legendPosition = container.querySelector<HTMLInputElement>(
+          'input[type="radio"][aria-label="Снизу справа"]',
+        );
+        expect(legendPosition?.matches(":disabled")).toBe(true);
+        await click(legendPosition!);
         await click(checkbox("Легенда"));
       } else {
         await click(button("Вид"));

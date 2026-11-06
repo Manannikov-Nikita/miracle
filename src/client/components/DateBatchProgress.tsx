@@ -1,5 +1,6 @@
 import type { QueryRun } from "../../shared/types";
 import { Spinner } from "./UI";
+import { BatchRemainingTime } from "./QueryTiming";
 
 export default function DateBatchProgress({
   run,
@@ -59,6 +60,7 @@ export default function DateBatchProgress({
       >
         <span style={{ width: `${percent}%` }} />
       </div>
+      <BatchRemainingTime run={run} />
       {!paused && (
         <div className="batch-progress-details">
           <span>

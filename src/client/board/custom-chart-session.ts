@@ -1,10 +1,11 @@
 import { api } from "../api";
 import {
-  serializeCustomChart,
+  serializeCustomChartPresentation,
   type CustomChartData,
   type CustomChartReportInput,
   type CustomChartSpec,
 } from "../../shared/custom-charts";
+import type { TableSpec } from "../../shared/tableTypes";
 import {
   mountCustomChartFrame,
   type ChartRuntimeStatus,
@@ -20,6 +21,8 @@ export function startCustomChartRun(options: {
   nodeId: string;
   resultSetId: string;
   spec: CustomChartSpec;
+  table?: TableSpec;
+  visibleColumns?: string[];
   width: number;
   height: number;
   theme: "dark" | "light";
@@ -82,7 +85,13 @@ export function startCustomChartRun(options: {
     try {
       const digest = await crypto.subtle.digest(
         "SHA-256",
-        new TextEncoder().encode(serializeCustomChart(options.spec)),
+        new TextEncoder().encode(
+          serializeCustomChartPresentation(
+            options.spec,
+            options.table,
+            options.visibleColumns,
+          ),
+        ),
       );
       if (!live()) return;
       hash = Array.from(new Uint8Array(digest), (byte) =>
@@ -93,13 +102,25 @@ export function startCustomChartRun(options: {
       stage = "data";
       const data = await api<CustomChartData>(
         `/api/result-sets/${encodeURIComponent(options.resultSetId)}/custom-chart`,
-        { signal: controller.signal },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            table: options.table,
+            visibleColumns: options.visibleColumns,
+          }),
+          signal: controller.signal,
+        },
       );
       if (!live()) return;
       stage = "frame";
       destroyFrame = mountCustomChartFrame({
         ...options,
-        data: { columns: data.columns, rows: data.rows },
+        data: {
+          columns: data.columns,
+          rows: data.rows,
+          displayRows: data.displayRows,
+          cellColors: data.cellColors,
+        },
         onStatus,
       });
     } catch (error) {

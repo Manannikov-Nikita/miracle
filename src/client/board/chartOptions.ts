@@ -73,6 +73,64 @@ export function chartOptions(
       (stacked && spec.labelPosition !== "outside"));
   const formatter = (value: number) =>
     formatChartNumber(value, spec.numberFormat);
+  const categoryLabels = new Map(
+    series.flatMap((item) => Object.entries(item.categoryLabels ?? {})),
+  );
+  const categoryFormatter = categoryLabels.size
+    ? (value: string | number) =>
+        categoryLabels.get(String(value)) ?? String(value)
+    : undefined;
+  const escapeHtml = (value: string) =>
+    value.replace(
+      /[&<>"']/g,
+      (char) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[char]!,
+    );
+  const nameCounts = new Map<string, number>();
+  for (const item of series)
+    nameCounts.set(item.name, (nameCounts.get(item.name) ?? 0) + 1);
+  let seriesNamePrefix = "table-series:";
+  while (series.some((item) => item.name.startsWith(seriesNamePrefix)))
+    seriesNamePrefix += ":";
+  const seriesNames = series.map((item, index) =>
+    item.displayData && nameCounts.get(item.name)! > 1
+      ? `${seriesNamePrefix}${item.colorKey ?? index}`
+      : item.name,
+  );
+  const legendDisplayNames = new Map(
+    seriesNames.map((name, index) => [name, series[index].name]),
+  );
+  const tableTooltip = series.some((item) => item.displayData)
+    ? (parameters: unknown): string => {
+        const params = (
+          Array.isArray(parameters) ? parameters : [parameters]
+        ) as { seriesIndex?: number; dataIndex?: number }[];
+        const points = params.flatMap((param) => {
+          const item = series[param.seriesIndex ?? -1];
+          const display = item?.displayData?.[param.dataIndex ?? -1];
+          return display ? [{ item, display }] : [];
+        });
+        if (!points.length) return "";
+        const category = points[0].display.x;
+        return [
+          escapeHtml(
+            spec.kind === "scatter"
+              ? `${categoryName ?? "X"}: ${category}`
+              : category,
+          ),
+          ...points.map(
+            ({ item, display }) =>
+              `${escapeHtml(item.name)}: ${escapeHtml(display.value)}`,
+          ),
+        ].join("<br/>");
+      }
+    : undefined;
   // ECharts contains axis decorations, but not labels at the ends of bars or
   // above points. Reserve room even when axes (and their gutters) are hidden.
   const outsideLabels = spec.showLabels && !insideLabels;
@@ -80,9 +138,15 @@ export function chartOptions(
     ? series.reduce(
         (width, item) =>
           item.data.reduce(
-            (max, point) =>
+            (max, point, index) =>
               typeof point[1] === "number" && Number.isFinite(point[1])
-                ? Math.max(max, formatter(point[1]).length * 7 + 10)
+                ? Math.max(
+                    max,
+                    (item.displayData?.[index]?.value ?? formatter(point[1]))
+                      .length *
+                      7 +
+                      10,
+                  )
                 : max,
             width,
           ),
@@ -178,6 +242,7 @@ export function chartOptions(
     tooltip: {
       trigger: spec.kind === "scatter" ? "item" : "axis",
       valueFormatter: tooltipValue,
+      ...(tableTooltip ? { formatter: tableTooltip } : {}),
       backgroundColor: "#303338",
       borderColor: "#3b3e43",
       textStyle: { color: "#eeeff0" },
@@ -193,8 +258,17 @@ export function chartOptions(
       pageIconSize: 10,
       pageButtonItemGap: 4,
       pageTextStyle: { color: "#a9adb1" },
-      tooltip: { show: true },
-      formatter: (name: string) => name.replace(/\s+/g, " "),
+      tooltip: {
+        show: true,
+        formatter: (parameters: { name?: string }) =>
+          escapeHtml(
+            legendDisplayNames.get(parameters.name ?? "") ??
+              parameters.name ??
+              "",
+          ),
+      },
+      formatter: (name: string) =>
+        (legendDisplayNames.get(name) ?? name).replace(/\s+/g, " "),
       textStyle: {
         ...normalLayout.legend.textStyle,
         color: "#a9adb1",
@@ -220,7 +294,9 @@ export function chartOptions(
         show: showX,
         color: "#a9adb1",
         formatter:
-          horizontalBar || spec.kind === "scatter" ? formatter : undefined,
+          horizontalBar || spec.kind === "scatter"
+            ? formatter
+            : categoryFormatter,
         width: 90,
         overflow: "truncate",
         hideOverlap: true,
@@ -250,7 +326,7 @@ export function chartOptions(
       axisLabel: {
         show: showY,
         color: "#a9adb1",
-        formatter: horizontalBar ? undefined : formatter,
+        formatter: horizontalBar ? categoryFormatter : formatter,
         ...(horizontalBar
           ? { width: 120, overflow: "truncate", hideOverlap: true }
           : {}),
@@ -269,10 +345,33 @@ export function chartOptions(
       minorSplitLine: { show: false },
     },
     series: series.map(
-      ({ metricId, colorKey, xCategories: _xCategories, ...item }, index) => {
+      (
+        {
+          metricId,
+          colorKey,
+          xCategories: _xCategories,
+          displayData,
+          categoryLabels: _categoryLabels,
+          ...item
+        },
+        index,
+      ) => {
         const color = chartSeriesColor(spec, { colorKey }, index);
         return {
           ...item,
+          name: seriesNames[index],
+          ...(displayData?.some((display) => display.color)
+            ? {
+                data: item.data.map((value, pointIndex) =>
+                  displayData[pointIndex]?.color
+                    ? {
+                        value,
+                        itemStyle: { color: displayData[pointIndex].color },
+                      }
+                    : value,
+                ),
+              }
+            : {}),
           type: spec.kind === "area" ? "line" : spec.kind,
           // Preserve the source dimension/metric data while moving them to the
           // physical axes. ECharts uses the same mapping for stacks and tooltips.
@@ -291,7 +390,9 @@ export function chartOptions(
                   ? "inside"
                   : "outside"
                 : "top",
-            formatter: labelFormatter,
+            formatter: (params: { value?: unknown; dataIndex?: number }) =>
+              displayData?.[params.dataIndex ?? -1]?.value ??
+              labelFormatter(params),
             color: insideLabels ? insideLabelColor(color) : "#eeeff0",
             fontSize: 11,
             distance: 5,

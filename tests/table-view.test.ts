@@ -107,6 +107,38 @@ describe("table snapshot rendering", () => {
     return bodyRows().map((row) => row.querySelector("td")?.textContent);
   }
 
+  it("persists editable header sorting so another view can use the same order", async () => {
+    const result = resultSet();
+    const rows: Cell[][] = [
+      ["B", "2"],
+      ["A", "1"],
+    ];
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    let saved = createTableSpec(result.columns);
+    const mount = () =>
+      root.render(
+        createElement(TableView, {
+          result,
+          initialRows: rows,
+          spec: saved,
+          onChange: (next: TableSpec) => {
+            saved = next;
+            mount();
+          },
+        }),
+      );
+    await act(async () => mount());
+    await sortBy("Название");
+    expect(saved.sort).toEqual({ column: "name", direction: "asc" });
+    expect(names()).toEqual(["A", "B"]);
+    await act(async () => root.render(null));
+    await act(async () => mount());
+    expect(names()).toEqual(["A", "B"]);
+    expect(container.querySelector("th")?.getAttribute("aria-sort")).toBe(
+      "ascending",
+    );
+  });
+
   it("omits pagination for a single page while keeping its row range", async () => {
     const result = resultSet();
     await render(
@@ -185,6 +217,93 @@ describe("table snapshot rendering", () => {
     expect(container.querySelector('tfoot span[title="21115"]')).not.toBeNull();
     expect(api).toHaveBeenCalledTimes(1);
     expect(getResultRows).not.toHaveBeenCalled();
+  });
+
+  it("melts the full snapshot before paginating the expanded rows", async () => {
+    const result = resultSet(205);
+    result.columns.push({ id: "cost", name: "Расход", type: "Float64" });
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
+      `row-${i + 1}`,
+      String(i + 1),
+      String((i + 1) * 10),
+    ]);
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, rows.slice(0, 200), {
+      ...createTableSpec(result.columns),
+      reshape: {
+        kind: "melt",
+        columns: ["value", "cost"],
+        keyName: "Показатель",
+        valueName: "Число",
+      },
+    });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector("thead")?.textContent).toContain(
+      "Показатель",
+    );
+    expect(bodyRows()).toHaveLength(200);
+    expect(container.textContent).toContain("1–200 из 410");
+    for (let page = 0; page < 2; page++)
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Следующая страница"]',
+          )!
+          .click(),
+      );
+    expect(bodyRows()).toHaveLength(10);
+    expect(
+      bodyRows()
+        .slice(-2)
+        .map((row) =>
+          [...row.querySelectorAll("td")].map((cell) => cell.textContent),
+        ),
+    ).toEqual([
+      ["row-205", "Значение", "205"],
+      ["row-205", "Расход", "2050"],
+    ]);
+    expect(container.textContent).toContain("401–410 из 410");
+    expect(api).toHaveBeenCalledExactlyOnceWith(
+      `/api/result-sets/${result.id}/table`,
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(getResultRows).not.toHaveBeenCalled();
+    expect(uncaught).toEqual([]);
+  });
+
+  it("pivots raw values from the full snapshot, including groups beyond the initial page", async () => {
+    const result = resultSet(205);
+    result.columns.push({ id: "category", name: "Категория", type: "String" });
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
+      `group-${Math.floor(i / 2) + 1}`,
+      String(i + 1),
+      i % 2 === 0 ? "West" : "East",
+    ]);
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, rows.slice(0, 200), {
+      ...createTableSpec(result.columns),
+      reshape: {
+        kind: "pivot",
+        rows: ["name"],
+        column: "category",
+        value: "value",
+      },
+    });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(bodyRows()).toHaveLength(103);
+    expect(bodyRows().at(-1)?.querySelectorAll("td").length).toBe(3);
+    expect(
+      [...bodyRows().at(-1)!.querySelectorAll("td")].map(
+        (cell) => cell.textContent,
+      ),
+    ).toEqual(["group-103", "205", "—"]);
+    expect(container.textContent).toContain("1–103 из 103");
+    expect(api).toHaveBeenCalledExactlyOnceWith(
+      `/api/result-sets/${result.id}/table`,
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(getResultRows).not.toHaveBeenCalled();
+    expect(uncaught).toEqual([]);
   });
 
   it("ignores a late full snapshot after a different snapshot becomes active", async () => {
@@ -460,6 +579,55 @@ describe("table snapshot rendering", () => {
     expect(container.querySelector('[aria-sort="ascending"]')).toBeNull();
   });
 
+  it("resets local sorting when reshape changes and preserves it for an equivalent echo", async () => {
+    const result = resultSet(3);
+    result.columns.push({ id: "cost", name: "Расход", type: "Float64" });
+    const rows: Cell[][] = [
+      ["C", "2", "20"],
+      ["A", "3", "10"],
+      ["B", "1", "30"],
+    ];
+    const plain = createTableSpec(result.columns);
+    const melt: TableSpec = {
+      ...plain,
+      reshape: {
+        kind: "melt",
+        columns: ["value"],
+        valueName: "Число",
+      },
+    };
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, rows, plain);
+    await sortBy("Значение");
+    expect(names()).toEqual(["B", "C", "A"]);
+    await render(result, rows, melt);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(names()).toEqual(["C", "A", "B"]);
+    expect(container.querySelector('[aria-sort="ascending"]')).toBeNull();
+    await sortBy("Число");
+    expect(names()).toEqual(["B", "C", "A"]);
+    await render({ ...result }, rows, {
+      ...plain,
+      reshape: { valueName: "Число", columns: ["value"], kind: "melt" },
+    });
+    expect(names()).toEqual(["B", "C", "A"]);
+    expect(container.querySelector('[aria-sort="ascending"]')).not.toBeNull();
+    await render(result, rows, {
+      ...plain,
+      reshape: { kind: "melt", columns: ["cost"], valueName: "Число" },
+    });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(names()).toEqual(["C", "A", "B"]);
+    expect(container.querySelector('[aria-sort="ascending"]')).toBeNull();
+    await sortBy("Число");
+    expect(names()).toEqual(["A", "C", "B"]);
+    await render(result, rows, plain);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(names()).toEqual(["C", "A", "B"]);
+    expect(container.querySelector('[aria-sort="ascending"]')).toBeNull();
+    expect(uncaught).toEqual([]);
+  });
+
   it("paginates and scrolls an unsorted snapshot using reads only", async () => {
     const result = resultSet(205);
     const rows: Cell[][] = Array.from({ length: 205 }, (_, i) => [
@@ -521,6 +689,34 @@ describe("table snapshot rendering", () => {
     expect(container.querySelector("tbody")?.textContent).toContain(
       "Целая доска",
     );
+  });
+
+  it("shows a raw pivot conflict and recovery advice without opening error details", async () => {
+    const result = resultSet();
+    result.columns.push({ id: "category", name: "Категория", type: "String" });
+    const rows: Cell[][] = [
+      ["A", "1", "West"],
+      ["A", "2", "West"],
+    ];
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    await render(result, rows, {
+      ...createTableSpec(result.columns),
+      reshape: {
+        kind: "pivot",
+        rows: ["name"],
+        column: "category",
+        value: "value",
+      },
+    });
+    const alert = container.querySelector('[role="alert"]')!;
+    const hint = alert.querySelector(".error-hint")!;
+    expect(hint.textContent).toMatch(/конфликт.*несколько значений/i);
+    expect(hint.textContent).toMatch(/добавьте.*ключ строки/i);
+    expect(hint.closest("details")).toBeNull();
+    expect(alert.querySelector<HTMLDetailsElement>("details")?.open).toBe(
+      false,
+    );
+    expect(uncaught).toEqual([]);
   });
 
   it("retries a failed full snapshot read without exposing the technical error by default", async () => {

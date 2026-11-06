@@ -29,6 +29,40 @@ export interface SqlSuggestion {
   detail?: string;
 }
 
+interface RankedSuggestion {
+  item: SqlSuggestion;
+  rank: 0 | 1;
+}
+
+function matchSuggestion(
+  item: SqlSuggestion,
+  choices: string[],
+  prefix: string | undefined,
+): RankedSuggestion | undefined {
+  if (!prefix) return { item, rank: 0 };
+  const typed = prefix.toLocaleLowerCase();
+  const starts = choices.some((value) =>
+    value.toLocaleLowerCase().startsWith(typed),
+  );
+  if (
+    !starts &&
+    !choices.some((value) => value.toLocaleLowerCase().includes(typed))
+  )
+    return;
+  const rank = starts ? 0 : 1;
+  return {
+    rank,
+    item: {
+      ...item,
+      // Monaco rejects weak internal matches and scores before sortText. Give
+      // every accepted match the same score so our context/rank can order it.
+      // The provider must refresh this list when the typed word changes.
+      filterText: prefix,
+      sortText: `${rank}:${item.sortText || `2:${item.label}`}`,
+    },
+  };
+}
+
 const keywords = [
   "SELECT",
   "FROM",
@@ -361,7 +395,7 @@ function projectionSuggestions(
   columnTables: SchemaTable[],
   prefix: string | undefined,
 ) {
-  const suggestions: SqlSuggestion[] = [];
+  const suggestions: RankedSuggestion[] = [];
   const excluded = new Set<string>();
   const grouping = analysis.clause === "groupBy";
   if (!grouping && analysis.clause !== "orderBy")
@@ -453,22 +487,20 @@ function projectionSuggestions(
       ...(alias ? [parts(alias)[0]] : []),
       ...(reference ? [reference.name] : []),
     ];
-    const match =
-      prefix === undefined
-        ? label
-        : choices.find((value) =>
-            normalize(value).startsWith(normalize(prefix)),
-          );
-    if (match === undefined) return;
-    suggestions.push({
-      label,
-      insertText,
-      kind: "column",
-      detail: "Из SELECT",
-      documentation: alias ? `${expression} AS ${alias}` : expression,
-      filterText: prefix ? prefix + match.slice(prefix.length) : match,
-      sortText: `0:select:${String(index).padStart(5, "0")}`,
-    });
+    const matched = matchSuggestion(
+      {
+        label,
+        insertText,
+        kind: "column",
+        detail: "Из SELECT",
+        documentation: alias ? `${expression} AS ${alias}` : expression,
+        filterText: label,
+        sortText: `0:select:${String(index).padStart(5, "0")}`,
+      },
+      choices,
+      prefix,
+    );
+    if (matched) suggestions.push(matched);
   });
   for (const value of used) excluded.add(value);
   return { suggestions, excluded };
@@ -490,18 +522,25 @@ export function sqlSuggestions(
     beforeCursor.length,
     context.engine,
   );
-  const suggestions: SqlSuggestion[] = [];
+  const suggestions: RankedSuggestion[] = [];
   const limit = options.limit ?? Infinity;
   const prefix = options.prefix?.toLocaleLowerCase();
-  const counts = new Map<SqlSuggestion["kind"], number>();
+  const counts = new Map<string, number>();
   const canAdd = (kind: SqlSuggestion["kind"]) =>
-    (counts.get(kind) || 0) < limit;
+    (counts.get(`${kind}:0`) || 0) < limit ||
+    (Boolean(prefix) && (counts.get(`${kind}:1`) || 0) < limit);
   const accepts = (label: string) =>
-    prefix === undefined || label.toLocaleLowerCase().startsWith(prefix);
-  const add = (item: SqlSuggestion) => {
-    if (!canAdd(item.kind)) return;
-    counts.set(item.kind, (counts.get(item.kind) || 0) + 1);
-    suggestions.push(item);
+    prefix === undefined || label.toLocaleLowerCase().includes(prefix);
+  const add = (
+    item: SqlSuggestion,
+    choices = [item.filterText || item.label],
+  ) => {
+    const matched = matchSuggestion(item, choices, options.prefix);
+    if (!matched) return;
+    const key = `${item.kind}:${matched.rank}`;
+    if ((counts.get(key) || 0) >= limit) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+    suggestions.push(matched);
   };
   const referenced = referencedSqlTables(analysis.scopeSql, tables, context);
   const aliasReference =
@@ -532,7 +571,7 @@ export function sqlSuggestions(
     options.prefix,
   );
   const projectionKeys = new Set(
-    projected.suggestions.map((item) =>
+    projected.suggestions.map(({ item }) =>
       sqlExpressionKey(item.insertText, context.engine),
     ),
   );
@@ -611,14 +650,17 @@ export function sqlSuggestions(
     for (const [label, { insertText, name }] of schemas) {
       if (!canAdd("schema")) break;
       if (accepts(label) || accepts(name))
-        add({
-          label,
-          insertText,
-          kind: "schema",
-          ...(sourceClause && !qualifier.length
-            ? { sortText: `1:schema:${label}` }
-            : {}),
-        });
+        add(
+          {
+            label,
+            insertText,
+            kind: "schema",
+            ...(sourceClause && !qualifier.length
+              ? { sortText: `1:schema:${label}` }
+              : {}),
+          },
+          [label, name],
+        );
     }
     if (!qualifier.length) {
       const vocabulary =
@@ -639,7 +681,8 @@ export function sqlSuggestions(
           continue;
         if (rowExpression && trinoAggregates.has(normalize(keyword))) continue;
         const item = keywordSuggestion(keyword, scanned.code);
-        if (accepts(item.filterText || item.insertText)) add(item);
+        if (accepts(item.filterText || item.insertText))
+          add(item, [item.filterText || item.insertText]);
       }
       if (context.engine === "clickhouse") {
         const prefix =
@@ -656,25 +699,34 @@ export function sqlSuggestions(
       }
     }
   }
-  const preferred = projected.suggestions.slice(0, limit);
-  if (preferred.length + suggestions.length <= limit)
-    return [...preferred, ...suggestions];
-  // Keep every relevant category available when a large schema has hundreds of
-  // identically prefixed tables. Construct at most `limit` items per category,
-  // then interleave them into one bounded list; Monaco ranks the matches.
-  const groups = (
-    ["column", "schema", "keyword", "function", "table"] as const
-  ).map((kind) => suggestions.filter((item) => item.kind === kind));
-  const bounded: SqlSuggestion[] = [...preferred];
-  for (let index = 0; bounded.length < limit; index++) {
-    let added = false;
-    for (const group of groups) {
-      if (group[index] && bounded.length < limit) {
-        bounded.push(group[index]);
-        added = true;
-      }
+  // Reserve capacity separately for prefixes and internal matches: an early
+  // substring bucket must not hide better matches later in a large catalog.
+  // Within each rank retain SELECT priority and category diversity.
+  const bounded: SqlSuggestion[] = [];
+  for (const rank of [0, 1]) {
+    const preferred = projected.suggestions
+      .filter((entry) => entry.rank === rank)
+      .slice(0, Math.max(0, limit - bounded.length))
+      .map(({ item }) => item);
+    bounded.push(...preferred);
+    const candidates = suggestions.filter((entry) => entry.rank === rank);
+    if (bounded.length + candidates.length <= limit) {
+      bounded.push(...candidates.map(({ item }) => item));
+      continue;
     }
-    if (!added) break;
+    const groups = (
+      ["column", "schema", "keyword", "function", "table"] as const
+    ).map((kind) => candidates.filter(({ item }) => item.kind === kind));
+    for (let index = 0; bounded.length < limit; index++) {
+      let added = false;
+      for (const group of groups) {
+        if (group[index] && bounded.length < limit) {
+          bounded.push(group[index].item);
+          added = true;
+        }
+      }
+      if (!added) break;
+    }
   }
   return bounded;
 }

@@ -1,5 +1,6 @@
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   type CSSProperties,
@@ -8,7 +9,8 @@ import {
   Handle,
   NodeResizer,
   Position,
-  useViewport,
+  useStore,
+  type ReactFlowState,
   type OnResizeStart,
   type OnResize,
   type OnResizeEnd,
@@ -21,7 +23,6 @@ import {
   ChartLine,
   Code,
   FileMd,
-  Note,
   SlidersHorizontal,
   Table,
   Trash,
@@ -29,6 +30,7 @@ import {
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
 import MarkdownEditor from "./MarkdownEditor";
+import StickyNoteEditor from "./StickyNoteEditor";
 import { boardHandleOptions } from "./connection-sides";
 import type { ResizeSides } from "./resize-snapping";
 const handlePositions = {
@@ -63,13 +65,11 @@ export const BoardActions = createContext<{
   resize: () => {},
   busy: {},
 });
-export default function ArtifactNode({
-  id,
-  data,
-  selected,
-}: NodeProps<ArtifactFlowNode>) {
+const selectZoom = (state: ReactFlowState) => state.transform[2];
+
+function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const actions = useContext(BoardActions);
-  const { zoom } = useViewport();
+  const zoom = useStore(selectZoom);
   // Keep these handlers stable: XYFlow installs its raw resize calculation in
   // an effect keyed by the callback identities, including during the gesture.
   const resizeStart = useCallback<OnResizeStart>(
@@ -130,28 +130,30 @@ export default function ArtifactNode({
         />
       ))}
       <header className="board-node-header">
-        <span className="board-node-kind" aria-hidden="true">
-          {data.kind === "result" ? (
-            data.view === "chart" || data.view === "custom" ? (
-              <ChartLine size={16} />
-            ) : (
-              <Table size={16} />
-            )
-          ) : data.kind === "markdown" ? (
-            <FileMd size={16} />
-          ) : (
-            <Note size={16} />
-          )}
-        </span>
-        <strong title={data.title}>{data.title}</strong>
+        {data.kind !== "note" && (
+          <>
+            <span className="board-node-kind" aria-hidden="true">
+              {data.kind === "markdown" ? (
+                <FileMd size={16} />
+              ) : data.view === "chart" || data.view === "custom" ? (
+                <ChartLine size={16} />
+              ) : (
+                <Table size={16} />
+              )}
+            </span>
+            <strong title={data.title}>{data.title}</strong>
+          </>
+        )}
         <span className="board-node-toolbar nodrag nopan">
-          <button
-            title="Свойства блока"
-            aria-label={`Свойства: ${data.title}`}
-            onClick={() => actions.inspect(id)}
-          >
-            <SlidersHorizontal size={16} aria-hidden="true" />
-          </button>
+          {data.kind !== "note" && (
+            <button
+              title="Свойства блока"
+              aria-label={`Свойства: ${data.title}`}
+              onClick={() => actions.inspect(id)}
+            >
+              <SlidersHorizontal size={16} aria-hidden="true" />
+            </button>
+          )}
           {data.source && (
             <button
               title="Открыть закреплённый SQL"
@@ -203,17 +205,18 @@ export default function ArtifactNode({
             visibleColumns={data.visibleColumns}
             table={data.table}
             onMetadata={actions.metadata}
+            onTableChange={
+              actions.editable
+                ? (table) => actions.update(id, { table })
+                : undefined
+            }
           />
         )}
         {data.kind === "note" && (
-          <textarea
-            maxLength={200000}
-            aria-label="Текст заметки"
+          <StickyNoteEditor
             value={data.text ?? ""}
             readOnly={!actions.editable}
-            onChange={(e) => actions.update(id, { text: e.target.value })}
-            placeholder="Запишите наблюдение…"
-            className="board-note-text"
+            onChange={(text) => actions.update(id, { text })}
           />
         )}
         {data.kind === "markdown" && (
@@ -228,3 +231,13 @@ export default function ArtifactNode({
     </article>
   );
 }
+
+// Position, drag flags and measured dimensions belong to XYFlow's wrapper.
+// The card consumes only these props; resizer/zoom subscriptions remain live.
+export default memo(
+  ArtifactNode,
+  (previous, next) =>
+    previous.id === next.id &&
+    previous.data === next.data &&
+    previous.selected === next.selected,
+);

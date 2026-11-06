@@ -55,6 +55,36 @@ export function useBoard(
     document: string;
   } | null>(null);
   const savingDone = useRef<Promise<void> | null>(null);
+  const pendingDraft = useRef<{
+    key: string;
+    value: { baseRevision: number; document: BoardDocument };
+  } | null>(null);
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draftNotify = useRef(notify);
+  draftNotify.current = notify;
+  const cancelDraft = useCallback((key?: string) => {
+    if (key !== undefined && pendingDraft.current?.key !== key) return;
+    if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+    draftTimer.current = null;
+    pendingDraft.current = null;
+  }, []);
+  const flushDraft = useCallback(() => {
+    const draft = pendingDraft.current;
+    cancelDraft();
+    if (draft && !persist(draft.key, draft.value))
+      draftNotify.current(
+        "Локальный черновик не записан: хранилище браузера недоступно.",
+        "error",
+      );
+  }, [cancelDraft]);
+  const persistDraft = useCallback(
+    (key: string, value: unknown) => {
+      // A save acknowledgement or immediate edit supersedes the queued version.
+      cancelDraft(key);
+      return persist(key, value);
+    },
+    [cancelDraft],
+  );
   const conflictRef = useRef(false);
   conflictRef.current = conflict;
   const loadSequence = useRef(0);
@@ -66,6 +96,7 @@ export function useBoard(
   }, []);
   const select = useCallback(
     async (id: string) => {
+      flushDraft();
       if (saving.current) {
         notify("Дождитесь сохранения доски.", "info");
         return;
@@ -75,6 +106,7 @@ export function useBoard(
       try {
         const loaded = await api<Board>(`/api/boards/${id}`);
         if (!mounted.current || sequence !== loadSequence.current) return;
+        flushDraft();
         saved.current = contentKey(loaded.document);
         history.current = [];
         future.current = [];
@@ -110,7 +142,7 @@ export function useBoard(
                 canvasKey(draft.document) !== canvasKey(loaded.document);
               if (!restored) {
                 local = loaded;
-                persist(draftKey(workspaceId, id), null);
+                persistDraft(draftKey(workspaceId, id), null);
               }
               setConflict(restored && draft.baseRevision !== loaded.revision);
             }
@@ -132,7 +164,7 @@ export function useBoard(
         if (sequence === loadSequence.current) setLoading(false);
       }
     },
-    [assign, workspaceId, notify],
+    [assign, workspaceId, notify, flushDraft, persistDraft],
   );
   useEffect(() => {
     mounted.current = true;
@@ -167,14 +199,22 @@ export function useBoard(
     };
   }, [workspaceId]);
   const change = useCallback(
-    (document: BoardDocument, record = true) => {
+    (
+      document: BoardDocument,
+      record = true,
+      options?: { deferDraft?: boolean },
+    ) => {
       const old = current.current;
       if (!old) return;
+      const previousNodes = new Map(
+        old.document.nodes.map((node) => [node.id, node]),
+      );
       document = {
         ...document,
         nodes: document.nodes.map((node) => {
-          const previous = old.document.nodes.find((n) => n.id === node.id);
+          const previous = previousNodes.get(node.id);
           return previous &&
+            previous.data.source !== node.data.source &&
             contentKey(previous.data.source) !== contentKey(node.data.source)
             ? {
                 ...node,
@@ -200,21 +240,25 @@ export function useBoard(
       const next = { ...old, document };
       assign(next);
       setHistoryTick((n) => n + 1);
-      if (
-        !persist(draftKey(workspaceId, old.id), {
-          baseRevision: old.revision,
-          document,
-        })
-      )
+      const key = draftKey(workspaceId, old.id);
+      const value = { baseRevision: old.revision, document };
+      if (options?.deferDraft) {
+        if (pendingDraft.current && pendingDraft.current.key !== key)
+          flushDraft();
+        cancelDraft();
+        pendingDraft.current = { key, value };
+        draftTimer.current = setTimeout(flushDraft, 200);
+      } else if (!persistDraft(key, value))
         notify(
           "Локальный черновик не записан: хранилище браузера недоступно.",
           "error",
         );
       setState("Изменения…");
     },
-    [assign, workspaceId, notify],
+    [assign, workspaceId, notify, cancelDraft, flushDraft, persistDraft],
   );
   const save = useCallback(async () => {
+    flushDraft();
     const snapshot = current.current;
     if (
       !snapshot ||
@@ -276,10 +320,10 @@ export function useBoard(
         ),
       );
       if (contentKey(now.document) === serialized) {
-        persist(draftKey(workspaceId, snapshot.id), null);
+        persistDraft(draftKey(workspaceId, snapshot.id), null);
         setState("Сохранено");
       } else {
-        persist(draftKey(workspaceId, snapshot.id), {
+        persistDraft(draftKey(workspaceId, snapshot.id), {
           baseRevision: result.revision,
           document: now.document,
         });
@@ -288,6 +332,7 @@ export function useBoard(
       }
     } catch (e) {
       if (current.current?.id !== snapshot.id || !mounted.current) return;
+      flushDraft();
       const error = e as Error & { status?: number; code?: string };
       if (
         error.status === 409 ||
@@ -315,7 +360,7 @@ export function useBoard(
       finishSave();
       savingDone.current = null;
     }
-  }, [assign, conflict, workspaceId, notify]);
+  }, [assign, conflict, workspaceId, notify, flushDraft, persistDraft]);
   useEffect(() => {
     if (!projectSync) return;
     const receive = (value: Board) => {
@@ -352,6 +397,7 @@ export function useBoard(
         base && canvasKey(old.document) === canvasKey(base),
       );
       if (dirty && serialized !== local && !ownSave && !viewportOnly) {
+        flushDraft();
         conflictRef.current = true;
         setConflict(true);
         setState("Конфликт версий — локальный черновик сохранён");
@@ -380,7 +426,7 @@ export function useBoard(
       const stillDirty = contentKey(next.document) !== serialized;
       // Events may overtake the HTTP reply. Reconcile the backup here too,
       // retaining edits made after the acknowledged save on its new revision.
-      persist(
+      persistDraft(
         draftKey(workspaceId, value.id),
         stillDirty
           ? { baseRevision: value.revision, document: next.document }
@@ -395,10 +441,12 @@ export function useBoard(
       const old = current.current;
       if (old?.id !== id) return;
       if (contentKey(old.document) !== saved.current) {
+        flushDraft();
         conflictRef.current = true;
         setConflict(true);
         setState("Доска удалена. Локальный черновик сохранён");
       } else {
+        cancelDraft(draftKey(workspaceId, id));
         assign(null);
         saved.current = "";
       }
@@ -432,8 +480,17 @@ export function useBoard(
       unsubscribe();
       reconnect();
     };
-  }, [projectSync, assign, notify, workspaceId]);
+  }, [
+    projectSync,
+    assign,
+    notify,
+    workspaceId,
+    cancelDraft,
+    flushDraft,
+    persistDraft,
+  ]);
   const flush = useCallback(async () => {
+    flushDraft();
     if (savingDone.current) await savingDone.current;
     if (conflictRef.current)
       throw new Error("Разрешите конфликт доски перед отправкой сообщения.");
@@ -450,7 +507,7 @@ export function useBoard(
     throw new Error(
       "Не удалось сохранить доску. Повторите отправку после сохранения.",
     );
-  }, [save]);
+  }, [save, flushDraft]);
   useEffect(() => {
     if (!projectSync) return;
     return projectSync.register("board", {
@@ -465,6 +522,7 @@ export function useBoard(
   }, [board?.document, retry, conflict, save]);
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
+      flushDraft();
       if (
         current.current &&
         contentKey(current.current.document) !== saved.current
@@ -473,10 +531,21 @@ export function useBoard(
         e.returnValue = "";
       }
     };
+    const hidden = () => {
+      if (document.visibilityState === "hidden") flushDraft();
+    };
     window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, []);
+    window.addEventListener("pagehide", flushDraft);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      flushDraft();
+      window.removeEventListener("beforeunload", warn);
+      window.removeEventListener("pagehide", flushDraft);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [flushDraft]);
   const create = async (name: string, document = emptyDocument()) => {
+    flushDraft();
     // The new ID is known only after POST returns. Retain events observed while
     // it is pending so a later edit cannot be replaced by the creation snapshot.
     const events = new Map<string, Board>();
@@ -493,6 +562,7 @@ export function useBoard(
     } finally {
       creationEvents.current.delete(events);
     }
+    flushDraft();
     // The original conflicting draft remains recoverable after creating a copy.
     ++loadSequence.current;
     setLoading(false);
@@ -549,6 +619,7 @@ export function useBoard(
         }),
       });
     } catch (error) {
+      flushDraft();
       if ((error as { status?: number }).status === 409) {
         conflictRef.current = true;
         setConflict(true);
@@ -556,7 +627,7 @@ export function useBoard(
       }
       throw error;
     }
-    persist(draftKey(workspaceId, value.id), null);
+    persistDraft(draftKey(workspaceId, value.id), null);
     ++loadSequence.current;
     const remaining = list.filter((b) => b.id !== value.id);
     setList(remaining);
@@ -567,7 +638,7 @@ export function useBoard(
   };
   const reload = async () => {
     if (!current.current) return;
-    persist(draftKey(workspaceId, current.current.id), null);
+    persistDraft(draftKey(workspaceId, current.current.id), null);
     setConflict(false);
     await select(current.current.id);
   };
@@ -605,6 +676,7 @@ export function useBoard(
     reload,
     save,
     flush,
+    flushDraft,
     undo,
     redo,
     recordHistory,

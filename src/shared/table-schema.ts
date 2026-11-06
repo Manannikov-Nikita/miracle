@@ -3,6 +3,44 @@ import { z } from "zod";
 const field = z.string().min(1).max(10000);
 const color = z.enum(["green", "yellow", "red", "blue", "purple"]);
 const aggregate = z.enum(["sum", "avg", "min", "max", "count"]);
+const uniqueFields = z
+  .array(field)
+  .max(2000)
+  .refine(
+    (value) => new Set(value).size === value.length,
+    "Столбцы не должны повторяться",
+  );
+const reshape = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("melt"),
+      columns: uniqueFields.refine(
+        (value) => value.length > 0,
+        "Выберите столбцы значений",
+      ),
+      keyName: z.string().trim().min(1).max(200).optional(),
+      valueName: z.string().trim().min(1).max(200).optional(),
+    })
+    .strict()
+    .refine(
+      (value) => (value.keyName ?? "Ключ") !== (value.valueName ?? "Значение"),
+      "Имена ключа и значения должны различаться",
+    ),
+  z
+    .object({
+      kind: z.literal("pivot"),
+      rows: uniqueFields,
+      column: field,
+      value: field,
+    })
+    .strict()
+    .refine(
+      (value) =>
+        new Set([...value.rows, value.column, value.value]).size ===
+        value.rows.length + 2,
+      "Ключи строк, столбец и значение должны различаться",
+    ),
+]);
 const numeric = z
   .string()
   .max(1100)
@@ -52,44 +90,50 @@ const column = z.object({
     .optional(),
   summary: z.enum(["none", "sum", "avg", "min", "max", "count"]).optional(),
 });
-export const tableSpecSchema = z.object({
-  version: z.literal(1),
-  sourceSchema: z.string().max(1000000),
-  columns: z
-    .record(field, column)
-    .refine(
-      (value) => Object.keys(value).length <= 2000,
-      "Слишком много столбцов",
-    )
-    .optional(),
-  order: z.array(field).max(2000).optional(),
-  filters: z
-    .array(
-      z.object({
-        column: field,
-        op: z.enum([
-          "contains",
-          "eq",
-          "neq",
-          "gt",
-          "gte",
-          "lt",
-          "lte",
-          "isNull",
-          "notNull",
-        ]),
-        value: z.string().max(2000).optional(),
-      }),
-    )
-    .max(20)
-    .optional(),
-  sort: z
-    .object({ column: field, direction: z.enum(["asc", "desc"]) })
-    .optional(),
-  pivot: z
-    .object({ row: field, column: field, value: field, aggregate })
-    .optional(),
-  density: z.enum(["compact", "comfortable"]).optional(),
-  frozenColumns: z.number().int().min(0).max(3).optional(),
-  wrap: z.boolean().optional(),
-});
+export const tableSpecSchema = z
+  .object({
+    version: z.literal(1),
+    sourceSchema: z.string().max(1000000),
+    columns: z
+      .record(field, column)
+      .refine(
+        (value) => Object.keys(value).length <= 2000,
+        "Слишком много столбцов",
+      )
+      .optional(),
+    order: z.array(field).max(2000).optional(),
+    filters: z
+      .array(
+        z.object({
+          column: field,
+          op: z.enum([
+            "contains",
+            "eq",
+            "neq",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "isNull",
+            "notNull",
+          ]),
+          value: z.string().max(2000).optional(),
+        }),
+      )
+      .max(20)
+      .optional(),
+    sort: z
+      .object({ column: field, direction: z.enum(["asc", "desc"]) })
+      .optional(),
+    pivot: z
+      .object({ row: field, column: field, value: field, aggregate })
+      .optional(),
+    reshape: reshape.optional(),
+    density: z.enum(["compact", "comfortable"]).optional(),
+    frozenColumns: z.number().int().min(0).max(3).optional(),
+    wrap: z.boolean().optional(),
+  })
+  .refine(
+    (value) => !value.pivot || !value.reshape,
+    "Нельзя одновременно использовать сводную таблицу и изменение формы",
+  );

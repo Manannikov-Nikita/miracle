@@ -18,6 +18,7 @@ import type { AgentChatState } from "./useAgentChat";
 import AgentHistory from "./AgentHistory";
 import AgentFileMentions, { AgentContextChips } from "./AgentFileMentions";
 import type { DraftAgentImage } from "./useAgentImageDrafts";
+import { useAgentPortalContainer } from "./useAgentPortalContainer";
 
 export interface ComposerProps {
   state: AgentChatState;
@@ -53,6 +54,7 @@ export default function AgentComposer({
   onImagesAdd,
   onImageRemove,
 }: ComposerProps) {
+  const portalContainer = useAgentPortalContainer();
   const [history, setHistory] = useState(false);
   const [dragging, setDragging] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -179,7 +181,7 @@ export default function AgentComposer({
             }}
           />
           <div className="agent-composer-tools">
-            <Menu.Root>
+            <Menu.Root modal={false}>
               <Menu.Trigger asChild>
                 <button
                   type="button"
@@ -191,7 +193,7 @@ export default function AgentComposer({
                   <Plus size={18} />
                 </button>
               </Menu.Trigger>
-              <Menu.Portal container={document.getElementById("agent-panel")}>
+              <Menu.Portal container={portalContainer}>
                 <Menu.Content
                   className="agent-menu"
                   side="top"
@@ -209,7 +211,7 @@ export default function AgentComposer({
                 </Menu.Content>
               </Menu.Portal>
             </Menu.Root>
-            <Menu.Root>
+            <Menu.Root modal={false}>
               <Menu.Trigger asChild>
                 <button
                   type="button"
@@ -220,7 +222,7 @@ export default function AgentComposer({
                   <DotsThree size={18} weight="bold" />
                 </button>
               </Menu.Trigger>
-              <Menu.Portal container={document.getElementById("agent-panel")}>
+              <Menu.Portal container={portalContainer}>
                 <Menu.Content
                   className="agent-menu"
                   side="top"
@@ -271,7 +273,7 @@ export default function AgentComposer({
             </button>
           </div>
           <div className="agent-composer-model">
-            <Menu.Root>
+            <Menu.Root modal={false}>
               <Menu.Trigger asChild>
                 <button
                   type="button"
@@ -284,7 +286,7 @@ export default function AgentComposer({
                   <CaretDown size={12} />
                 </button>
               </Menu.Trigger>
-              <Menu.Portal container={document.getElementById("agent-panel")}>
+              <Menu.Portal container={portalContainer}>
                 <Menu.Content
                   className="agent-menu agent-profile-menu"
                   side="top"

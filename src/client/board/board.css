@@ -62,7 +62,7 @@
 .board-dialog input:focus-visible,
 .board-dialog button:focus-visible {
   outline: 2px solid var(--board-accent);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .board-workspace .select-trigger {
   min-width: 0;
@@ -250,16 +250,6 @@
   border: 1px solid var(--board-border);
   background: var(--board-raised);
 }
-.board-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 10px;
-  background: var(--board-surface);
-  border-top: 1px solid var(--board-border-subtle);
-  color: var(--board-muted);
-  font-size: 12px;
-}
 .board-artifact {
   width: 100%;
   height: 100%;
@@ -328,19 +318,78 @@
   overflow: hidden;
   border-radius: 0 0 6px 6px;
 }
-.board-note-text {
+.board-artifact-note {
+  background: #f4df88;
+  border-color: #d4b951;
+  border-radius: 3px;
+  color: #382f16;
+  box-shadow: 0 5px 10px #0002;
+}
+.board-artifact-note.board-artifact-selected,
+.board-artifact-note:focus-within {
+  border-color: var(--board-accent);
+}
+.board-artifact-note .board-node-header {
+  height: 32px;
+  min-height: 32px;
+  justify-content: flex-end;
+  background: transparent;
+  border-bottom: 0;
+  color: #6a592a;
+  border-radius: 3px 3px 0 0;
+}
+.board-workspace .board-artifact-note .board-node-toolbar button {
+  color: #55451e;
+}
+.board-workspace .board-artifact-note .board-node-toolbar button:hover {
+  background: #382f1614;
+}
+.board-sticky-editor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   height: 100%;
+  padding: 20px;
+  overflow: hidden;
+}
+.board-note-text,
+.board-note-measure {
+  font-family: inherit;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+.board-note-measure {
+  position: absolute;
+  top: 0;
+  left: 20px;
+  visibility: hidden;
+  pointer-events: none;
+}
+.board-note-text {
+  width: 100%;
+  min-height: 0;
+  flex-shrink: 0;
   resize: none;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--board-text);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.6;
-  padding: 14px;
-  outline-offset: -3px !important;
+  color: #382f16;
+  padding: 0;
+}
+.board-workspace textarea.board-note-text:focus-visible {
+  /* The sticky card's :focus-within border already indicates editor focus. */
+  outline: none;
+}
+.board-note-text::placeholder {
+  color: #75632f;
+  opacity: 1;
 }
 .board-artifact-markdown {
   background: var(--board-bg);
@@ -620,7 +669,7 @@
 .board-chart-appearance > summary:focus-visible,
 .board-source-details > summary:focus-visible {
   outline: 2px solid var(--board-accent);
-  outline-offset: 2px;
+  outline-offset: -1px;
 }
 .board-chart-appearance-fields,
 .board-source-content {
@@ -648,6 +697,68 @@
   gap: 10px;
   min-width: 0;
 }
+.board-legend-picker {
+  display: grid;
+  gap: 6px;
+  color: var(--board-muted);
+  font-size: 13px;
+}
+.board-legend-positions {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+}
+.board-inspector .board-legend-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  border: 1px solid var(--board-border);
+  border-radius: 3px;
+  background: var(--board-bg);
+  cursor: pointer;
+}
+.board-legend-option > input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.board-legend-option > svg {
+  width: 24px;
+  max-width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+.board-legend-dot {
+  stroke: var(--board-muted);
+  stroke-width: 1;
+  opacity: 0.65;
+}
+.board-legend-dot-active {
+  stroke: var(--board-accent);
+  fill: var(--board-accent);
+}
+.board-legend-option:has(input:checked) {
+  border-color: var(--board-accent);
+  background: var(--board-hover);
+}
+.board-legend-option:has(input:focus-visible) {
+  outline: 2px solid var(--board-accent);
+  outline-offset: -1px;
+}
+.board-legend-option:has(input:enabled):hover {
+  border-color: var(--board-accent);
+}
+.board-legend-option:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
 .board-chart-colors {
   padding-top: 12px;
   border-top: 1px solid var(--board-border-subtle);
@@ -666,7 +777,7 @@
 }
 .board-chart-series-colors > summary:focus-visible {
   outline: 2px solid var(--board-accent);
-  outline-offset: 3px;
+  outline-offset: -1px;
 }
 .board-chart-series-fields { padding-top: 10px; }
 .board-chart-series-list {
@@ -978,9 +1089,6 @@
     max-width: 110px;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .board-footer span:last-child {
-    display: none;
   }
   .board-inspector {
     width: min(304px, 92%);

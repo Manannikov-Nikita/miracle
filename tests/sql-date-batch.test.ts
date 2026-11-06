@@ -216,6 +216,7 @@ afterEach(async () => {
   metadata.dispose();
   container.remove();
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
@@ -297,6 +298,69 @@ async function start() {
   await act(async () => button("Запустить").click());
 }
 
+describe("SQL query duration", () => {
+  it("restores elapsed time from the run and freezes the final duration", async () => {
+    vi.setSystemTime(new Date("2026-11-05T10:00:10Z"));
+    // Editor recovery waits on real WebCrypto; vi.waitFor advances fake timers.
+    // Keep the measured wall clock explicit instead of timing that setup work.
+    const now = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.parse("2026-11-05T10:00:10Z"));
+    currentRun = {
+      ...currentRun,
+      source: { ...source, sql: "SELECT 1" },
+      batch: undefined,
+      startedAt: "2026-11-05T10:00:00Z",
+    };
+    await render("SELECT 1", currentRun);
+    expect(
+      container.querySelector('[aria-label="Время выполнения"]')?.textContent,
+    ).toBe("10.0 с");
+    now.mockReturnValue(Date.parse("2026-11-05T10:00:11Z"));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(
+      container.querySelector('[aria-label="Время выполнения"]')?.textContent,
+    ).toBe("11.0 с");
+    currentRun = {
+      ...currentRun,
+      status: "completed",
+      elapsedMs: 12000,
+      finishedAt: "2026-11-05T10:00:12Z",
+    };
+    await act(async () => vi.advanceTimersByTimeAsync(1500));
+    expect(
+      container.querySelector('[aria-label="Время выполнения"]')?.textContent,
+    ).toBe("12.0 с");
+    await act(async () => vi.advanceTimersByTimeAsync(60000));
+    expect(
+      container.querySelector('[aria-label="Время выполнения"]')?.textContent,
+    ).toBe("12.0 с");
+  });
+
+  it.each(["failed", "cancelled", "interrupted"] as const)(
+    "shows a stable timestamp duration for reopened %s runs",
+    async (status) => {
+      vi.setSystemTime(new Date("2026-11-05T10:30:00Z"));
+      currentRun = {
+        ...currentRun,
+        source: { ...source, sql: "SELECT 1" },
+        batch: undefined,
+        status,
+        startedAt: "2026-11-05T10:00:00Z",
+        finishedAt: "2026-11-05T10:01:05Z",
+      };
+      await render("SELECT 1", currentRun);
+      expect(
+        container.querySelector('[aria-label="Время выполнения"]')?.textContent,
+      ).toBe("1 мин 05 с");
+      await act(async () => vi.advanceTimersByTimeAsync(60000));
+      expect(
+        container.querySelector('[aria-label="Время выполнения"]')?.textContent,
+      ).toBe("1 мин 05 с");
+    },
+  );
+});
+
 describe("SQL batch execution", () => {
   async function pauseRun() {
     currentRun = {
@@ -330,9 +394,7 @@ describe("SQL batch execution", () => {
     await start();
     await pauseRun();
     expect(container.textContent).toContain("Серия приостановлена");
-    expect(container.textContent).toContain(
-      "Ошибка · 2026-10-02",
-    );
+    expect(container.textContent).toContain("Ошибка · 2026-10-02");
     expect(container.textContent).toContain("Engine unavailable");
     expect(button("Добавить результат на доску").disabled).toBe(true);
     expect(button("Закрыть вкладку date.sql").disabled).toBe(true);

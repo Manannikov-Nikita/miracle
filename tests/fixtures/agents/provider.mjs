@@ -31,20 +31,19 @@ if (args.includes("--help")) {
   );
   process.exit(0);
 }
-if (
-  mode === "codex" &&
-  process.env.FIXTURE_SCENARIO === "required" &&
-  !args.includes("mcp_servers.miracle.required=true")
-) {
-  await write(process.stderr, "Miracle MCP must be required");
-  process.exit(20);
-}
 trace({
   args,
+  pid: process.pid,
   cwd: process.cwd(),
   control: process.env.MIRACLE_CONTROL_TOKEN,
   token: !!process.env.MIRACLE_AGENT_MCP_TOKEN,
 });
+const configError = () =>
+  `failed to load configuration: config.toml:3:26: unknown variant ultra; token=${process.env.TEST_API_TOKEN}; config=${args.find((arg) => arg.startsWith("provider.api_key=")) || "unset"}`;
+if (process.env.FIXTURE_SCENARIO === "config-exit-error") {
+  await write(process.stderr, configError());
+  process.exit(1);
+}
 let chain = Promise.resolve();
 const emit = (value) => {
   // All v2 turn/item notifications carry their owning thread and turn.
@@ -145,6 +144,10 @@ rl.on("line", async (line) => {
     return;
   }
   if (m.method === "initialize") {
+    if (process.env.FIXTURE_SCENARIO === "config-initialize-error") {
+      await emit({ id: m.id, error: { code: -32603, message: configError() } });
+      return;
+    }
     await emit({
       id: m.id,
       result:
@@ -154,7 +157,29 @@ rl.on("line", async (line) => {
     });
     return;
   }
+  if (m.method === "config/read") {
+    if (process.env.FIXTURE_SCENARIO === "config-hang") return;
+    await emit(
+      process.env.FIXTURE_SCENARIO === "config-read-error"
+        ? { id: m.id, error: { code: -32603, message: configError() } }
+        : {
+            id: m.id,
+            result:
+              process.env.FIXTURE_SCENARIO === "config-invalid-response"
+                ? {}
+                : { config: {} },
+          },
+    );
+    return;
+  }
   if (m.method === "thread/start" || m.method === "thread/resume") {
+    if (
+      process.env.FIXTURE_SCENARIO === "required" &&
+      !args.includes("mcp_servers.miracle.required=true")
+    ) {
+      await write(process.stderr, "Miracle MCP must be required");
+      process.exit(20);
+    }
     if (realpathSync(m.params.cwd) !== process.cwd()) process.exit(11);
     if (
       m.method === "thread/resume" &&

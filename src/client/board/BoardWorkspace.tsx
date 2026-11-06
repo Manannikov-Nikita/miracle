@@ -145,7 +145,7 @@ function Workspace({
   );
   const workspaceRef = useRef<HTMLElement>(null);
   const store = useBoard(workspaceId, notify);
-  const { board, editable, change } = store;
+  const { board, editable, change, flushDraft } = store;
   // Choose the camera once per board; remote content updates must not move it.
   const initialViewport = useMemo(
     () =>
@@ -349,6 +349,7 @@ function Workspace({
       shiftPressed.current = false;
       snapCancelled.current = true;
       cancelDuplicateDrag();
+      flushDraft();
       setGuides([]);
     };
     const keyDown = (event: KeyboardEvent) => {
@@ -373,7 +374,7 @@ function Workspace({
       window.removeEventListener("pointercancel", cancel, true);
       window.removeEventListener("blur", cancel);
     };
-  }, [cancelDuplicateDrag]);
+  }, [cancelDuplicateDrag, flushDraft]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -911,7 +912,10 @@ function Workspace({
           (!e.target || !removed.has(e.target)),
       ),
     };
-    change(document, !gesture.current);
+    change(document, !gesture.current, {
+      deferDraft: Boolean(gesture.current) && !completed,
+    });
+    if (completed) flushDraft();
     if (completed && gesture.current) {
       if (JSON.stringify(gesture.current) !== JSON.stringify(document))
         store.recordHistory(gesture.current);
@@ -961,6 +965,8 @@ function Workspace({
     });
   };
   const selectedNode = board?.document.nodes.find((n) => n.id === selected);
+  const canInspectSelected =
+    !!selectedNode && selectedNode.data.kind !== "note";
   const updateEdge = (
     boardId: string,
     id: string,
@@ -1062,41 +1068,74 @@ function Workspace({
       setDialogBusy(false);
     }
   };
-  const actionContext = {
-    boardId: board?.id ?? "",
-    editable,
-    resizeStart,
-    resize,
-    update,
-    remove,
-    refresh: (id: string) => void refresh(id),
-    openSource: (id: string) => {
+  const refreshNode = useCallback((id: string) => void refresh(id), [refresh]);
+  const openNodeSource = useCallback(
+    (id: string) => {
       const node = store.current.current?.document.nodes.find(
         (n) => n.id === id,
       );
       if (node?.data.source) onOpenSource(node.data.source, node.data.title);
     },
-    inspect: (id: string) => {
+    [store.current, onOpenSource],
+  );
+  const inspectNode = useCallback(
+    (id: string) => {
+      const node = store.current.current?.document.nodes.find(
+        (n) => n.id === id,
+      );
+      if (!node || node.data.kind === "note") return;
       setSelected(id);
       selectNodes(new Set([id]));
       setInspecting(true);
     },
-    metadata: useCallback(
-      (result: ResultSet) =>
-        setMetadata((values) =>
-          values[result.id] ? values : { ...values, [result.id]: result },
-        ),
-      [],
-    ),
-    busy: {
+    [store.current],
+  );
+  const recordMetadata = useCallback(
+    (result: ResultSet) =>
+      setMetadata((values) =>
+        values[result.id] ? values : { ...values, [result.id]: result },
+      ),
+    [],
+  );
+  const nodeBusy = useMemo(
+    () => ({
       ...busy,
       ...Object.fromEntries(
         pendingRefreshes
           .filter((pending) => pending.boardId === board?.id)
           .map((pending) => [pending.nodeId, true]),
       ),
-    },
-  };
+    }),
+    [busy, pendingRefreshes, board?.id],
+  );
+  const actionContext = useMemo(
+    () => ({
+      boardId: board?.id ?? "",
+      editable,
+      resizeStart,
+      resize,
+      update,
+      remove,
+      refresh: refreshNode,
+      openSource: openNodeSource,
+      inspect: inspectNode,
+      metadata: recordMetadata,
+      busy: nodeBusy,
+    }),
+    [
+      board?.id,
+      editable,
+      resizeStart,
+      resize,
+      update,
+      remove,
+      refreshNode,
+      openNodeSource,
+      inspectNode,
+      recordMetadata,
+      nodeBusy,
+    ],
+  );
   return (
     <section
       ref={workspaceRef}
@@ -1320,11 +1359,11 @@ function Workspace({
             <ArrowClockwise size={16} aria-hidden="true" />
           </button>
           <button
-            disabled={!selectedNode}
+            disabled={!canInspectSelected}
             onClick={() => setInspecting((value) => !value)}
             className="board-tools-icon"
             aria-label="Свойства"
-            aria-pressed={inspecting && !!selectedNode}
+            aria-pressed={inspecting && canInspectSelected}
             title="Свойства выбранного блока"
           >
             <SlidersHorizontal size={16} aria-hidden="true" />
@@ -1636,7 +1675,7 @@ function Workspace({
         {editable && selectedIds.size >= 2 && (
           <AlignmentToolbar count={selectedIds.size} onAlign={alignSelection} />
         )}
-        {selectedNode && inspecting && board && (
+        {selectedNode && canInspectSelected && inspecting && board && (
           <Inspector
             boardId={board.id}
             node={selectedNode}
@@ -1659,17 +1698,6 @@ function Workspace({
           />
         )}
       </div>
-      <footer className="board-footer">
-        <span>
-          {board
-            ? `${board.document.nodes.length} блоков · ${board.document.edges.length} связей`
-            : "Рабочая область"}
-        </span>
-        <span>
-          Shift + клик: выбрать несколько · рамка: фон · панорама: пробел + фон
-          · Option / Alt + перетаскивание: копия
-        </span>
-      </footer>
       <Dialog.Root
         open={!!dialog}
         onOpenChange={(open) => {

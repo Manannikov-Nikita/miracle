@@ -18,6 +18,28 @@ afterEach(async () => {
 });
 
 describe("error explanation and full diagnostics", () => {
+  it("explains a Codex configuration failure before opening technical details", async () => {
+    const message =
+      "Не удалось проверить конфигурацию Codex. Проверьте совместимость версии CLI с настройками config.toml и командой профиля Miracle.\n" +
+      "invalid configuration: unknown variant `ultra` in model_reasoning_effort";
+    for (const props of [
+      { children: message },
+      { error: { message, code: "AGENT_CONFIGURATION_INVALID" } },
+    ]) {
+      await act(async () => root.render(createElement(ErrorBox, props)));
+      expect(host.querySelector(".error-title")?.textContent).toBe(
+        "Не удалось проверить настройки Codex.",
+      );
+      expect(host.querySelector(".error-hint")?.textContent).toContain(
+        "совместимый CLI",
+      );
+      expect(host.querySelector("details")?.open).toBe(false);
+      expect(host.querySelector("details pre")?.textContent).toContain(
+        "unknown variant `ultra`",
+      );
+    }
+  });
+
   it("shows a specific cause and correction with complete collapsed diagnostics", async () => {
     const details =
       "ClickHouse HTTP 401: AUTHENTICATION_FAILED\n" +

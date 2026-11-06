@@ -723,7 +723,12 @@ describe("board navigation is local view state", () => {
     ).toBeNull();
   });
 
-  it("keeps selection and opening node or edge properties outside document edits", async () => {
+  it("keeps selection and opening Markdown or edge properties outside document edits", async () => {
+    boards[0].document.nodes[0].data = {
+      kind: "markdown",
+      title: "Markdown",
+      text: "First block",
+    };
     boards[0].document.nodes.push({
       id: "other-note",
       type: "artifact",
@@ -763,7 +768,7 @@ describe("board navigation is local view state", () => {
     await act(async () => flow.actions!.inspect("note"));
     expect(
       host.querySelector<HTMLInputElement>(".board-inspector input")?.value,
-    ).toBe("Note");
+    ).toBe("Markdown");
     await act(async () =>
       host
         .querySelector<HTMLButtonElement>('[aria-label="Закрыть свойства"]')!
@@ -885,7 +890,53 @@ describe("board navigation is local view state", () => {
     expect(boards[0].document.edges).toEqual([]);
   });
 
-  it("still saves an actual edit made in node properties", async () => {
+  it("keeps sticky notes out of the inspector through actions, toolbar and selection", async () => {
+    boards[0].document.nodes.push({
+      id: "markdown",
+      type: "artifact",
+      position: { x: 400, y: 0 },
+      data: { kind: "markdown", title: "Markdown", text: "Second block" },
+    });
+    await open();
+    await act(async () =>
+      flow.props.onNodesChange?.([
+        { type: "select", id: "note", selected: true },
+      ]),
+    );
+    await act(async () => flow.actions!.inspect("note"));
+    expect(host.querySelector(".board-inspector")).toBeNull();
+
+    const properties = host.querySelector<HTMLButtonElement>(
+      '[aria-label="Свойства"]',
+    )!;
+    expect(properties.disabled).toBe(true);
+    expect(properties.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => properties.click());
+    expect(host.querySelector(".board-inspector")).toBeNull();
+
+    await act(async () => flow.actions!.inspect("markdown"));
+    expect(
+      host.querySelector<HTMLInputElement>(".board-inspector input")?.value,
+    ).toBe("Markdown");
+    expect(properties.disabled).toBe(false);
+
+    await act(async () =>
+      flow.props.onNodesChange?.([
+        { type: "select", id: "markdown", selected: false },
+        { type: "select", id: "note", selected: true },
+      ]),
+    );
+    expect(host.querySelector(".board-inspector")).toBeNull();
+    expect(properties.disabled).toBe(true);
+    expect(properties.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("still saves an actual edit made in Markdown properties", async () => {
+    boards[0].document.nodes[0].data = {
+      kind: "markdown",
+      title: "Markdown",
+      text: "First block",
+    };
     await open();
     await act(async () => flow.actions!.inspect("note"));
     const title = host.querySelector<HTMLInputElement>(
@@ -895,7 +946,7 @@ describe("board navigation is local view state", () => {
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
         "value",
-      )!.set!.call(title, "Renamed note");
+      )!.set!.call(title, "Renamed Markdown");
       title.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(status()).toBe("Изменения…");
@@ -908,7 +959,7 @@ describe("board navigation is local view state", () => {
       await project.prepare();
     });
     expect(patches).toHaveLength(1);
-    expect(boards[0].document.nodes[0].data.title).toBe("Renamed note");
+    expect(boards[0].document.nodes[0].data.title).toBe("Renamed Markdown");
     expect(boards[0].revision).toBe(4);
     expect(status()).toBe("Сохранено");
   });

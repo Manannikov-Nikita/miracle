@@ -4,6 +4,7 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import CustomChart from "../src/client/board/CustomChart";
+import type { TableSpec } from "../src/shared/tableTypes";
 
 let dom: JSDOM;
 let root: Root;
@@ -167,4 +168,72 @@ it("offers a keyboard button to retry a failed fetch and to show the source tabl
   );
   await waitForFrame();
   expect(document.querySelector('[role="alert"]')).toBeNull();
+});
+
+it("rebuilds custom charts when the table presentation changes and keeps equivalent echoes stable", async () => {
+  setup();
+  const requests: RequestInit[] = [];
+  const reports: { specHash: string }[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((path: string, init: RequestInit) => {
+      if (path.endsWith("/custom-chart")) {
+        requests.push(init);
+        return Promise.resolve(
+          Response.json({
+            columns: [],
+            rows: [],
+            displayRows: [],
+            cellColors: [],
+          }),
+        );
+      }
+      reports.push(JSON.parse(init.body as string));
+      return Promise.resolve(Response.json({ ok: true }));
+    }),
+  );
+  const render = async (table?: TableSpec, visibleColumns?: string[]) => {
+    await act(() =>
+      root.render(
+        React.createElement(CustomChart, {
+          boardId: "b",
+          nodeId: "n",
+          resultSetId: "r",
+          spec,
+          table,
+          visibleColumns,
+        }),
+      ),
+    );
+  };
+  await render();
+  await resizeAndFlush(600, 400);
+  const first = await waitForFrame();
+  const firstHash = reports.at(-1)!.specHash;
+  const table: TableSpec = {
+    version: 1,
+    sourceSchema: "[]",
+    columns: { value: { label: "Сумма" } },
+  };
+  await render(table);
+  const second = await waitForFrame(first);
+  expect(requests.at(-1)?.method).toBe("POST");
+  expect(JSON.parse(requests.at(-1)!.body as string)).toEqual({ table });
+  expect(reports.at(-1)!.specHash).not.toBe(firstHash);
+  const secondHash = reports.at(-1)!.specHash;
+  const count = requests.length;
+  await render({
+    columns: { value: { label: "Сумма" } },
+    sourceSchema: "[]",
+    version: 1,
+  });
+  expect(document.querySelector("iframe")).toBe(second);
+  expect(requests).toHaveLength(count);
+  await render(table, ["value"]);
+  await waitForFrame(second);
+  expect(JSON.parse(requests.at(-1)!.body as string)).toEqual({
+    table,
+    visibleColumns: ["value"],
+  });
+  expect(reports.at(-1)!.specHash).not.toBe(secondHash);
 });

@@ -2,18 +2,31 @@ import { EditorState, Text, type ChangeSpec } from "@codemirror/state";
 import { parser, GFM } from "@lezer/markdown";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { defaultUrlTransform } from "react-markdown";
+import { markdownMathRanges, type MarkdownMathRange } from "../markdown-math";
 
 export const MAX_MARKDOWN_LENGTH = 200000;
 export const markdownParser = parser.configure(GFM);
 export type PreviewPart = {
   kind:
-    "hide" | "mark" | "line" | "marker" | "link" | "table" | "rule" | "image";
+    | "hide"
+    | "mark"
+    | "line"
+    | "marker"
+    | "link"
+    | "table"
+    | "rule"
+    | "image"
+    | "math";
   from: number;
   to: number;
   className?: string;
   text?: string;
   href?: string;
+  display?: boolean;
+  block?: boolean;
 };
+
+const mathCache = new WeakMap<Tree, MarkdownMathRange[]>();
 
 /** A range ending exactly at the next line's start doesn't select that line. */
 export function activeSourceLines(
@@ -41,6 +54,11 @@ export function planMarkdownPreview(
 ): PreviewPart[] {
   const doc = Text.of(source.split("\n"));
   const parts: PreviewPart[] = [];
+  let math = mathCache.get(tree);
+  if (!math) {
+    math = markdownMathRanges(source);
+    mathCache.set(tree, math);
+  }
   const references = new Map<string, string>();
   const referenceKey = (label: string) =>
     label
@@ -59,7 +77,7 @@ export function planMarkdownPreview(
         );
     },
   });
-  const activeNode = (node: SyntaxNode) => {
+  const activeNode = (node: { from: number; to: number }) => {
     const first = doc.lineAt(node.from).number;
     const last = doc.lineAt(Math.max(node.from, node.to - 1)).number;
     for (let n = first; n <= last; n++) if (active.has(n)) return true;
@@ -233,7 +251,41 @@ export function planMarkdownPreview(
       visit(child);
   };
   visit(tree.topNode);
-  return parts.sort((a, b) => a.from - b.from || a.to - b.to);
+  // Lezer does not parse math: discard its Markdown decorations inside formulas,
+  // including on active lines, so TeX underscores/backticks remain exact source.
+  const result = parts.filter((part) => {
+    let low = 0,
+      high = math.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (math[middle].to <= part.from) low = middle + 1;
+      else high = middle;
+    }
+    const range = math[low];
+    if (
+      range &&
+      (part.kind === "mark" || part.kind === "link") &&
+      part.from < range.from &&
+      part.to >= range.to
+    )
+      return true;
+    return (
+      !range ||
+      (part.to === part.from ? range.from > part.from : range.from >= part.to)
+    );
+  });
+  for (const range of math) {
+    if (activeNode(range)) continue;
+    result.push({
+      kind: "math",
+      ...range,
+      block:
+        range.display &&
+        doc.lineAt(range.from).from === range.from &&
+        doc.lineAt(range.to).to === range.to,
+    });
+  }
+  return result.sort((a, b) => a.from - b.from || a.to - b.to);
 }
 
 /** External board undo maps existing editor selection/history through the smallest splice. */

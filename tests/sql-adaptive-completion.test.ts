@@ -261,7 +261,7 @@ describe("context-aware SQL completion", () => {
     )[0];
     expect(item).toMatchObject({
       insertText: "CityName",
-      filterText: "cityName",
+      filterText: "ci",
     });
   });
 });

@@ -24,6 +24,10 @@ export interface DateBatchItem {
   attempts: number;
   rowCount?: number;
   error?: string;
+  /** Active time accumulated across retries and resumes, excluding pauses. */
+  elapsedMs?: number;
+  /** Start of the current active segment, added to elapsedMs while running. */
+  activeStartedAt?: string;
 }
 export interface DateBatchProgress {
   total: number;

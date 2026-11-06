@@ -794,36 +794,48 @@ export function clickhouseFunctionSuggestions(
     catalog?.aggregateCombinators ?? Object.keys(combinatorDescriptions),
   );
   const typed = prefix.toLowerCase();
+  if (!typed) return [...suggestions.values()];
+  const aggregates = functions.filter(
+    (fn) => fn.isAggregate && !windowOnly.has(fn.name.toLowerCase()),
+  );
+  const patterns = suffixPatterns.filter((suffixes) =>
+    suffixes.every((suffix) => available.has(suffix)),
+  );
   let generated = 0;
-  for (const fn of functions) {
-    if (
-      !fn.isAggregate ||
-      windowOnly.has(fn.name.toLowerCase()) ||
-      !typed ||
-      !typed.startsWith(fn.name.toLowerCase())
-    )
-      continue;
-    for (const suffixes of suffixPatterns) {
-      if (!suffixes.every((suffix) => available.has(suffix))) continue;
-      if (
-        suffixes.includes("SimpleState") &&
-        !simpleStateFunctions.has(fn.name)
-      )
+  // Search only on demand and keep the same generation cap. Reserve it for
+  // prefix matches first, even when internal matches occur earlier in metadata.
+  for (const prefixMatch of [true, false]) {
+    for (const fn of aggregates) {
+      const base = fn.name.toLowerCase();
+      if (prefixMatch && !base.startsWith(typed) && !typed.startsWith(base))
         continue;
-      const name = fn.name + suffixes.join("");
-      if (!name.toLowerCase().startsWith(typed) || suggestions.has(name))
-        continue;
-      suggestions.set(name, {
-        label: name,
-        insertText: name,
-        kind: "function",
-        detail: `Агрегатная функция ClickHouse · ${suffixes.join(" + ")}`,
-        documentation: [
-          `${name} — ${fn.name} с комбинаторами ${suffixes.join(" + ")}.`,
-          ...suffixes.map((suffix) => combinatorDescriptions[suffix]),
-        ].join("\n\n"),
-      });
-      if (++generated >= 120) return [...suggestions.values()];
+      for (const suffixes of patterns) {
+        if (
+          suffixes.includes("SimpleState") &&
+          !simpleStateFunctions.has(fn.name)
+        )
+          continue;
+        const name = fn.name + suffixes.join("");
+        const normalized = name.toLowerCase();
+        if (
+          !(prefixMatch
+            ? normalized.startsWith(typed)
+            : normalized.includes(typed)) ||
+          suggestions.has(name)
+        )
+          continue;
+        suggestions.set(name, {
+          label: name,
+          insertText: name,
+          kind: "function",
+          detail: `Агрегатная функция ClickHouse · ${suffixes.join(" + ")}`,
+          documentation: [
+            `${name} — ${fn.name} с комбинаторами ${suffixes.join(" + ")}.`,
+            ...suffixes.map((suffix) => combinatorDescriptions[suffix]),
+          ].join("\n\n"),
+        });
+        if (++generated >= 120) return [...suggestions.values()];
+      }
     }
   }
   return [...suggestions.values()];

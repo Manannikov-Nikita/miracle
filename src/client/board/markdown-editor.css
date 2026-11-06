@@ -163,3 +163,25 @@
   vertical-align: middle;
   border-radius: 4px;
 }
+
+.board-markdown-editor .md-preview-math {
+  cursor: text;
+}
+.board-markdown-editor .md-preview-math-display {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 4px 0;
+}
+.board-markdown-editor .katex-display {
+  margin: 0.65em 0;
+}
+.board-markdown-editor .katex-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}

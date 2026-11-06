@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
-  serializeCustomChart,
+  serializeCustomChartPresentation,
   type CustomChartSpec,
 } from "../../shared/custom-charts";
+import type { TableSpec } from "../../shared/tableTypes";
 import { ErrorBox } from "../components/UI";
 import type { ChartRuntimeStatus } from "./custom-chart-runtime";
 import { startCustomChartRun } from "./custom-chart-session";
@@ -13,12 +14,16 @@ export default function CustomChart({
   nodeId,
   resultSetId,
   spec,
+  table,
+  visibleColumns,
   onShowTable,
 }: {
   boardId: string;
   nodeId: string;
   resultSetId: string;
   spec: CustomChartSpec;
+  table?: TableSpec;
+  visibleColumns?: string[];
   onShowTable?: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
@@ -31,7 +36,7 @@ export default function CustomChart({
   });
   const [connected, setConnected] = useState<boolean | null>(null);
   const [retry, setRetry] = useState(0);
-  const specKey = serializeCustomChart(spec);
+  const specKey = serializeCustomChartPresentation(spec, table, visibleColumns);
 
   useEffect(() => {
     const element = container.current!;
@@ -78,6 +83,8 @@ export default function CustomChart({
       nodeId,
       resultSetId,
       spec,
+      table,
+      visibleColumns,
       ...size,
       theme,
       onStatus: setStatus,
@@ -116,7 +123,11 @@ export default function CustomChart({
             className="board-error nowheel"
             error={status.message}
             title="Не удалось отобразить кастомный график."
-            hint="Повторите отображение или попросите агента исправить график. При превышении лимита данных агрегируйте SQL."
+            hint={
+              status.stage === "data"
+                ? status.message
+                : "Повторите отображение или попросите агента исправить график."
+            }
             actions={
               <>
                 <button

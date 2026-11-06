@@ -11,6 +11,7 @@ import {
   dateRangeDates,
   hasDatePlaceholder,
   substituteDate,
+  type DateBatchItem,
   type DateBatchProgress,
 } from "../shared/date-batch.js";
 import type { QuerySource } from "../shared/types.js";
@@ -55,8 +56,12 @@ export function interruptQueryRuns(db: Database) {
     ).rows) {
       const batch = row.batch as DateBatchProgress;
       for (const item of batch.items)
-        if (["pending", "running", "retrying"].includes(item.status))
+        if (["pending", "running", "retrying"].includes(item.status)) {
           item.status = "interrupted";
+          // The last worker's end is unknown after a restart, so do not invent
+          // another execution sample or keep its clock running in stored data.
+          delete item.activeStartedAt;
+        }
       delete batch.currentDate;
       batch.attempt = 0;
       db.query("UPDATE query_runs SET batch=?2 WHERE id=?1", [row.id, batch]);
@@ -196,6 +201,16 @@ export async function performDateBatch(options: {
   let batch = options.batch;
   const started = Date.now();
   const elapsed = () => (options.elapsedMs || 0) + Date.now() - started;
+  let activeItem: DateBatchItem | undefined;
+  let itemStarted = started;
+  const itemElapsed = () =>
+    (activeItem?.elapsedMs || 0) + Math.max(0, Date.now() - itemStarted);
+  const stopItemClock = () => {
+    if (!activeItem) return;
+    activeItem.elapsedMs = itemElapsed();
+    delete activeItem.activeStartedAt;
+    activeItem = undefined;
+  };
   const persist = () =>
     db.query("UPDATE query_runs SET batch=?2,elapsed_ms=?3 WHERE id=?1", [
       id,
@@ -222,6 +237,10 @@ export async function performDateBatch(options: {
       state.controller.signal.throwIfAborted();
       // A resumed run keeps its committed prefix and appends only missing dates.
       if (batch.items[index]!.status === "completed") continue;
+      activeItem = batch.items[index]!;
+      itemStarted = Date.now();
+      activeItem.elapsedMs ??= 0;
+      activeItem.activeStartedAt = new Date(itemStarted).toISOString();
       for (
         let attempt = 1;
         attempt <= source.dateRange!.retries + 1;
@@ -269,6 +288,8 @@ export async function performDateBatch(options: {
           const next = structuredClone(batch);
           next.items[index]!.status = "completed";
           next.items[index]!.rowCount = output.rows.length;
+          next.items[index]!.elapsedMs = itemElapsed();
+          delete next.items[index]!.activeStartedAt;
           next.completed++;
           next.succeeded++;
           appendResult(
@@ -283,6 +304,7 @@ export async function performDateBatch(options: {
             state.controller.signal,
           );
           batch = next;
+          activeItem = undefined;
           break;
         } catch (error) {
           await cancelOnce();
@@ -309,6 +331,7 @@ export async function performDateBatch(options: {
           } else {
             item.status = "failed";
             batch.failed++;
+            stopItemClock();
             // End this worker and release its slot. Only explicit resume retries
             // this date; the unexecuted suffix stays pending in durable storage.
             db.query(
@@ -330,6 +353,7 @@ export async function performDateBatch(options: {
         : undefined,
     );
   } catch (error) {
+    stopItemClock();
     const cancelled = state.controller.signal.aborted;
     for (const item of batch.items)
       if (["pending", "running", "retrying"].includes(item.status))

@@ -40,6 +40,10 @@
   width: 112px;
   height: 88px;
 }
+.agent-message-images a {
+  display: block;
+  border-radius: 8px;
+}
 .agent-image-loading {
   margin: 0 0 8px;
   color: var(--agent-muted);
@@ -47,11 +51,11 @@
 }
 .agent-composer.dragging {
   outline: 1px dashed var(--mint);
-  outline-offset: 3px;
+  outline-offset: -1px;
 }
 .agent-image-preview button:focus-visible,
 .agent-auto-approve:focus-visible,
 .agent-message-images a:focus-visible {
   outline: 2px solid var(--mint);
-  outline-offset: 3px;
+  outline-offset: -1px;
 }

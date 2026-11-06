@@ -100,7 +100,6 @@ button.board-edge-endpoint-snapping {
   font-size: 13px;
   line-height: 20px;
   text-align: center;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--board-accent) 15%, transparent);
 }
 .board-edge-toolbar-anchor {
   z-index: 10;

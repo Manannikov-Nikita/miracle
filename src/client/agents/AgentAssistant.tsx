@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChatCircle, FolderSimple, X } from "@phosphor-icons/react";
+import { ChatCircle, X } from "@phosphor-icons/react";
 import * as Dialog from "@radix-ui/react-dialog";
 import AgentChatView from "./AgentChatView";
 import { ErrorBox, Spinner } from "../components/UI";
@@ -7,10 +7,12 @@ import AgentProfiles from "./AgentProfiles";
 import { useAgentChat } from "./useAgentChat";
 import { useProjectSync, useProjectTargetContext } from "./ProjectSync";
 import { useAgentImageDrafts } from "./useAgentImageDrafts";
+import { useAgentPortalContainer } from "./useAgentPortalContainer";
 import "./agents.css";
 import "./agent-images.css";
 export default function AgentAssistant() {
   const state = useAgentChat();
+  const portalContainer = useAgentPortalContainer(state.open);
   const project = useProjectSync();
   const targetContext = useProjectTargetContext();
   const [settings, setSettings] = useState(false),
@@ -180,17 +182,6 @@ export default function AgentAssistant() {
             }
           }}
         >
-          <header className="agent-header">
-            <strong>
-              Miracle <span>Chat</span>
-            </strong>
-            {state.projectRoot && (
-              <span className="agent-project" title={state.projectRoot}>
-                <FolderSimple size={13} />
-                {state.projectRoot.split(/[\\/]/).filter(Boolean).at(-1)}
-              </span>
-            )}
-          </header>
           {state.error && (
             <div className="agent-error">
               <ErrorBox>{state.error}</ErrorBox>
@@ -248,7 +239,7 @@ export default function AgentAssistant() {
               if (!settingsBusy) setSettings(open);
             }}
           >
-            <Dialog.Portal container={document.getElementById("agent-panel")}>
+            <Dialog.Portal container={portalContainer}>
               <Dialog.Overlay className="agent-dialog-overlay" />
               <Dialog.Content
                 className="agent-dialog agent-settings-dialog"

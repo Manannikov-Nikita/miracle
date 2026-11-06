@@ -13,6 +13,7 @@ import {
   Database,
   MagnifyingGlass,
   Plus,
+  TextAlignLeft,
   X,
 } from "@phosphor-icons/react";
 import type {
@@ -25,6 +26,7 @@ import { api } from "../api";
 import { ErrorBox, IconButton } from "./UI";
 import type { MetadataStore } from "../metadata-store";
 import SourceSchemaTree, { type ExplorerSourceView } from "./SourceSchemaTree";
+import SearchHighlight from "./SearchHighlight";
 import ProjectFileTree from "./ProjectFileTree";
 import type { ProjectTextFile } from "../../shared/project-files";
 export type { ExplorerSourceView } from "./SourceSchemaTree";
@@ -68,6 +70,7 @@ export default function Explorer({
     history: "",
   });
   const filter = filters[kind];
+  const [fullNames, setFullNames] = useState(false);
   const setFilter = (value: string) =>
     setFilters((current) => ({ ...current, [kind]: value }));
   const searchInput = useRef<HTMLInputElement>(null);
@@ -149,14 +152,25 @@ export default function Explorer({
     r.source.sql.toLowerCase().includes(search),
   );
   return (
-    <aside className={`explorer ${onClose ? "explorer-drawer" : ""}`}>
+    <aside
+      className={`explorer ${onClose ? "explorer-drawer" : ""}${kind === "sources" && fullNames ? " explorer-full-names" : ""}`}
+    >
       <div className="explorer-heading">
         <strong>{title}</strong>
         <div>
           {kind === "sources" && (
-            <IconButton label="Добавить источник" onClick={onOpenConnections}>
-              <Plus size={14} />
-            </IconButton>
+            <>
+              <IconButton
+                label="Показывать названия целиком"
+                aria-pressed={fullNames}
+                onClick={() => setFullNames((value) => !value)}
+              >
+                <TextAlignLeft size={14} />
+              </IconButton>
+              <IconButton label="Добавить источник" onClick={onOpenConnections}>
+                <Plus size={14} />
+              </IconButton>
+            </>
           )}
           <IconButton
             label="Обновить список"
@@ -233,7 +247,9 @@ export default function Explorer({
                 onClick={() => onConnectionChange(c.id)}
               >
                 <Database size={16} aria-hidden="true" />
-                <span className="connection-tree-name">{c.name}</span>
+                <span className="connection-tree-name">
+                  <SearchHighlight text={c.name} query={filter} />
+                </span>
                 {c.id === activeConnectionId && <span className="status-dot" />}
               </button>
             ))}
@@ -372,10 +388,6 @@ export default function Explorer({
             Загрузка…
           </p>
         )}
-      </div>
-      <div className="explorer-footer">
-        <span className="status-dot" />
-        Рабочая область
       </div>
     </aside>
   );

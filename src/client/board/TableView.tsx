@@ -64,11 +64,13 @@ export default function TableView({
   initialRows,
   spec: savedSpec,
   visibleColumns,
+  onChange,
 }: {
   result: ResultSet;
   initialRows: Cell[][];
   spec?: TableSpec;
   visibleColumns?: string[];
+  onChange?: (spec: TableSpec) => void;
 }) {
   const authoredSpec = useMemo(
     () => savedSpec ?? createTableSpec(result.columns, visibleColumns),
@@ -80,6 +82,7 @@ export default function TableView({
     authoredSpec.sort?.direction,
     authoredSpec.sourceSchema,
     authoredSpec.pivot,
+    authoredSpec.reshape,
   ]);
   const [localSort, setLocalSort] = useState<{
     scope: string;
@@ -99,6 +102,7 @@ export default function TableView({
   const pageKey = contentKey([result.id, spec]);
   const full = Boolean(
     spec.pivot ||
+    spec.reshape ||
     spec.sort ||
     spec.filters?.length ||
     Object.values(spec.columns ?? {}).some(
@@ -243,15 +247,17 @@ export default function TableView({
   const sort = (column: TableViewColumn) => {
     const previous =
       spec.sort?.column === column.id ? spec.sort.direction : undefined;
+    const next: TableSpec["sort"] =
+      previous === "desc"
+        ? undefined
+        : { column: column.id, direction: previous === "asc" ? "desc" : "asc" };
+    if (onChange) {
+      onChange({ ...authoredSpec, sort: next });
+      return;
+    }
     setLocalSort({
       scope: sortScope,
-      sort:
-        previous === "desc"
-          ? undefined
-          : {
-              column: column.id,
-              direction: previous === "asc" ? "desc" : "asc",
-            },
+      sort: next,
     });
   };
   const failure = error || prepared?.error;
@@ -268,12 +274,16 @@ export default function TableView({
           title={
             error
               ? "Не удалось загрузить таблицу."
-              : "Не удалось подготовить таблицу."
+              : spec.reshape
+                ? "Не удалось изменить форму таблицы."
+                : "Не удалось подготовить таблицу."
           }
           hint={
             error
               ? "Повторите загрузку сохранённого снимка."
-              : "Проверьте настройки таблицы в свойствах блока. Если изменились столбцы, сбросьте настройки таблицы."
+              : spec.reshape && prepared?.error
+                ? prepared.error.replace(/^Таблица: /, "")
+                : "Проверьте настройки таблицы в свойствах блока. Если изменились столбцы, сбросьте настройки таблицы."
           }
           actions={
             error ? (
@@ -328,7 +338,11 @@ export default function TableView({
                     >
                       <button
                         className="table-header-sort"
-                        title="Сортировать для просмотра"
+                        title={
+                          onChange
+                            ? "Сортировать таблицу"
+                            : "Сортировать для просмотра"
+                        }
                         onClick={() => sort(column)}
                       >
                         <span>{column.options.label || column.name}</span>
@@ -466,7 +480,11 @@ export default function TableView({
               {total ? safeOffset + 1 : 0}–
               {Math.min(safeOffset + pageRows.length, total)} из{" "}
               {total.toLocaleString("ru-RU")}
-              {spec.pivot ? " · pivot" : ""}
+              {spec.pivot
+                ? " · сводная"
+                : spec.reshape
+                  ? ` · ${spec.reshape.kind}`
+                  : ""}
               {spec.filters?.length
                 ? ` · от ${result.rowCount.toLocaleString("ru-RU")}`
                 : ""}

@@ -259,6 +259,104 @@ describe("schema explorer", () => {
     expect(document.activeElement).toBe(container.querySelector("input"));
   });
 
+  it("retains the source-only full-name toggle across views without changing search or expansion", async () => {
+    const toggleSelector = 'button[aria-label="Показывать названия целиком"]';
+    await render();
+    expect(
+      container.querySelector(toggleSelector)?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(container.querySelector(".explorer-full-names")).toBeNull();
+    await click("Схема a_schema");
+    await click("Таблица a_schema.a_schema_table_0");
+    await search("hidden_column_0");
+    await click("Показывать названия целиком");
+    expect(
+      container.querySelector(toggleSelector)?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(container.querySelector(".explorer-full-names")).not.toBeNull();
+    expect(container.querySelector("input")?.value).toBe("hidden_column_0");
+
+    await render("history");
+    expect(container.querySelector(toggleSelector)).toBeNull();
+    expect(container.querySelector(".explorer-full-names")).toBeNull();
+    expect(container.querySelector("input")?.value).toBe("");
+
+    await render("sources");
+    expect(
+      container.querySelector(toggleSelector)?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(container.querySelector(".explorer-full-names")).not.toBeNull();
+    expect(container.querySelector("input")?.value).toBe("hidden_column_0");
+    expect(container.textContent).toContain("hidden_column_0");
+    await click("Очистить поиск");
+    await click("Показывать названия целиком");
+    expect(
+      container.querySelector(toggleSelector)?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(container.querySelector(".explorer-full-names")).toBeNull();
+    expect(
+      container
+        .querySelector('[aria-label="Схема a_schema"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(
+      container
+        .querySelector('[aria-label="Таблица a_schema.a_schema_table_0"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(container.textContent).toContain("hidden_column_0");
+  });
+
+  it("highlights case-insensitive search matches in catalog, schema, table, column and type labels", async () => {
+    const scope = {
+      ...readySchema("Sales_schema"),
+      catalog: "Sales_catalog",
+      tables: [
+        {
+          catalog: "Sales_catalog",
+          schema: "Sales_schema",
+          name: "raw_SALES_orders",
+          columns: [{ name: "net_SaLeS_amount", type: "Nullable(SalesType)" }],
+        },
+      ],
+    };
+    store.snapshots.set("a", {
+      status: "ready",
+      schemas: [scope],
+      background: false,
+      complete: true,
+    });
+    await render();
+    await search(" sAlEs ");
+
+    const catalog = container.querySelector(".schema-catalog");
+    const schema = container.querySelector(
+      '[aria-label="Схема Sales_catalog.Sales_schema"]',
+    );
+    const table = container.querySelector(
+      '[aria-label="Таблица Sales_catalog.Sales_schema.raw_SALES_orders"]',
+    );
+    const column = container.querySelector(
+      '[title="net_SaLeS_amount: Nullable(SalesType)"]',
+    );
+    expect(catalog?.textContent).toBe("Sales_catalog");
+    expect(catalog?.querySelector("mark")?.textContent).toBe("Sales");
+    expect(schema?.querySelector("mark")?.textContent).toBe("Sales");
+    expect(table?.textContent).toBe("raw_SALES_orders");
+    expect(table?.querySelector("mark")?.textContent).toBe("SALES");
+    expect(column?.textContent).toContain("net_SaLeS_amount");
+    expect(column?.textContent).toContain("Nullable(SalesType)");
+    expect(
+      [...(column?.querySelectorAll("mark") ?? [])].map(
+        (match) => match.textContent,
+      ),
+    ).toEqual(["SaLeS", "Sales"]);
+
+    await click("Очистить поиск");
+    expect(container.querySelector("mark")).toBeNull();
+    expect(container.querySelector(".table-tree-item")).toBeNull();
+  });
+
   it("limits a large schema until the user asks for more", async () => {
     store.snapshots.set("a", {
       status: "ready",

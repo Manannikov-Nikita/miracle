@@ -32,6 +32,53 @@ const valid = {
   wrap: true,
 };
 describe("saved table settings contract", () => {
+  it.each([
+    {
+      kind: "melt",
+      columns: ["1", "2"],
+      keyName: "Month",
+      valueName: "Amount",
+    },
+    { kind: "pivot", rows: ["0", "3"], column: "1", value: "2" },
+    { kind: "pivot", rows: [], column: "1", value: "2" },
+  ])("retains reshape settings without aggregation %#", (reshape) => {
+    const table = { ...valid, pivot: undefined, reshape };
+    expect(
+      boardDocumentSchema.parse(document(table)).nodes[0].data.table,
+    ).toEqual(table);
+  });
+  it.each([
+    { kind: "melt", columns: [] },
+    { kind: "melt", columns: ["1", "1"] },
+    { kind: "melt", columns: ["1"], keyName: " " },
+    { kind: "melt", columns: ["1"], valueName: "x".repeat(201) },
+    { kind: "melt", columns: ["1"], keyName: "Same", valueName: "Same" },
+    { kind: "melt", columns: ["1"], keyName: "Значение" },
+    { kind: "melt", columns: ["1"], aggregate: "sum" },
+    { kind: "pivot", rows: ["0", "0"], column: "1", value: "2" },
+    { kind: "pivot", rows: ["0"], column: "0", value: "2" },
+    { kind: "pivot", rows: [], column: "1", value: "1" },
+    { kind: "pivot", rows: [], column: "1", value: "2", aggregate: "sum" },
+    {
+      kind: "pivot",
+      rows: Array.from({ length: 2001 }, (_, i) => String(i)),
+      column: "x",
+      value: "y",
+    },
+  ])("rejects invalid reshape settings %#", (reshape) => {
+    expect(
+      boardDocumentSchema.safeParse(
+        document({ ...valid, pivot: undefined, reshape }),
+      ).success,
+    ).toBe(false);
+  });
+  it("rejects mixing aggregate pivot and reshape", () => {
+    expect(
+      boardDocumentSchema.safeParse(
+        document({ ...valid, reshape: { kind: "melt", columns: ["1"] } }),
+      ).success,
+    ).toBe(false);
+  });
   it("retains formatting, transformation and exact decimal strings", () => {
     expect(
       boardDocumentSchema.parse(document(valid)).nodes[0].data.table,

@@ -9,11 +9,14 @@ import {
 import { ProjectStore, problem, hash } from "./project-store.js";
 import {
   CUSTOM_CHART_LIMITS,
-  serializeCustomChart,
+  serializeCustomChartPresentation,
 } from "../shared/custom-charts.js";
 import { customChartSchema } from "./custom-chart-schema.js";
 import { CustomChartStatusStore } from "./custom-chart-status.js";
-import { checkCustomChartMetadata } from "./custom-chart-data.js";
+import {
+  checkCustomChartMetadata,
+  checkTableSourceMetadata,
+} from "./custom-chart-data.js";
 import type {
   Board,
   BoardDocument,
@@ -205,7 +208,13 @@ export class WorkspaceOperations {
     const spec = customChartSchema.parse(node.data.customChart);
     return {
       resultSetId: node.data.resultSetId,
-      specHash: hash(serializeCustomChart(spec)),
+      specHash: hash(
+        serializeCustomChartPresentation(
+          spec,
+          node.data.table,
+          node.data.visibleColumns,
+        ),
+      ),
     };
   }
   customChartStatus(boardId: string, nodeId: string) {
@@ -235,7 +244,7 @@ export class WorkspaceOperations {
     ];
     for (const resultId of ids) {
       const r = this.db.query(
-        "SELECT id,row_count,columns FROM result_sets WHERE id=?1",
+        "SELECT id,row_count,columns,byte_count FROM result_sets WHERE id=?1",
         [resultId],
       ).rows[0];
       if (!r) throw problem(400, "Результат блока не найден");
@@ -249,21 +258,24 @@ export class WorkspaceOperations {
           409,
           "Дождитесь завершения или остановите пакет перед добавлением результата на доску",
         );
-      if (
-        document.nodes.some(
-          (n) => n.data.resultSetId === resultId && n.data.view === "chart",
-        ) &&
-        r.row_count > 5000
-      )
-        throw problem(422, "График превышает лимит 5000 точек");
-      if (
-        document.nodes.some(
-          (node) =>
-            node.data.resultSetId === resultId &&
-            node.data.customChart !== undefined,
-        )
-      )
-        checkCustomChartMetadata(r.row_count, r.columns.length);
+      for (const node of document.nodes.filter(
+        (node) =>
+          node.data.resultSetId === resultId && node.data.view === "chart",
+      )) {
+        if (node.data.table || node.data.visibleColumns)
+          checkTableSourceMetadata(r.row_count, r.columns.length, r.byte_count);
+        else if (r.row_count > 5000)
+          throw problem(422, "График превышает лимит 5000 точек");
+      }
+      for (const node of document.nodes.filter(
+        (node) =>
+          node.data.resultSetId === resultId &&
+          node.data.customChart !== undefined,
+      )) {
+        if (node.data.table || node.data.visibleColumns)
+          checkTableSourceMetadata(r.row_count, r.columns.length, r.byte_count);
+        else checkCustomChartMetadata(r.row_count, r.columns.length);
+      }
       this.db.query(
         "INSERT INTO board_result_refs(board_id,result_set_id) VALUES(?1,?2)",
         [id, resultId],

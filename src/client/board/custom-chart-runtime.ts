@@ -152,6 +152,8 @@ function sandboxBootstrap() {
         root,
         columns: value.data.columns,
         rows: value.data.rows,
+        displayRows: value.data.displayRows,
+        cellColors: value.data.cellColors,
         width: value.width,
         height: value.height,
         theme: value.theme,
@@ -258,7 +260,16 @@ export function mountCustomChartFrame(options: {
       post({
         type: "render",
         spec: options.spec,
-        data: { columns: options.data.columns, rows: options.data.rows },
+        data: {
+          columns: options.data.columns,
+          rows: options.data.rows,
+          ...(options.data.displayRows
+            ? { displayRows: options.data.displayRows }
+            : {}),
+          ...(options.data.cellColors
+            ? { cellColors: options.data.cellColors }
+            : {}),
+        },
         width: options.width,
         height: options.height,
         theme: options.theme,

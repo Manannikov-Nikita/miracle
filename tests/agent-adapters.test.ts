@@ -208,7 +208,10 @@ describe("native agent adapters", () => {
       .trim()
       .split("\n")
       .map((x) => JSON.parse(x));
-    expect(lines[0]).toMatchObject({ cwd: f.cwd, token: true });
+    expect(lines.filter((line) => line.args)).toMatchObject([
+      { cwd: f.cwd, token: false },
+      { cwd: f.cwd, token: true },
+    ]);
     expect(JSON.stringify(lines)).not.toContain("scoped-secret");
     expect(
       lines.find((x) => x.wire?.method === "thread/start").wire.params,

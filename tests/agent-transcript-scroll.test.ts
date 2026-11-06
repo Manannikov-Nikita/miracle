@@ -99,6 +99,11 @@ it("does not move the reader or show a new-message prompt when an approval arriv
     },
   });
   await act(async () =>
+    host.querySelector<HTMLButtonElement>(".agent-approvals-summary")!.click(),
+  );
+  expect(log.scrollTop).toBe(200);
+  expect(host.querySelector(".agent-jump")).toBeNull();
+  await act(async () =>
     host.querySelector<HTMLButtonElement>(".agent-approval-trigger")!.click(),
   );
   expect(log.scrollTop).toBe(200);

@@ -115,6 +115,8 @@ export default function Inspector({
             {node.data.view === "chart" && result && (
               <ChartSettings
                 result={result}
+                table={node.data.table}
+                visibleColumns={node.data.visibleColumns}
                 spec={node.data.chart ?? defaultChart(result.columns)}
                 disabled={!editable}
                 onChange={(chart) => {
