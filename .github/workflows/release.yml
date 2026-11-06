@@ -24,12 +24,12 @@ jobs:
           pattern: native-*
           path: .local/releases
           merge-multiple: true
-      - name: Require four verified native artifacts
+      - name: Require three verified native artifacts
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+          for target in darwin-arm64 linux-arm64 linux-x64; do
             test -s ".local/releases/miracle-$version-$target.tar.gz"
             (cd .local/releases && sha256sum -c "miracle-$version-$target.tar.gz.sha256")
           done

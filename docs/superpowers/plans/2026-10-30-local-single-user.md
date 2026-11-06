@@ -1,5 +1,7 @@
 # Local single-user Miracle implementation plan
 
+> Historical implementation plan. Platform and upgrade requirements here describe that release only; see [current installation guidance](../../local-installation.md).
+
 **Goal:** Ship a local personal workspace with SQLite and native GitHub installers.
 **Architecture:** Keep React/Fastify; replace PostgreSQL/account ownership with one exclusive SQLite workspace and local browser sessions. Bundle Node with compiled code for distribution.
 **Spec:** `docs/superpowers/specs/2026-10-30-local-single-user-design.md`.

@@ -1,5 +1,7 @@
 # Trino Corporate CA Implementation Plan
 
+> Historical implementation plan. Platform and upgrade requirements here describe that release only; see [current installation guidance](../../local-installation.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Установленный Miracle подключается к Trino HTTPS с выбранным корпоративным CA без ручной правки launcher.

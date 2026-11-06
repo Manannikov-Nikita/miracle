@@ -198,7 +198,7 @@ describe("release updater", () => {
               prerelease: false,
             }),
           )
-        : new Response("VERSION='0.2.0'\nREPOSITORY='elsewhere/repo'"),
+        : new Response("VERSION='0.3.0'\nREPOSITORY='elsewhere/repo'"),
     );
     await expect(
       updateInstallation(

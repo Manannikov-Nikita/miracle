@@ -23,16 +23,14 @@ if (
   !/^\d+\.\d+\.\d+$/.test(version || "")
 )
   throw new Error(
-    "Usage: node scripts/build-release.mjs owner/repository 1.2.3 [output-directory] [darwin-arm64|darwin-x64|linux-arm64|linux-x64] [verified-node-archive]",
+    "Usage: node scripts/build-release.mjs owner/repository 1.2.3 [output-directory] [darwin-arm64|linux-arm64|linux-x64] [verified-node-archive]",
   );
 const target = targetArgument || `${process.platform}-${process.arch}`;
 const checksums = JSON.parse(
   await readFile(join(root, "release/node-checksums.json"), "utf8"),
 );
 if (
-  !["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"].includes(
-    target,
-  ) ||
+  !["darwin-arm64", "linux-arm64", "linux-x64"].includes(target) ||
   !checksums[target]
 )
   throw new Error(`Unsupported release target: ${target}`);

@@ -189,7 +189,7 @@ it.each(["delayed-stop", "unauthorized", "malformed"] as const)(
       port,
       pid: process.pid,
       dataDir,
-      version: "0.2.0",
+      version: "0.3.0",
     });
     writeFileSync(stateFile, original);
     async function run(args: string[]) {
@@ -281,7 +281,7 @@ it("reports stopped only after the HTTP listener and SQLite lifetime lock both c
       port,
       pid: process.pid,
       dataDir,
-      version: "0.2.0",
+      version: "0.3.0",
     }),
   );
   try {
