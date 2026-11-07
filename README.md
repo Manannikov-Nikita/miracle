@@ -12,7 +12,7 @@ Miracle работает на вашем компьютере и открыва�
 
 **English:** Miracle is a personal local SQL workspace for ClickHouse and Trino. Run queries and turn result snapshots into charts, tables, and notes on boards and presentation slides. It serves a Russian-language browser interface on loopback, stores its workspace in SQLite, and ships with its own runtime.
 
-**Вышла 0.8.1:** обновление через CLI и актуальная поддержка платформ: macOS на Apple Silicon, GNU/Linux x64 и ARM64. Презентации, фигуры, защита объектов на время работы агента и локальный Git доступны в этой версии. [Что нового](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.8.1) · [Что проверено](docs/release-validation.md).
+**Вышла 0.9.0:** активные SQL и саб-агенты в чате, ответы на вопросы, Steer без остановки работы, новый колор-пикер и сохранённые цвета. [Что нового](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.9.0) · [Что проверено](docs/release-validation.md).
 
 ![Фильтры, названия столбцов и формат значений таблицы применяются к её графику](docs/assets/release-0.7.0-table-chart.jpg)
 
@@ -34,7 +34,7 @@ Miracle работает на вашем компьютере и открыва�
 
 ## Установка
 
-Готовый установщик и архивы доступны в [выпуске 0.8.1](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.8.1). Команда ниже устанавливает последний опубликованный выпуск.
+Готовый установщик и архивы доступны в [выпуске 0.9.0](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.9.0). Команда ниже устанавливает последний опубликованный выпуск.
 
 macOS на Apple Silicon, GNU/Linux x64/ARM64 и Windows через терминал WSL 2:
 
