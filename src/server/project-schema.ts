@@ -1,6 +1,10 @@
 export const agentImagesSchema = `
 CREATE TABLE agent_images(chat_id TEXT NOT NULL REFERENCES agent_chats(id) ON DELETE CASCADE,id TEXT NOT NULL,mime_type TEXT NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(chat_id,id));
 `;
+export const agentQueryRunsSchema = `
+CREATE TABLE agent_query_runs(run_id TEXT PRIMARY KEY REFERENCES query_runs(id) ON DELETE CASCADE,chat_id TEXT NOT NULL REFERENCES agent_chats(id),turn_id TEXT NOT NULL REFERENCES agent_turns(id));
+CREATE INDEX agent_query_runs_chat ON agent_query_runs(chat_id);
+`;
 export const projectSchema = `
 CREATE TABLE editor_documents(id TEXT PRIMARY KEY,document TEXT NOT NULL CHECK(json_valid(document)),revision INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL);
 CREATE TABLE project_events(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,entity_id TEXT,payload TEXT NOT NULL CHECK(json_valid(payload)));
@@ -14,5 +18,6 @@ CREATE UNIQUE INDEX agent_one_active_turn ON agent_turns((1)) WHERE status IN ('
 CREATE TABLE agent_messages(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES agent_chats(id),turn_id TEXT REFERENCES agent_turns(id),role TEXT NOT NULL,content TEXT NOT NULL,details_json TEXT,created_at TEXT NOT NULL);
 CREATE INDEX agent_messages_chat ON agent_messages(chat_id,created_at);
 CREATE INDEX agent_turns_chat ON agent_turns(chat_id,created_at);
-PRAGMA user_version=5;
+${agentQueryRunsSchema}
+PRAGMA user_version=6;
 `;

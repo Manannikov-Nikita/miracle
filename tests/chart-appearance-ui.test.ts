@@ -167,12 +167,12 @@ describe("chart appearance controls", () => {
     expect(vi.mocked(api).mock.calls[0][0]).toBe(
       "/api/result-sets/snapshot-one/chart",
     );
-    await change("Цвет · Выручка · South", "#aa5522");
+    await change("HEX · Выручка · South", "#aa5522");
     const key = Object.keys(current.seriesColors ?? {})[0];
     expect(key).toContain("South");
     expect(current.seriesColors?.[key]).toBe("#aa5522");
     await change("Палитра", "cool");
-    expect(control<HTMLInputElement>("Цвет · Выручка · South").value).toBe(
+    expect(control<HTMLInputElement>("HEX · Выручка · South").value).toBe(
       "#aa5522",
     );
     expect(api).toHaveBeenCalledTimes(1);
@@ -219,7 +219,7 @@ describe("chart appearance controls", () => {
     expect(host.textContent).toContain("Не удалось загрузить цвета серий");
     await change("Разбивка", "");
     expect(host.textContent).not.toContain("Не удалось загрузить цвета серий");
-    await change("Цвет · Выручка", "#aabbcc");
+    await change("HEX · Выручка", "#aabbcc");
     expect(Object.values(current.seriesColors ?? {})).toEqual(["#aabbcc"]);
   });
   it("keeps the search clearable after switching from many groups to a single metric", async () => {

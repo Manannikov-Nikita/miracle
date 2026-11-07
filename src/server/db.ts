@@ -2,9 +2,13 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { agentImagesSchema, projectSchema } from "./project-schema.js";
+import {
+  agentImagesSchema,
+  agentQueryRunsSchema,
+  projectSchema,
+} from "./project-schema.js";
 const timestamp = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
-export const WORKSPACE_SCHEMA_VERSION = 5;
+export const WORKSPACE_SCHEMA_VERSION = 6;
 const jsonFields = new Set(["source", "document", "columns", "rows", "batch"]);
 /** One prepared-statement connection owns the workspace until close. */
 export class Database {
@@ -90,13 +94,14 @@ export function migrate(db: Database, initialize?: () => void) {
   if (version > WORKSPACE_SCHEMA_VERSION)
     throw new Error("Workspace schema is newer than this version of Miracle");
   if (version === WORKSPACE_SCHEMA_VERSION) return;
-  if (version === 4) {
+  if (version === 4 || version === 5) {
     db.transaction(() => {
-      db.sqlite.exec(`
+      if (version === 4)
+        db.sqlite.exec(`
         ALTER TABLE agent_chats ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1));
         ${agentImagesSchema}
-        PRAGMA user_version=5;
       `);
+      db.sqlite.exec(`${agentQueryRunsSchema} PRAGMA user_version=6;`);
     });
     return;
   }

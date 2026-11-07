@@ -108,6 +108,7 @@ let metadata: ReturnType<typeof createMetadataStore>;
 let requests: { path: string; options: RequestInit }[];
 let currentRun: QueryRun;
 let currentResult: ResultSet;
+const notify = vi.fn();
 const workspaceId = "date-batch-ui";
 const source = {
   connectionId: "c",
@@ -116,6 +117,7 @@ const source = {
 };
 beforeEach(() => {
   vi.useFakeTimers();
+  notify.mockReset();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const storage = new Map<string, string>();
   vi.stubGlobal("localStorage", {
@@ -220,11 +222,16 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
-async function render(sql = source.sql, history?: QueryRun) {
-  localStorage.setItem(
-    `miracle:sql-tabs:${workspaceId}`,
-    JSON.stringify([{ ...source, sql, id: "tab", name: "date.sql" }]),
-  );
+async function render(
+  sql = source.sql,
+  history?: QueryRun,
+  { seed = true } = {},
+) {
+  if (seed)
+    localStorage.setItem(
+      `miracle:sql-tabs:${workspaceId}`,
+      JSON.stringify([{ ...source, sql, id: "tab", name: "date.sql" }]),
+    );
   await act(async () =>
     root.render(
       createElement(SqlWorkspace, {
@@ -250,7 +257,7 @@ async function render(sql = source.sql, history?: QueryRun) {
         onSavedConsumed() {},
         onQueriesChanged() {},
         onResult() {},
-        onNotify() {},
+        onNotify: notify,
         onOpenConnections() {},
         onMaximize() {},
         onCollapse() {},
@@ -297,6 +304,132 @@ async function start() {
   await input("Конец диапазона", "2026-10-02");
   await act(async () => button("Запустить").click());
 }
+
+describe("SQL run error notifications", () => {
+  const memoryError =
+    "Code: 241. DB::Exception: Memory limit exceeded. (MEMORY_LIMIT_EXCEEDED)";
+  const memoryTitle = "Запрос превысил доступный объём памяти.";
+
+  async function openSuccessfulSibling() {
+    const successful: QueryRun = {
+      id: "successful-sibling",
+      source: { ...source, sql: "SELECT 42 AS answer" },
+      status: "completed",
+      startedAt: "2026-10-30",
+      finishedAt: "2026-10-30",
+    };
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        if (path === "/api/query-runs/successful-sibling")
+          return new Response(JSON.stringify(successful));
+        return originalFetch(path, options);
+      }),
+    );
+    await render(successful.source.sql, successful, { seed: false });
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(harness.value).toBe(successful.source.sql);
+    expect(container.querySelector(".query-error")).toBeNull();
+  }
+
+  it.each(["failed", "interrupted"] as const)(
+    "keeps a historical %s error inline without notifying on open, sibling changes or restoration",
+    async (status) => {
+      currentRun = {
+        ...currentRun,
+        source: { ...source, sql: "SELECT 1" },
+        batch: undefined,
+        status,
+        error: memoryError,
+      };
+      await render("SELECT 1", currentRun);
+      expect(container.querySelector(".query-error")?.textContent).toContain(
+        memoryTitle,
+      );
+      expect(notify).not.toHaveBeenCalled();
+      await openSuccessfulSibling();
+      expect(notify).not.toHaveBeenCalled();
+      await render("SELECT 1", currentRun, { seed: false });
+      expect(container.querySelector(".query-error")?.textContent).toContain(
+        memoryTitle,
+      );
+      expect(notify).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await render("SELECT 1", undefined, { seed: false });
+      expect(container.querySelector(".query-error")?.textContent).toContain(
+        memoryTitle,
+      );
+      expect(notify).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["failed", "interrupted"] as const)(
+    "notifies once when a new running query becomes %s and does not repeat it for sibling activity",
+    async (status) => {
+      currentRun = {
+        ...currentRun,
+        source: { ...source, sql: "SELECT 1" },
+        batch: undefined,
+      };
+      await render("SELECT 1");
+      await act(async () => button("Выполнить").click());
+      expect(notify).not.toHaveBeenCalled();
+      currentRun = { ...currentRun, status, error: memoryError };
+      await act(async () => vi.advanceTimersByTimeAsync(650));
+      expect(notify).toHaveBeenCalledExactlyOnceWith(memoryError, "error");
+      await openSuccessfulSibling();
+      await render("SELECT 1", currentRun, { seed: false });
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      expect(container.querySelector(".query-error")?.textContent).toContain(
+        memoryTitle,
+      );
+      expect(notify).toHaveBeenCalledExactlyOnceWith(memoryError, "error");
+    },
+  );
+
+  it("notifies once when the launch response already contains a failed query", async () => {
+    currentRun = {
+      ...currentRun,
+      source: { ...source, sql: "SELECT 1" },
+      batch: undefined,
+      status: "failed",
+      error: memoryError,
+    };
+    await render("SELECT 1");
+    await act(async () => button("Выполнить").click());
+    expect(notify).toHaveBeenCalledExactlyOnceWith(memoryError, "error");
+    await openSuccessfulSibling();
+    expect(notify).toHaveBeenCalledExactlyOnceWith(memoryError, "error");
+  });
+
+  it("notifies once when an explicitly resumed historical batch fails immediately", async () => {
+    currentRun = {
+      ...currentRun,
+      status: "paused",
+      error: "Engine unavailable",
+    };
+    await render(source.sql, currentRun);
+    expect(notify).not.toHaveBeenCalled();
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options: RequestInit = {}) => {
+        if (path === "/api/query-runs/run/resume") {
+          currentRun = { ...currentRun, status: "failed", error: memoryError };
+          return new Response(JSON.stringify(currentRun));
+        }
+        return originalFetch(path, options);
+      }),
+    );
+    await act(async () => button("Продолжить").click());
+    expect(notify).toHaveBeenCalledExactlyOnceWith(memoryError, "error");
+    await openSuccessfulSibling();
+    expect(notify).toHaveBeenCalledExactlyOnceWith(memoryError, "error");
+  });
+});
 
 describe("SQL query duration", () => {
   it("restores elapsed time from the run and freezes the final duration", async () => {

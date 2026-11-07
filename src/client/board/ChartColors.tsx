@@ -11,6 +11,7 @@ import {
 import { api } from "../api";
 import { Select } from "../components/Select";
 import { chartSeries } from "./model";
+import ColorPicker from "../colors/ColorPicker";
 
 function SeriesColor({
   name,
@@ -35,12 +36,12 @@ function SeriesColor({
       <span className="board-chart-color-name" title={name}>
         {name}
       </span>
-      <input
-        type="color"
-        aria-label={`Цвет · ${name}`}
+      <ColorPicker
+        label={`Цвет · ${name}`}
         value={color}
         disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
+        compact
+        onChange={onChange}
       />
       <input
         className="board-chart-color-hex"

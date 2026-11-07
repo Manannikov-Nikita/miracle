@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildApp } from "../src/server/app.js";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 
 const cleanup: (() => Promise<unknown> | void)[] = [];
 afterEach(async () => {
@@ -140,12 +140,16 @@ async function open() {
     release,
   };
 }
-async function addEngine(s: Awaited<ReturnType<typeof open>>) {
+async function addEngine(
+  s: Awaited<ReturnType<typeof open>>,
+  respond?: (sql: string, response: ServerResponse) => boolean,
+) {
   const executedSql: string[] = [];
   const server = createServer(async (req, res) => {
     let sql = "";
     for await (const part of req) sql += part;
     executedSql.push(sql);
+    if (respond?.(sql, res)) return;
     const compact = (names: string[], types: string[], rows: unknown[][]) =>
       res.end(
         [names, types, ...rows].map((v) => JSON.stringify(v)).join("\n") + "\n",
@@ -521,21 +525,54 @@ it("rejects foreign capabilities and origins, enforces read-only SQL and cancels
     mutationId: randomUUID(),
   });
   expect(((await denied.json()) as any).result.isError).toBe(true);
-  const owned = await agent.mcp("run_query", {
+  const source = {
     connectionId: connection.id,
     sql: "SELECT sleepEachRow(1)",
     mutationId: randomUUID(),
-  });
+  };
+  const owned = await agent.mcp("run_query", source);
+  expect((await agent.mcp("run_query", source)).id).toBe(owned.id);
   const manual = await s.request("POST", "/api/query-runs", {
     connectionId: connection.id,
     sql: "SELECT sleepEachRow(1)",
+    chatId: agent.chat.id,
+    turnId: agent.turn.id,
+    agentChatId: agent.chat.id,
+    agentTurnId: agent.turn.id,
   });
+  expect(
+    await s.request("GET", `/api/chats/${agent.chat.id}/sql-activity`),
+  ).toMatchObject({
+    activeCount: 1,
+    runs: [
+      {
+        id: owned.id,
+        chatId: agent.chat.id,
+        turnId: agent.turn.id,
+        sql: source.sql,
+        status: "running",
+      },
+    ],
+  });
+  const otherChat = await s.request("POST", "/api/chats", {
+    profileId: agent.profile.id,
+  });
+  expect(
+    await s.request("GET", `/api/chats/${otherChat.id}/sql-activity`),
+  ).toEqual({ activeCount: 0, runs: [] });
   await s.request("POST", `/api/agent-turns/${agent.turn.id}/cancel`, {});
   const ownedStatus = await until(
     () => s.request("GET", `/api/query-runs/${owned.id}`),
     (r) => !["running", "cancelling"].includes(r.status),
   );
   expect(ownedStatus.status).toBe("cancelled");
+  const activity = await s.request(
+    "GET",
+    `/api/chats/${agent.chat.id}/sql-activity`,
+  );
+  expect(activity.activeCount).toBe(0);
+  expect(activity.runs).toHaveLength(1);
+  expect(activity.runs[0]).toMatchObject({ id: owned.id, status: "cancelled" });
   const manualStatus = await until(
     () => s.request("GET", `/api/query-runs/${manual.id}`),
     (r) => !["running", "cancelling"].includes(r.status),
@@ -544,6 +581,286 @@ it("rejects foreign capabilities and origins, enforces read-only SQL and cancels
   expect((await agent.mcpResponse("project_context")).status).toBe(401);
   const state = await s.request("GET", `/api/chats/${agent.chat.id}`);
   expect(state.turns[0].status).toBe("cancelled");
+});
+
+it("retains agent date-batch ownership and actual progress after turn completion and restart", async () => {
+  const s = await open();
+  let fail = true;
+  const { connection, executedSql } = await addEngine(s, (sql, response) => {
+    if (fail && sql.includes("'2026-11-02'")) {
+      response.writeHead(500);
+      response.end("Synthetic date failure");
+      return true;
+    }
+    return false;
+  });
+  const agent = await s.start();
+  const run = await agent.mcp("run_query", {
+    connectionId: connection.id,
+    sql: "SELECT {{date}} AS day",
+    dateRange: {
+      startDate: "2026-11-01",
+      endDate: "2026-11-03",
+      granularity: "day",
+      retries: 1,
+    },
+    mutationId: randomUUID(),
+  });
+  await until(
+    () => s.request("GET", `/api/query-runs/${run.id}`),
+    (value) => value.status === "paused",
+  );
+  s.release();
+  await until(
+    () => s.request("GET", `/api/chats/${agent.chat.id}`),
+    (value) => value.turns[0].status === "completed",
+  );
+  const paused = await s.request(
+    "GET",
+    `/api/chats/${agent.chat.id}/sql-activity`,
+  );
+  expect(paused).toMatchObject({
+    activeCount: 0,
+    runs: [
+      {
+        id: run.id,
+        chatId: agent.chat.id,
+        turnId: agent.turn.id,
+        status: "paused",
+        sql: "SELECT {{date}} AS day",
+        dateBatch: {
+          total: 3,
+          completed: 1,
+          succeeded: 1,
+          failed: 1,
+          currentDate: "2026-11-02",
+          attempt: 2,
+          maxAttempts: 2,
+          currentStatus: "failed",
+        },
+      },
+    ],
+  });
+  expect(paused.runs[0].dateBatch).not.toHaveProperty("items");
+  expect(paused.runs[0].durationMs).toBeGreaterThanOrEqual(0);
+  await s.app.close();
+  const reopened = await buildApp({
+    projectRoot: s.project,
+    dataDir: join(s.project, ".miracle"),
+    appOrigin: "http://127.0.0.1:3001",
+    serveStatic: false,
+  });
+  cleanup.push(() => reopened.close());
+  const session = await reopened.inject({
+    url: "/api/session",
+    headers: { host: "127.0.0.1:3001" },
+  });
+  const headers = {
+    host: "127.0.0.1:3001",
+    cookie: String(session.headers["set-cookie"]).split(";")[0]!,
+    "x-csrf-token": session.json().csrfToken,
+  };
+  const activity = async () =>
+    (
+      await reopened.inject({
+        url: `/api/chats/${agent.chat.id}/sql-activity`,
+        headers,
+      })
+    ).json();
+  expect(await activity()).toEqual(paused);
+  fail = false;
+  const resumed = await reopened.inject({
+    method: "POST",
+    url: `/api/query-runs/${run.id}/resume`,
+    headers,
+    payload: {},
+  });
+  expect(resumed.statusCode, resumed.body).toBe(202);
+  const completed = await until(
+    activity,
+    (value) => value.runs[0].status === "completed",
+  );
+  expect(completed).toMatchObject({
+    activeCount: 0,
+    runs: [
+      {
+        id: run.id,
+        chatId: agent.chat.id,
+        turnId: agent.turn.id,
+        dateBatch: { total: 3, completed: 3, succeeded: 3, failed: 0 },
+      },
+    ],
+  });
+  expect(
+    executedSql.filter((sql) => sql.includes("'2026-11-01'")),
+  ).toHaveLength(1);
+});
+
+it("keeps SQL active after the agent finishes without attributing replayed manual runs", async () => {
+  const s = await open();
+  let pending: ServerResponse | undefined;
+  const { connection } = await addEngine(s, (sql, response) => {
+    if (sql.includes("activity-hold")) {
+      pending = response;
+      return true;
+    }
+    return false;
+  });
+  const manualSource = {
+    connectionId: connection.id,
+    sql: "SELECT 1",
+    mutationId: randomUUID(),
+  };
+  const manual = await s.request("POST", "/api/query-runs", manualSource);
+  await until(
+    () => s.request("GET", `/api/query-runs/${manual.id}`),
+    (run) => run.status === "completed",
+  );
+  const agent = await s.start();
+  expect((await agent.mcp("run_query", manualSource)).id).toBe(manual.id);
+  await agent.mcp("read_schema", {
+    connectionId: connection.id,
+    kind: "columns",
+    schema: "demo",
+    table: "sales",
+  });
+  expect(
+    await s.request("GET", `/api/chats/${agent.chat.id}/sql-activity`),
+  ).toEqual({ activeCount: 0, runs: [] });
+  const source = {
+    connectionId: connection.id,
+    sql: "SELECT 2 /* activity-hold */",
+    mutationId: randomUUID(),
+  };
+  const owned = await agent.mcp("run_query", source);
+  s.release();
+  await until(
+    () => s.request("GET", `/api/chats/${agent.chat.id}`),
+    (chat) => chat.turns[0].status === "completed",
+  );
+  const active = await s.request(
+    "GET",
+    `/api/chats/${agent.chat.id}/sql-activity`,
+  );
+  expect(active).toMatchObject({
+    activeCount: 1,
+    runs: [{ id: owned.id, status: "running", turnId: agent.turn.id }],
+  });
+  expect(active.runs).toHaveLength(1);
+  expect((await s.request("POST", "/api/query-runs", source)).id).toBe(
+    owned.id,
+  );
+  expect(
+    await s.request("GET", `/api/chats/${agent.chat.id}/sql-activity`),
+  ).toEqual(active);
+  expect(pending).toBeDefined();
+  pending!.end('["n"]\n["UInt8"]\n[2]\n');
+  const completed = await until(
+    () => s.request("GET", `/api/chats/${agent.chat.id}/sql-activity`),
+    (activity) => activity.activeCount === 0,
+  );
+  expect(completed.runs[0]).toMatchObject({
+    id: owned.id,
+    status: "completed",
+    turnId: agent.turn.id,
+  });
+  expect(completed.runs[0].finishedAt).toBeDefined();
+});
+
+it("attributes refreshed nodes and bounds terminal history without dropping unfinished work", async () => {
+  const s = await open();
+  const { connection } = await addEngine(s);
+  const agent = await s.start();
+  const source = { connectionId: connection.id, sql: "SELECT 1" };
+  const initial = await agent.mcp("run_query", {
+    ...source,
+    mutationId: randomUUID(),
+  });
+  const done = await until(
+    () => agent.mcp("query_status", { id: initial.id }),
+    (run) => run.status === "completed",
+  );
+  const board = await agent.mcp("create_board", {
+    name: "SQL activity",
+    mutationId: randomUUID(),
+    document: {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "result",
+          type: "artifact",
+          position: { x: 0, y: 0 },
+          data: {
+            kind: "result",
+            title: "Result",
+            view: "table",
+            resultSetId: done.resultSetId,
+            source,
+          },
+        },
+      ],
+      edges: [],
+    },
+  });
+  const args = {
+    id: board.id,
+    nodeId: "result",
+    sourceRevision: board.document.nodes[0].data.sourceRevision || 0,
+    mutationId: randomUUID(),
+  };
+  const refreshed = await agent.mcp("refresh_node", args);
+  expect((await agent.mcp("refresh_node", args)).id).toBe(refreshed.id);
+  await until(
+    () => agent.mcp("query_status", { id: refreshed.id }),
+    (run) => run.status === "completed",
+  );
+  const owned = await s.request(
+    "GET",
+    `/api/chats/${agent.chat.id}/sql-activity`,
+  );
+  expect(new Set(owned.runs.map((run: any) => run.id))).toEqual(
+    new Set([initial.id, refreshed.id]),
+  );
+  expect(
+    owned.runs.every(
+      (run: any) =>
+        run.chatId === agent.chat.id && run.turnId === agent.turn.id,
+    ),
+  ).toBe(true);
+  const db = s.app.miracle.db;
+  for (let index = 0; index < 30; index++) {
+    for (const status of ["paused", "completed"]) {
+      const id = `${status}-${index}`;
+      db.query(
+        "INSERT INTO query_runs(id,status,source,started_at) VALUES(?1,?2,?3,?4)",
+        [
+          id,
+          status,
+          source,
+          `2026-10-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+        ],
+      );
+      db.query(
+        "INSERT INTO agent_query_runs(run_id,chat_id,turn_id) VALUES(?1,?2,?3)",
+        [id, agent.chat.id, agent.turn.id],
+      );
+    }
+  }
+  const activity = await s.request(
+    "GET",
+    `/api/chats/${agent.chat.id}/sql-activity`,
+  );
+  expect(activity.activeCount).toBe(0);
+  expect(
+    activity.runs.filter((run: any) => run.status === "paused"),
+  ).toHaveLength(30);
+  expect(
+    activity.runs.filter((run: any) => run.status === "completed"),
+  ).toHaveLength(20);
+  expect(activity.runs.some((run: any) => run.id === "completed-0")).toBe(
+    false,
+  );
+  s.release();
 });
 
 it("replays persisted events after reconnect without replaying their mutations", async () => {

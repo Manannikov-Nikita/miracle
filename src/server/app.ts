@@ -75,6 +75,10 @@ import type {
   BoardDocument,
   SqlFunctionCatalog,
 } from "../shared/types.js";
+import type {
+  AgentSqlActivity,
+  AgentSqlRunActivity,
+} from "../shared/agent-sql-activity.js";
 export interface Limits {
   timeoutMs: number;
   maxRows: number;
@@ -131,6 +135,36 @@ const runDto = (r: any): QueryRun => ({
   elapsedMs: r.elapsed_ms ?? undefined,
   batch: r.batch ?? undefined,
 });
+const agentSqlRunDto = (row: any): AgentSqlRunActivity => {
+  const run = runDto(row),
+    batch = run.batch;
+  return {
+    id: run.id,
+    chatId: row.chat_id,
+    turnId: row.turn_id,
+    status: run.status,
+    sql: run.source.sql,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    durationMs: run.elapsedMs,
+    resultSetId: run.resultSetId,
+    error: run.error,
+    dateBatch: batch
+      ? {
+          total: batch.total,
+          completed: batch.completed,
+          succeeded: batch.succeeded,
+          failed: batch.failed,
+          currentDate: batch.currentDate,
+          attempt: batch.attempt,
+          maxAttempts: (run.source.dateRange?.retries ?? 0) + 1,
+          currentStatus: batch.items.find(
+            (item) => item.date === batch.currentDate,
+          )?.status,
+        }
+      : undefined,
+  };
+};
 const boardDto = (r: any) => ({
   id: r.id,
   name: r.name,
@@ -793,10 +827,19 @@ export async function buildApp(
         if (r.rows.length >= limits.maxGlobalRuns)
           throw err(429, "Достигнут лимит одновременных запросов");
         fresh = true;
-        return db.query(
+        const created = db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES(?1,'running',?2,?3) RETURNING *",
           [id, source, batch],
         ).rows[0];
+        // The actor comes from the authenticated MCP call's async context.
+        // Attribution commits with creation and is never changed on replay.
+        const actor = projectStore.work.assertActor();
+        if (actor)
+          db.query(
+            "INSERT INTO agent_query_runs(run_id,chat_id,turn_id) VALUES(?1,?2,?3)",
+            [id, actor.chatId, actor.turnId],
+          );
+        return created;
       });
       if (!fresh) {
         const current = db.query("SELECT * FROM query_runs WHERE id=?1", [
@@ -938,6 +981,30 @@ export async function buildApp(
         ])
         .rows.map(runDto);
     });
+    app.get(
+      "/api/chats/:id/sql-activity",
+      async (req): Promise<AgentSqlActivity> => {
+        need(req);
+        const chatId = uuid(req);
+        projectStore.chat(chatId);
+        const select =
+          "SELECT q.*,a.chat_id,a.turn_id FROM agent_query_runs a JOIN query_runs q ON q.id=a.run_id WHERE a.chat_id=?1";
+        const unfinished = db.query(
+          `${select} AND q.status IN ('running','cancelling','paused') ORDER BY q.started_at DESC,q.id DESC`,
+          [chatId],
+        ).rows;
+        const recent = db.query(
+          `${select} AND q.status NOT IN ('running','cancelling','paused') ORDER BY q.started_at DESC,q.id DESC LIMIT 20`,
+          [chatId],
+        ).rows;
+        return {
+          runs: [...unfinished, ...recent].map(agentSqlRunDto),
+          activeCount: unfinished.filter(
+            (run) => run.status === "running" || run.status === "cancelling",
+          ).length,
+        };
+      },
+    );
     app.get("/api/query-runs/:id", async (req) => {
       need(req);
       const r = db.query("SELECT * FROM query_runs WHERE id=?1", [uuid(req)])

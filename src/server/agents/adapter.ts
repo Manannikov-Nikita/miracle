@@ -3,8 +3,14 @@ import { startCodexTurn } from "./codex.js";
 import { startClaudeTurn } from "./claude.js";
 import { agentError, checkAgentCommand } from "./transport.js";
 import type { AgentProviderImage } from "./images.js";
+import type {
+  AgentQuestion,
+  AgentSubagent,
+} from "../../shared/agent-interactions.js";
 
 export type AdapterEvent =
+  | { type: "question"; id: string; questions: AgentQuestion[] }
+  | { type: "subagent"; subagent: AgentSubagent }
   | { type: "message"; text: string }
   | { type: "action"; text: string; details?: Record<string, unknown> }
   | { type: "session"; sessionId: string }
@@ -29,6 +35,15 @@ export interface AgentProcess {
   completion: Promise<{ sessionId?: string }>;
   cancel: () => Promise<void>;
   respond: (id: string, decision: "allow" | "deny") => void;
+  answerQuestion?: (
+    id: string,
+    answers: Record<string, string[]> | null,
+  ) => void;
+  steer?: (input: {
+    prompt: string;
+    images?: AgentProviderImage[];
+    clientRequestId: string;
+  }) => Promise<void>;
 }
 
 export function previewAgentCommand(
@@ -71,6 +86,21 @@ export function startAgentTurn(options: AgentAdapterOptions): AgentProcess {
     },
     respond(id, decision) {
       active?.respond(id, decision);
+    },
+    answerQuestion(id, answers) {
+      if (!active?.answerQuestion)
+        throw agentError("Agent questions are unavailable", "AGENT_NOT_READY");
+      active.answerQuestion(id, answers);
+    },
+    async steer(input) {
+      if (!active)
+        throw agentError("Дождитесь запуска агента", "AGENT_NOT_READY");
+      if (!active.steer)
+        throw agentError(
+          "Этот CLI не поддерживает Steer",
+          "AGENT_STEER_UNSUPPORTED",
+        );
+      await active.steer(input);
     },
   };
 }

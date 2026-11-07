@@ -344,7 +344,10 @@ it("migrates existing chats with manual approvals and preserves the preference o
       .rows.some((column: any) => column.name === "auto_approve")
   )
     db.sqlite.exec("ALTER TABLE agent_chats DROP COLUMN auto_approve");
-  db.sqlite.exec("DROP TABLE IF EXISTS agent_images; PRAGMA user_version=4");
+  // Recreate the version-four shape, including removal of later SQL ownership storage.
+  db.sqlite.exec(
+    "DROP TABLE IF EXISTS agent_query_runs; DROP TABLE IF EXISTS agent_images; PRAGMA user_version=4",
+  );
   await s.app.close();
   const migrated = await open(s.root);
   expect(

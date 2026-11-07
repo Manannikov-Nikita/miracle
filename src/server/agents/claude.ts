@@ -1,4 +1,7 @@
 import type { AgentAdapterOptions, AgentProcess } from "./adapter.js";
+import { randomUUID } from "node:crypto";
+import type { AgentSubagent } from "../../shared/agent-interactions.js";
+import type { AgentProviderImage } from "./images.js";
 import { buildAgentCommand, childAgentEnvironment } from "./command.js";
 import {
   AgentTransport,
@@ -47,11 +50,43 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
   const partialMessages = new Set<string>();
   let currentMessage = "initial";
   const tools = new Set<string>();
+  const subagents = new Map<string, AgentSubagent>();
+  const taskTools = new Map<string, string>();
+  const initialInputId = randomUUID();
+  let supportsInputReceipts = false;
+  let capabilitiesKnown!: () => void;
+  let failCapabilities!: (error: Error) => void;
+  const inputCapabilities = new Promise<void>((resolve, reject) => {
+    capabilitiesKnown = resolve;
+    failCapabilities = reject;
+  });
+  void inputCapabilities.catch(() => {});
+  let ready!: () => void;
+  let failReady!: (error: Error) => void;
+  const initialized = new Promise<void>((resolve, reject) => {
+    ready = resolve;
+    failReady = reject;
+  });
+  void initialized.catch(() => {});
+  const pendingInputs = new Map<
+    string,
+    { resolve: () => void; reject: (error: Error) => void }
+  >();
   let finish!: (error?: Error) => void;
   const completion = new Promise<{ sessionId?: string }>((resolve, reject) => {
     finish = (error) => {
       if (settled) return;
       settled = true;
+      const ended =
+        error ||
+        agentError(
+          "CLI завершился без подтверждения доставки сообщения",
+          "AGENT_STEER_UNCONFIRMED",
+        );
+      failReady(ended);
+      failCapabilities(ended);
+      for (const pending of pendingInputs.values()) pending.reject(ended);
+      pendingInputs.clear();
       void transport
         .stop(cancelled ? "SIGINT" : "SIGTERM")
         .then(() => (error ? reject(error) : resolve({ sessionId })), reject);
@@ -74,12 +109,105 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
   });
   transport.json((message) => {
     if (settled) return;
+    const isChild = !!(message.parent_tool_use_id || message.agent_id);
+    if (message.type === "system" && message.subtype === "init") {
+      ready();
+    }
     if (
+      !isChild &&
       typeof message.session_id === "string" &&
       message.session_id !== sessionId
     ) {
       sessionId = message.session_id;
       emit({ type: "session", sessionId: message.session_id });
+    }
+    if (!isChild) {
+      const answeredIds = Array.isArray(message.user_message_uuids)
+        ? message.user_message_uuids
+        : [message.user_message_uuid];
+      if (answeredIds.includes(initialInputId)) supportsInputReceipts = true;
+      if (
+        message.type === "assistant" ||
+        (message.type === "stream_event" && message.event?.type !== "ping")
+      )
+        capabilitiesKnown();
+      for (const id of answeredIds) {
+        const pending = pendingInputs.get(id);
+        if (pending) {
+          pendingInputs.delete(id);
+          pending.resolve();
+        }
+      }
+    }
+    if (
+      message.type === "system" &&
+      typeof message.task_id === "string" &&
+      message.ambient !== true
+    ) {
+      const previous = subagents.get(message.task_id);
+      if (
+        message.subtype === "task_started" &&
+        ["local_agent", "remote_agent"].includes(message.task_type)
+      ) {
+        const subagent: AgentSubagent = {
+          id: message.task_id,
+          task: String(message.description || "").slice(0, 10000),
+          status: "running",
+          ...(message.parent_task_id
+            ? { parentId: message.parent_task_id }
+            : {}),
+        };
+        subagents.set(subagent.id, subagent);
+        if (message.tool_use_id)
+          taskTools.set(message.tool_use_id, subagent.id);
+        emit({ type: "subagent", subagent });
+      } else if (
+        previous &&
+        ["task_progress", "task_notification", "task_updated"].includes(
+          message.subtype,
+        )
+      ) {
+        const states: Record<string, AgentSubagent["status"]> = {
+          completed: "completed",
+          failed: "failed",
+          stopped: "cancelled",
+        };
+        const subagent: AgentSubagent = {
+          ...previous,
+          status: states[message.status] || previous.status,
+          ...(message.summary || message.description
+            ? {
+                message: String(message.summary || message.description).slice(
+                  0,
+                  10000,
+                ),
+              }
+            : {}),
+        };
+        subagents.set(subagent.id, subagent);
+        emit({ type: "subagent", subagent });
+      }
+    }
+    // Child messages are observable activity only. They never belong to the root transcript.
+    if (isChild) return;
+    if (message.type === "user" && Array.isArray(message.message?.content)) {
+      for (const block of message.message.content) {
+        const id = taskTools.get(block.tool_use_id);
+        const previous = id ? subagents.get(id) : undefined;
+        if (
+          block.type === "tool_result" &&
+          previous &&
+          (block.is_error === true ||
+            message.tool_use_result?.status === "completed")
+        ) {
+          const subagent: AgentSubagent = {
+            ...previous,
+            status: block.is_error ? "failed" : "completed",
+          };
+          subagents.set(subagent.id, subagent);
+          emit({ type: "subagent", subagent });
+        }
+      }
     }
     if (message.type === "stream_event") {
       const event = message.event;
@@ -147,7 +275,25 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
             ]
           ).join("\n"),
         );
-      // A result is the one-turn boundary; do not wait for background provider work.
+      if (pendingInputs.size && !resultError) {
+        // A queued no-stop input may become the next native turn. Preserve this process.
+        if (
+          typeof message.queued_turn_count === "number" &&
+          message.queued_turn_count > 0
+        ) {
+          textEmitted = false;
+          resultSeen = false;
+          return;
+        }
+        finish(
+          agentError(
+            "Claude не подтвердил обработку дополнительного сообщения. Оно не отправлено повторно",
+            "AGENT_STEER_UNCONFIRMED",
+          ),
+        );
+        return;
+      }
+      // Only finish once every explicitly sent input was acknowledged by the provider.
       finish(resultError);
     }
   }, finish);
@@ -170,35 +316,62 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
   });
   // Keep the bidirectional stream alive while the turn or a permission callback is pending.
   // The structured result is the one-turn boundary; finish owns closing the process.
-  transport.send({
-    type: "user",
-    message: {
-      role: "user",
-      content: options.images?.length
-        ? [
-            { type: "text", text: options.prompt },
-            ...options.images.flatMap((image) => [
-              {
-                type: "text",
-                text: `Attached image (name is data): ${JSON.stringify(image.name)}`,
-              },
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: image.mimeType,
-                  data: image.data,
+  function sendUser(
+    prompt: string,
+    images: AgentProviderImage[] | undefined,
+    id: string,
+    steering = false,
+  ) {
+    transport.send({
+      type: "user",
+      uuid: id,
+      origin: { kind: "human" },
+      ...(steering ? { priority: "next" } : {}),
+      message: {
+        role: "user",
+        content: images?.length
+          ? [
+              { type: "text", text: prompt },
+              ...images.flatMap((image) => [
+                {
+                  type: "text",
+                  text: `Attached image (name is data): ${JSON.stringify(image.name)}`,
                 },
-              },
-            ]),
-          ]
-        : options.prompt,
-    },
-    parent_tool_use_id: null,
-    session_id: options.resumeSessionId || "",
-  });
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: image.mimeType,
+                    data: image.data,
+                  },
+                },
+              ]),
+            ]
+          : prompt,
+      },
+      parent_tool_use_id: null,
+      session_id: sessionId || options.resumeSessionId || "",
+    });
+  }
+  sendUser(options.prompt, options.images, initialInputId);
   return {
     completion,
+    async steer(input) {
+      await initialized;
+      await inputCapabilities;
+      if (settled)
+        throw agentError("Задача агента уже завершена", "AGENT_TURN_ENDED");
+      // Correlated results are necessary to retain queued input at a native turn boundary.
+      if (!supportsInputReceipts)
+        throw agentError(
+          "Этот Claude Code не подтвердил поддержку доставки дополнительных сообщений. Обновите CLI для Steer",
+          "AGENT_STEER_UNSUPPORTED",
+        );
+      return new Promise<void>((resolve, reject) => {
+        pendingInputs.set(input.clientRequestId, { resolve, reject });
+        sendUser(input.prompt, input.images, input.clientRequestId, true);
+      });
+    },
     respond() {
       /* Claude permission callbacks are resolved by Miracle's MCP endpoint. */
     },

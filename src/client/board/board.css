@@ -849,21 +849,6 @@ textarea.board-inspector-content-editor {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.board-workspace .board-chart-color-row input[type="color"] {
-  width: 26px;
-  min-width: 0;
-  height: 26px;
-  padding: 2px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.board-chart-color-row input[type="color"]::-webkit-color-swatch-wrapper {
-  padding: 0;
-}
-.board-chart-color-row input[type="color"]::-webkit-color-swatch {
-  border: 0;
-  border-radius: 2px;
-}
 .board-workspace .board-chart-color-row .board-chart-color-hex {
   min-width: 0;
   width: 100%;

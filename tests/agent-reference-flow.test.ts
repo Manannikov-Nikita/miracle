@@ -45,6 +45,8 @@ beforeEach(async () => {
         : Promise.resolve(),
   });
   vi.mocked(api).mockImplementation(async (path, options) => {
+    if (path.endsWith("/sql-activity"))
+      return { runs: [], activeCount: 0 } as never;
     if (path === "/api/project")
       return { projectRoot: "/work/project" } as never;
     if (path === "/api/agent-profiles")

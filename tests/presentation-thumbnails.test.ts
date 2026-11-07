@@ -192,7 +192,11 @@ it("validates the typed background color before saving slide settings", async ()
     (label) => label.textContent?.trim() === "Код цвета фона",
   )?.control as HTMLInputElement | undefined;
   expect(input?.value).toBe("#ffffff");
-  const picker = dialog.querySelector<HTMLInputElement>('input[type="color"]')!;
+  const picker = dialog.querySelector<HTMLButtonElement>(
+    'button[aria-label="Цвет фона"]',
+  )!;
+  expect(picker).not.toBeNull();
+  expect(dialog.querySelector('input[type="color"]')).toBeNull();
   const save = dialog.querySelector<HTMLButtonElement>(
     'button[type="submit"]',
   )!;
@@ -217,11 +221,24 @@ it("validates the typed background color before saving slide settings", async ()
   );
   expect(onUpdate).not.toHaveBeenCalled();
 
-  await write(picker, "#08bbaa");
+  await act(async () => picker.click());
+  const pickerHex = document.querySelector<HTMLInputElement>(
+    'input[aria-label="HEX"]',
+  )!;
+  await write(pickerHex, "#08bbaa");
+  await act(async () =>
+    document
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="Закрыть выбор цвета"]',
+      )!
+      .click(),
+  );
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  await vi.waitFor(() => expect(document.activeElement).toBe(picker));
   expect(input!.value).toBe("#08bbaa");
 
   await write(input!, "#90B4AE");
-  expect(picker.value).toBe("#90b4ae");
+  expect(picker.textContent?.toLowerCase()).toContain("90b4ae");
   expect(save.disabled).toBe(false);
   await act(async () => save.click());
   expect(onUpdate).toHaveBeenCalledWith("first", {

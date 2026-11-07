@@ -178,7 +178,16 @@ describe("shape inspector", () => {
 
   it("updates fill, stroke, opacity and corners without losing other settings", async () => {
     await render();
-    await click("Без заливки");
+    await click("Цвет · Заливка");
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Без заливки"]')!
+        .click(),
+    );
+    const closePicker = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Закрыть выбор цвета"]',
+    );
+    if (closePicker) await act(async () => closePicker.click());
     expect(current.data.shape).toEqual({ ...styledShape, fill: "transparent" });
     await input("HEX · Заливка", "#abcdef");
     await input("HEX · Обводка", "#102030");
@@ -196,6 +205,14 @@ describe("shape inspector", () => {
       opacity: 0.455,
       cornerRadius: 50,
     });
+  });
+
+  it("opens the shared color picker instead of a system color input", async () => {
+    await render();
+    expect(host.querySelector('input[type="color"]')).toBeNull();
+    await click("Цвет · Текст");
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Сохранённые цвета");
   });
 
   it("updates text formatting and both alignments without dropping shape styling", async () => {
@@ -242,7 +259,8 @@ describe("shape inspector", () => {
     >(".shape-settings button, .shape-settings input"))
       expect(target.disabled).toBe(true);
     await click("Жирный");
-    await click("Без заливки");
+    await click("Цвет · Заливка");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
     await input("Текст фигуры", "Не сохранить");
     expect(changes).toHaveLength(0);
     expect(current.data.text).toBe("Первый шаг\nПродолжение");

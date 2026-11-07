@@ -1,4 +1,8 @@
 import type { DateRangeOptions } from "./date-batch.js";
+import type {
+  AgentQuestionRequest,
+  AgentSubagent,
+} from "./agent-interactions.js";
 
 export type AgentProvider = "codex" | "claude";
 export const AGENT_IMAGE_MAX_COUNT = 4;
@@ -68,9 +72,12 @@ export interface AgentMessage {
   id: string;
   chatId: string;
   turnId?: string;
-  role: "user" | "assistant" | "action" | "system" | "approval";
+  role: "user" | "assistant" | "action" | "system" | "approval" | "question";
   content: string;
-  details?: Record<string, unknown>;
+  details?: Record<string, unknown> & {
+    question?: AgentQuestionRequest;
+    subagent?: AgentSubagent;
+  };
   createdAt: string;
 }
 export interface AgentConversation {

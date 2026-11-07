@@ -99,6 +99,15 @@ function legacyFour(path: string) {
   `);
   return db;
 }
+function legacyFive(path: string) {
+  const db = legacyFour(path);
+  db.sqlite.exec(`
+    ALTER TABLE agent_chats ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0 CHECK(auto_approve IN (0,1));
+    CREATE TABLE agent_images(chat_id TEXT NOT NULL REFERENCES agent_chats(id) ON DELETE CASCADE,id TEXT NOT NULL,mime_type TEXT NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(chat_id,id));
+    PRAGMA user_version=5;
+  `);
+  return db;
+}
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   for (const path of roots.splice(0))
@@ -116,7 +125,7 @@ const progress = {
 };
 
 describe("date batch storage migration", () => {
-  it.each([1, 2, 3, 4])(
+  it.each([1, 2, 3, 4, 5])(
     "upgrades version %i without changing rows, identity or key",
     (schemaVersion) => {
       const path = makeRoot();
@@ -127,12 +136,16 @@ describe("date batch storage migration", () => {
             ? legacyTwo(path)
             : schemaVersion === 3
               ? legacyThree(path)
-              : legacyFour(path);
+              : schemaVersion === 4
+                ? legacyFour(path)
+                : legacyFive(path);
       const key = readFileSync(join(path, "encryption.key"));
       const credential = db.query("SELECT password_encrypted FROM connections")
         .rows[0].password_encrypted;
       migrate(db);
-      expect(version(db)).toBe(5);
+      expect(version(db)).toBe(6);
+      // Existing query history has no trustworthy agent attribution to infer.
+      expect(db.query("SELECT * FROM agent_query_runs").rows).toEqual([]);
       expect(
         db.query("SELECT trino_options_encrypted FROM connections").rows[0]
           .trino_options_encrypted,
@@ -167,7 +180,7 @@ describe("date batch storage migration", () => {
   it("initializes the new schema and encryption sentinel atomically", () => {
     const path = makeRoot();
     const db = fresh(path);
-    expect(version(db)).toBe(5);
+    expect(version(db)).toBe(6);
     expect(
       db.query("SELECT value FROM app_settings WHERE key='workspace_id'")
         .rows[0].value,
@@ -213,14 +226,14 @@ describe("date batch storage migration", () => {
   });
   it("refuses a future workspace without lowering its schema version", () => {
     const db = fresh(makeRoot());
-    db.sqlite.exec("PRAGMA user_version=6");
+    db.sqlite.exec("PRAGMA user_version=7");
     expect(() => migrate(db)).toThrow(/newer/);
-    expect(version(db)).toBe(6);
+    expect(version(db)).toBe(7);
   });
 });
 
 describe("versioned workspace backups", () => {
-  it.each([1, 2, 3, 4, 5])(
+  it.each([1, 2, 3, 4, 5, 6])(
     "preserves version %i on backup/restore, then permits upgrading old backups",
     async (schemaVersion) => {
       const root = makeRoot();
@@ -234,7 +247,9 @@ describe("versioned workspace backups", () => {
               ? legacyThree(path)
               : schemaVersion === 4
                 ? legacyFour(path)
-                : fresh(path);
+                : schemaVersion === 5
+                  ? legacyFive(path)
+                  : fresh(path);
       if (schemaVersion >= 2)
         db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES('batch','interrupted','{}',?1)",
@@ -261,7 +276,7 @@ describe("versioned workspace backups", () => {
       ).toBe(identity);
       expect(readFileSync(join(restored, "encryption.key"))).toEqual(key);
       migrate(copy);
-      expect(version(copy)).toBe(5);
+      expect(version(copy)).toBe(6);
       expect(
         copy.query(
           "SELECT name FROM pragma_table_info('connections') WHERE name='trino_options_encrypted'",
@@ -304,13 +319,13 @@ describe("versioned workspace backups", () => {
     await backupWorkspace(path, backup);
     const manifestPath = join(backup, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.schemaVersion = 6;
+    manifest.schemaVersion = 7;
     writeFileSync(manifestPath, JSON.stringify(manifest));
     await expect(
       restoreWorkspace(backup, join(root, "restored")),
     ).rejects.toThrow(/Unsupported backup/);
     const future = open(path);
-    future.sqlite.exec("PRAGMA user_version=6");
+    future.sqlite.exec("PRAGMA user_version=7");
     future.close();
     await expect(backupWorkspace(path, join(root, "future"))).rejects.toThrow(
       /Unsupported workspace/,
@@ -350,6 +365,13 @@ it("preserves documents, profiles, chat preferences and image bytes through back
   );
   db.query(
     "INSERT INTO agent_messages VALUES('message','chat','turn','assistant','Result retained',NULL,'2026-10-31T00:00:01.000Z')",
+  );
+  db.query(
+    "INSERT INTO query_runs(id,status,source) VALUES('agent-run','completed',?1)",
+    [{ sql: "SELECT 42", connectionId: "source" }],
+  );
+  db.query(
+    "INSERT INTO agent_query_runs(run_id,chat_id,turn_id) VALUES('agent-run','chat','turn')",
   );
   db.close();
   await backupWorkspace(path, join(root, "backup"));
@@ -397,4 +419,9 @@ it("preserves documents, profiles, chat preferences and image bytes through back
     copy.query("SELECT role,content FROM agent_messages WHERE chat_id='chat'")
       .rows,
   ).toEqual([{ role: "assistant", content: "Result retained" }]);
+  expect(copy.query("SELECT * FROM agent_query_runs").rows).toEqual([
+    { run_id: "agent-run", chat_id: "chat", turn_id: "turn" },
+  ]);
+  copy.query("DELETE FROM query_runs WHERE id='agent-run'");
+  expect(copy.query("SELECT * FROM agent_query_runs").rows).toEqual([]);
 });

@@ -1,4 +1,9 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { z } from "zod";
 import { ProjectStore, now, problem } from "../project-store.js";
 import { WorkspaceOperations } from "../workspace-operations.js";
@@ -23,6 +28,15 @@ import type {
 } from "../../shared/agents.js";
 import type { QueryRun, QuerySource, ResultSet } from "../../shared/types.js";
 import { boardKind } from "../../shared/presentation.js";
+import type {
+  AgentQuestion,
+  AgentQuestionRequest,
+} from "../../shared/agent-interactions.js";
+import {
+  claudeQuestions,
+  questionAnswers,
+  questionsSchema,
+} from "./interactions.js";
 
 export interface AgentToolServices {
   connections: () => unknown[];
@@ -54,6 +68,44 @@ const targetIdentity = (context: AgentTargetContext) =>
       ? [...new Set(context.boardNodes.map((node) => node.id))]
       : undefined,
   });
+const deliveredMessage = (message: AgentMessage) => {
+  const steer = message.details?.steer as { status?: string } | undefined;
+  return !steer || steer.status === "accepted";
+};
+interface PendingQuestion {
+  message: AgentMessage;
+  nativeId?: string;
+  resolve?: (answers: Record<string, string[]> | null) => void;
+}
+const agentInputSchema = z
+  .object({
+    content: z.string().trim().max(100000),
+    images: agentImagesSchema,
+    clientRequestId: z.uuid(),
+    context: z
+      .object({
+        editorDocumentId: z.uuid().optional(),
+        boardId: z.uuid().optional(),
+        slideId: z.string().min(1).max(200).optional(),
+        selection: z.string().max(100000).optional(),
+        filePaths: z.array(z.string().min(1).max(4096)).max(20).optional(),
+        boardNodes: z
+          .array(
+            z.object({
+              id: z.string().min(1).max(200),
+              title: z.string().max(500),
+            }),
+          )
+          .max(50)
+          .optional(),
+      })
+      .default({}),
+  })
+  .refine(
+    (value) => value.content.length > 0 || value.images.length > 0,
+    "Добавьте текст или изображение",
+  );
+
 export interface ActiveAgent {
   turn: AgentTurn;
   token: string;
@@ -61,6 +113,9 @@ export interface ActiveAgent {
   completion: Promise<void>;
   cancelled: boolean;
   approvals: Map<string, Approval>;
+  questions: Map<string, PendingQuestion>;
+  steers: Map<string, Promise<AgentTurn>>;
+  ending?: boolean;
   runIds: Set<string>;
   assistant?: AgentMessage;
   buffer: string;
@@ -77,6 +132,35 @@ export class AgentManager {
     private origin: () => string,
   ) {
     store.work.releaseTurn();
+    for (const row of store.db.query(
+      "SELECT id,chat_id FROM agent_messages WHERE json_extract(details_json,'$.steer.status')='sending'",
+    ).rows) {
+      const message = store
+        .conversation(row.chat_id)
+        .messages.find((item) => item.id === row.id)!;
+      this.updateMessage(message, {
+        ...message.details,
+        steer: {
+          ...(message.details!.steer as Record<string, unknown>),
+          status: "failed",
+          code: "AGENT_STEER_UNCONFIRMED",
+          retryable: false,
+          error:
+            "Сервер был перезапущен; доставка сообщения не подтверждена. Оно не отправлено повторно",
+        },
+      });
+    }
+    for (const row of store.db.query(
+      "SELECT id,chat_id FROM agent_messages WHERE role='question' AND json_extract(details_json,'$.question.status')='pending'",
+    ).rows) {
+      const message = store
+        .conversation(row.chat_id)
+        .messages.find((item) => item.id === row.id)!;
+      this.updateMessage(message, {
+        ...message.details,
+        question: { ...message.details!.question!, status: "cancelled" },
+      });
+    }
     for (const row of store.db.query(
       "SELECT id,chat_id FROM agent_turns WHERE status IN ('running','waiting')",
     ).rows) {
@@ -100,37 +184,279 @@ export class AgentManager {
         this.decideApproval(active, approval, "allow", true);
     return chat;
   }
+  private updateMessage(
+    message: AgentMessage,
+    details: AgentMessage["details"],
+  ): AgentMessage {
+    const updated = { ...message, details };
+    this.store.db.query(
+      "UPDATE agent_messages SET details_json=?2 WHERE id=?1",
+      [message.id, JSON.stringify(details)],
+    );
+    this.store.publish("agent.event", message.chatId, updated);
+    return updated;
+  }
+  private question(
+    active: ActiveAgent,
+    input: AgentQuestion[],
+    nativeId?: string,
+    resolve?: PendingQuestion["resolve"],
+  ) {
+    const questions = questionsSchema.parse(input);
+    if (
+      nativeId &&
+      [...active.questions.values()].some(
+        (question) => question.nativeId === nativeId,
+      )
+    )
+      return;
+    this.flush(active);
+    active.assistant = undefined;
+    const request: AgentQuestionRequest = {
+      id: randomUUID(),
+      questions,
+      status: "pending",
+    };
+    const message = this.store.message(
+      active.turn.chatId,
+      active.turn.id,
+      "question",
+      questions.map((q) => q.question).join("\n"),
+      { question: request },
+    );
+    active.questions.set(request.id, { message, nativeId, resolve });
+    this.setStatus(active, "waiting");
+  }
+  answerQuestion(id: string, input: unknown): AgentMessage {
+    const row = this.store.db.query(
+      "SELECT chat_id,id FROM agent_messages WHERE role='question' AND json_extract(details_json,'$.question.id')=?1",
+      [id],
+    ).rows[0];
+    if (!row)
+      throw problem(409, "Вопрос больше не активен", "AGENT_QUESTION_INACTIVE");
+    const message = this.store
+      .conversation(row.chat_id)
+      .messages.find((value) => value.id === row.id)!;
+    const request = message.details!.question!;
+    let answers: Record<string, string[]>;
+    try {
+      answers = questionAnswers(request.questions, input);
+    } catch {
+      throw problem(
+        400,
+        "Проверьте ответы на вопросы",
+        "INVALID_QUESTION_ANSWERS",
+      );
+    }
+    const answerHash = createHash("sha256")
+      .update(JSON.stringify(answers))
+      .digest("hex");
+    if (
+      request.status === "answered" &&
+      message.details?.answerHash === answerHash
+    )
+      return message;
+    const active = this.active,
+      pending = active?.questions.get(id);
+    if (
+      !active ||
+      !pending ||
+      active.cancelled ||
+      active.ending ||
+      request.status !== "pending" ||
+      message.turnId !== active.turn.id
+    )
+      throw problem(409, "Вопрос больше не активен", "AGENT_QUESTION_INACTIVE");
+    try {
+      if (pending.nativeId) {
+        if (!active.process?.answerQuestion)
+          throw problem(
+            409,
+            "Вопрос больше не активен",
+            "AGENT_QUESTION_INACTIVE",
+          );
+        active.process.answerQuestion(pending.nativeId, answers);
+      } else pending.resolve?.(answers);
+    } catch {
+      throw problem(409, "Вопрос больше не активен", "AGENT_QUESTION_INACTIVE");
+    }
+    active.questions.delete(id);
+    const displayed = Object.fromEntries(
+      request.questions.map((question) => [
+        question.id,
+        question.isSecret ? ["••••"] : answers[question.id],
+      ]),
+    );
+    const result = this.updateMessage(message, {
+      ...message.details,
+      answerHash,
+      question: { ...request, status: "answered", answers: displayed },
+    });
+    active.assistant = undefined;
+    if (!active.questions.size && !active.approvals.size)
+      this.setStatus(active, "running");
+    return result;
+  }
+  private cancelQuestions(active: ActiveAgent) {
+    for (const pending of active.questions.values()) {
+      const request = pending.message.details!.question!;
+      this.updateMessage(pending.message, {
+        ...pending.message.details,
+        question: { ...request, status: "cancelled" },
+      });
+      pending.resolve?.(null);
+      if (pending.nativeId)
+        active.process?.answerQuestion?.(pending.nativeId, null);
+    }
+    active.questions.clear();
+  }
+  async steer(turnId: string, input: unknown): Promise<AgentTurn> {
+    const b = agentInputSchema.parse(input);
+    const turn = this.store.turn(turnId);
+    const prepared = prepareAgentImages(b.images, turn.chatId);
+    const images = prepared.map((image) => image.attachment);
+    const identity = JSON.stringify({
+      content: b.content,
+      images,
+      context: targetIdentity(b.context),
+    });
+    const old = this.store.db.query(
+      "SELECT chat_id,id,turn_id,details_json FROM agent_messages WHERE json_extract(details_json,'$.steer.requestId')=?1",
+      [b.clientRequestId],
+    ).rows[0];
+    let retryMessage: AgentMessage | undefined;
+    if (old) {
+      const receipt = JSON.parse(old.details_json).steer;
+      if (old.turn_id !== turnId || receipt.identity !== identity)
+        throw problem(
+          409,
+          "Идентификатор сообщения уже использован",
+          "MUTATION_CONFLICT",
+        );
+      const inFlight = this.active?.steers.get(b.clientRequestId);
+      if (inFlight) return inFlight;
+      if (receipt.status === "accepted") return this.store.turn(turnId);
+      if (receipt.retryable === true)
+        retryMessage = this.store
+          .conversation(turn.chatId)
+          .messages.find((message) => message.id === old.id);
+      else
+        throw problem(
+          409,
+          receipt.error ||
+            "Доставка этого сообщения не подтверждена. Оно не отправлено повторно",
+          receipt.code || "AGENT_STEER_UNCONFIRMED",
+        );
+    }
+    // Start-message request IDs belong to the same idempotency namespace.
+    if (
+      this.store.db.query("SELECT id FROM agent_turns WHERE request_id=?1", [
+        b.clientRequestId,
+      ]).rowCount
+    )
+      throw problem(
+        409,
+        "Идентификатор сообщения уже использован",
+        "MUTATION_CONFLICT",
+      );
+    const active = this.active;
+    if (
+      !active ||
+      active.turn.id !== turnId ||
+      active.cancelled ||
+      active.ending ||
+      !["running", "waiting"].includes(turn.status)
+    )
+      throw problem(409, "Задача агента уже завершена", "AGENT_TURN_ENDED");
+    if (!active.process?.steer)
+      throw problem(
+        409,
+        "Агент ещё запускается или не поддерживает Steer",
+        "AGENT_NOT_READY",
+      );
+    this.validateContext(b);
+    this.flush(active);
+    active.assistant = undefined;
+    let message!: AgentMessage;
+    this.store.atomic(() => {
+      for (const image of prepared)
+        this.store.db.query(
+          "INSERT OR IGNORE INTO agent_images(chat_id,id,mime_type,bytes) VALUES(?1,?2,?3,?4)",
+          [
+            turn.chatId,
+            image.attachment.id,
+            image.attachment.mimeType,
+            image.bytes,
+          ],
+        );
+      const details = {
+        context: b.context,
+        ...(images.length ? { images } : {}),
+        steer: { requestId: b.clientRequestId, identity, status: "sending" },
+      };
+      message = retryMessage
+        ? this.updateMessage(retryMessage, details)
+        : this.store.message(turn.chatId, turnId, "user", b.content, details);
+    });
+    const delivery = (async () => {
+      try {
+        await active.process!.steer!({
+          prompt: this.prompt(active, b.content, false, b.context),
+          images: providerImages(this.store, turn.chatId, images),
+          clientRequestId: b.clientRequestId,
+        });
+        this.updateMessage(message, {
+          ...message.details,
+          steer: { requestId: b.clientRequestId, identity, status: "accepted" },
+        });
+        return this.store.turn(turnId);
+      } catch (error) {
+        const text = (
+          error instanceof Error
+            ? error.message
+            : "Не удалось передать сообщение агенту"
+        )
+          .replaceAll(active.token, "[redacted]")
+          .slice(0, 4000);
+        const code = (error as { code?: string }).code || "AGENT_STEER_FAILED";
+        const retryable = [
+          "AGENT_NOT_READY",
+          "AGENT_STEER_UNSUPPORTED",
+        ].includes(code);
+        this.updateMessage(message, {
+          ...message.details,
+          steer: {
+            requestId: b.clientRequestId,
+            identity,
+            status: "failed",
+            error: text,
+            code,
+            retryable,
+          },
+        });
+        throw problem(409, text, code);
+      }
+    })();
+    active.steers.set(b.clientRequestId, delivery);
+    void delivery
+      .catch(() => {})
+      .finally(() => active.steers.delete(b.clientRequestId));
+    return delivery;
+  }
   start(chatId: string, input: unknown): AgentTurn {
     if (this.closing) throw problem(503, "Сервер останавливается");
-    const b = z
-      .object({
-        content: z.string().trim().max(100000),
-        images: agentImagesSchema,
-        clientRequestId: z.uuid(),
-        context: z
-          .object({
-            editorDocumentId: z.uuid().optional(),
-            boardId: z.uuid().optional(),
-            slideId: z.string().min(1).max(200).optional(),
-            selection: z.string().max(100000).optional(),
-            filePaths: z.array(z.string().min(1).max(4096)).max(20).optional(),
-            boardNodes: z
-              .array(
-                z.object({
-                  id: z.string().min(1).max(200),
-                  title: z.string().max(500),
-                }),
-              )
-              .max(50)
-              .optional(),
-          })
-          .default({}),
-      })
-      .refine(
-        (value) => value.content.length > 0 || value.images.length > 0,
-        "Добавьте текст или изображение",
-      )
-      .parse(input);
+    const b = agentInputSchema.parse(input);
+    if (
+      this.store.db.query(
+        "SELECT id FROM agent_messages WHERE json_extract(details_json,'$.steer.requestId')=?1",
+        [b.clientRequestId],
+      ).rowCount
+    )
+      throw problem(
+        409,
+        "Идентификатор сообщения уже использован для Steer",
+        "MUTATION_CONFLICT",
+      );
     const preparedImages = prepareAgentImages(b.images, chatId);
     const images = preparedImages.map((image) => image.attachment);
     const chat = this.store.chat(chatId),
@@ -175,6 +501,52 @@ export class AgentManager {
         "Настройте или подтвердите команду агента на этом компьютере",
         "AGENT_PROFILE_UNTRUSTED",
       );
+    const editor = this.validateContext(b);
+    const id = randomUUID();
+    this.store.atomic(() => {
+      for (const image of preparedImages)
+        this.store.db.query(
+          "INSERT OR IGNORE INTO agent_images(chat_id,id,mime_type,bytes) VALUES(?1,?2,?3,?4)",
+          [chatId, image.attachment.id, image.attachment.mimeType, image.bytes],
+        );
+      this.store.db.query(
+        "INSERT INTO agent_turns(id,chat_id,request_id,status,context_json,created_at) VALUES(?1,?2,?3,'running',?4,?5)",
+        [id, chatId, b.clientRequestId, JSON.stringify(b.context), now()],
+      );
+      this.store.message(chatId, id, "user", b.content, {
+        context: {
+          ...b.context,
+          ...(editor ? { editorDocumentName: editor.name } : {}),
+        },
+        ...(images.length ? { images } : {}),
+      });
+      if (chat.title === "Новый чат")
+        this.store.db.query("UPDATE agent_chats SET title=?2 WHERE id=?1", [
+          chatId,
+          (b.content || images[0].name).slice(0, 80),
+        ]);
+      this.store.publish("turn.updated", id, this.store.turn(id));
+      this.store.publish("chat.updated", chatId, this.store.chat(chatId));
+    });
+    const active: ActiveAgent = {
+      turn: this.store.turn(id),
+      token: randomBytes(32).toString("base64url"),
+      completion: Promise.resolve(),
+      cancelled: false,
+      approvals: new Map(),
+      questions: new Map(),
+      steers: new Map(),
+      runIds: new Set(),
+      buffer: "",
+      images,
+    };
+    this.active = active;
+    active.completion = Promise.resolve().then(() =>
+      this.execute(active, profile.provider, profile.command, b.content),
+    );
+    return active.turn;
+  }
+  private validateContext(b: { context: AgentTargetContext }) {
     const editor = b.context.editorDocumentId
       ? this.store.editor(b.context.editorDocumentId)
       : undefined;
@@ -214,60 +586,25 @@ export class AgentManager {
         return { id, title: node.data.title };
       });
     }
-    const id = randomUUID();
-    this.store.atomic(() => {
-      for (const image of preparedImages)
-        this.store.db.query(
-          "INSERT OR IGNORE INTO agent_images(chat_id,id,mime_type,bytes) VALUES(?1,?2,?3,?4)",
-          [chatId, image.attachment.id, image.attachment.mimeType, image.bytes],
-        );
-      this.store.db.query(
-        "INSERT INTO agent_turns(id,chat_id,request_id,status,context_json,created_at) VALUES(?1,?2,?3,'running',?4,?5)",
-        [id, chatId, b.clientRequestId, JSON.stringify(b.context), now()],
-      );
-      this.store.message(chatId, id, "user", b.content, {
-        context: {
-          ...b.context,
-          ...(editor ? { editorDocumentName: editor.name } : {}),
-        },
-        ...(images.length ? { images } : {}),
-      });
-      if (chat.title === "Новый чат")
-        this.store.db.query("UPDATE agent_chats SET title=?2 WHERE id=?1", [
-          chatId,
-          (b.content || images[0].name).slice(0, 80),
-        ]);
-      this.store.publish("turn.updated", id, this.store.turn(id));
-      this.store.publish("chat.updated", chatId, this.store.chat(chatId));
-    });
-    const active: ActiveAgent = {
-      turn: this.store.turn(id),
-      token: randomBytes(32).toString("base64url"),
-      completion: Promise.resolve(),
-      cancelled: false,
-      approvals: new Map(),
-      runIds: new Set(),
-      buffer: "",
-      images,
-    };
-    this.active = active;
-    active.completion = Promise.resolve().then(() =>
-      this.execute(active, profile.provider, profile.command, b.content),
-    );
-    return active.turn;
+    return editor;
   }
-  private prompt(active: ActiveAgent, content: string, fallback = false) {
+  private prompt(
+    active: ActiveAgent,
+    content: string,
+    fallback = false,
+    targets = active.turn.context,
+  ) {
     const context: Record<string, unknown> = {
       ...this.store.context,
-      targets: active.turn.context,
+      targets: targets,
     };
-    if (active.turn.context.editorDocumentId) {
-      const doc = this.store.editor(active.turn.context.editorDocumentId);
+    if (targets.editorDocumentId) {
+      const doc = this.store.editor(targets.editorDocumentId);
       context.editor = { ...doc, sql: doc.sql.slice(0, 64000) };
     }
-    if (active.turn.context.boardId) {
-      const board = this.operations.board(active.turn.context.boardId);
-      const slideId = active.turn.context.slideId;
+    if (targets.boardId) {
+      const board = this.operations.board(targets.boardId);
+      const slideId = targets.slideId;
       const nodes = slideId
         ? board.document.nodes.filter((node) => node.slideId === slideId)
         : board.document.nodes;
@@ -282,30 +619,28 @@ export class AgentManager {
           ) ?? { id: slideId, missing: true },
         }),
         revision: board.revision,
-        selectedNodes: (active.turn.context.boardNodes || []).map(
-          (selected) => {
-            const node = nodes.find((item) => item.id === selected.id);
-            return node
-              ? {
-                  id: node.id,
-                  title: node.data.title,
-                  kind: node.data.kind,
-                  view: node.data.view,
-                  chart: node.data.chart,
-                  customChart: node.data.customChart
-                    ? {
-                        version: node.data.customChart.version,
-                        description: node.data.customChart.description,
-                      }
-                    : undefined,
-                  resultSetId: node.data.resultSetId,
-                  position: node.position,
-                  width: node.width ?? 480,
-                  height: node.height ?? 300,
-                }
-              : { ...selected, missing: true };
-          },
-        ),
+        selectedNodes: (targets.boardNodes || []).map((selected) => {
+          const node = nodes.find((item) => item.id === selected.id);
+          return node
+            ? {
+                id: node.id,
+                title: node.data.title,
+                kind: node.data.kind,
+                view: node.data.view,
+                chart: node.data.chart,
+                customChart: node.data.customChart
+                  ? {
+                      version: node.data.customChart.version,
+                      description: node.data.customChart.description,
+                    }
+                  : undefined,
+                resultSetId: node.data.resultSetId,
+                position: node.position,
+                width: node.width ?? 480,
+                height: node.height ?? 300,
+              }
+            : { ...selected, missing: true };
+        }),
         nodes: nodes.slice(0, 100).map((n) => ({
           id: n.id,
           slideId: n.slideId,
@@ -321,11 +656,15 @@ export class AgentManager {
           .messages.filter(
             (m) =>
               m.turnId !== active.turn.id &&
-              ["user", "assistant"].includes(m.role),
+              deliveredMessage(m) &&
+              (["user", "assistant"].includes(m.role) ||
+                (m.role === "question" &&
+                  m.details?.question?.status === "answered")),
           )
-          .map(
-            (m) =>
-              `${m.role}: ${m.content}${m.details?.context ? `\nReferenced context (data): ${JSON.stringify(m.details.context)}` : ""}${m.details?.images ? `\nReferenced images (data): ${JSON.stringify(m.details.images)}` : ""}`,
+          .map((m) =>
+            m.role === "question"
+              ? `User answers (data): ${JSON.stringify(m.details!.question!.questions.map((question) => ({ question: question.question, answers: question.isSecret ? ["[redacted]"] : m.details!.question!.answers?.[question.id] || [] })))}`
+              : `${m.role}: ${m.content}${m.details?.context ? `\nReferenced context (data): ${JSON.stringify(m.details.context)}` : ""}${m.details?.images ? `\nReferenced images (data): ${JSON.stringify(m.details.images)}` : ""}`,
           )
           .join("\n")
           .slice(-64000)
@@ -370,8 +709,19 @@ export class AgentManager {
     }
   }
   private event(active: ActiveAgent, event: AdapterEvent) {
-    if (this.active !== active || active.cancelled) return;
-    if (event.type === "message") {
+    if (this.active !== active || active.cancelled || active.ending) return;
+    if (event.type === "question") {
+      this.question(active, event.questions, event.id);
+    } else if (event.type === "subagent") {
+      this.flush(active);
+      this.store.message(
+        active.turn.chatId,
+        active.turn.id,
+        "action",
+        event.subagent.name || event.subagent.id,
+        { subagent: event.subagent },
+      );
+    } else if (event.type === "message") {
       active.buffer += event.text;
       if (!active.flushTimer)
         active.flushTimer = setTimeout(() => this.flush(active), 80);
@@ -448,8 +798,12 @@ export class AgentManager {
         } else throw error;
       }
       this.flush(active);
+      active.ending = true;
+      await Promise.allSettled(active.steers.values());
       this.setStatus(active, active.cancelled ? "cancelled" : "completed");
     } catch (error) {
+      active.ending = true;
+      await Promise.allSettled(active.steers.values());
       this.flush(active);
       const message = (error instanceof Error ? error.message : "Ошибка агента")
         .replaceAll(active.token, "[redacted]")
@@ -468,6 +822,7 @@ export class AgentManager {
         );
     } finally {
       this.flush(active);
+      this.cancelQuestions(active);
       for (const approval of active.approvals.values()) {
         this.resolveApproval(active, approval);
         approval.resolve?.("deny");
@@ -496,7 +851,11 @@ export class AgentManager {
     const seen = new Set(active.images.map((image) => image.id));
     const messages = this.store.conversation(active.turn.chatId).messages;
     for (const message of [...messages].reverse()) {
-      if (message.turnId === active.turn.id || message.role !== "user")
+      if (
+        message.turnId === active.turn.id ||
+        message.role !== "user" ||
+        !deliveredMessage(message)
+      )
         continue;
       const images = (message.details?.images || []) as AgentImageAttachment[];
       for (const image of [...images].reverse()) {
@@ -564,6 +923,8 @@ export class AgentManager {
     return id;
   }
   requestPermission(active: ActiveAgent, input: unknown): Promise<unknown> {
+    if (this.active !== active || active.cancelled || active.ending)
+      return Promise.resolve({ behavior: "deny", message: "Задача завершена" });
     const args = z
       .object({
         tool_name: z.string().optional(),
@@ -571,6 +932,27 @@ export class AgentManager {
       })
       .passthrough()
       .parse(input);
+    if (args.tool_name === "AskUserQuestion") {
+      const questions = claudeQuestions(args.input);
+      return new Promise((resolve) =>
+        this.question(active, questions, undefined, (answers) => {
+          if (!answers) {
+            resolve({ behavior: "deny", message: "Вопрос отменён" });
+            return;
+          }
+          const nativeAnswers = Object.fromEntries(
+            questions.map((question) => [
+              question.question,
+              answers[question.id].join(", "),
+            ]),
+          );
+          resolve({
+            behavior: "allow",
+            updatedInput: { ...args.input, answers: nativeAnswers },
+          });
+        }),
+      );
+    }
     return new Promise((resolve) => {
       this.approval(
         active,
@@ -641,7 +1023,11 @@ export class AgentManager {
       active.turn.chatId,
       this.store.chat(active.turn.chatId),
     );
-    if (!active.approvals.size && active.turn.status === "waiting")
+    if (
+      !active.approvals.size &&
+      !active.questions.size &&
+      active.turn.status === "waiting"
+    )
       this.setStatus(active, "running");
   }
   async cancel(id: string) {
@@ -649,6 +1035,7 @@ export class AgentManager {
       active = this.active;
     if (!active || active.turn.id !== id) return turn;
     active.cancelled = true;
+    this.cancelQuestions(active);
     for (const approval of active.approvals.values()) {
       this.resolveApproval(active, approval);
       approval.resolve?.("deny");

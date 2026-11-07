@@ -1,0 +1,72 @@
+.agent-sql-preview {
+  margin-top: 12px;
+  border-radius: 8px;
+  background: var(--agent-surface);
+  overflow: hidden;
+}
+.agent-sql-preview-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 4px 0;
+}
+.agent-sql-preview .agent-sql-preview-open {
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+.agent-sql-preview-open:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: -2px;
+}
+.agent-sql-preview-open:disabled {
+  cursor: wait;
+}
+.agent-sql-preview pre {
+  margin: 0;
+  padding: 8px 12px 12px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.agent-sql-preview code {
+  font-family: "JetBrains Mono", monospace;
+}
+.agent-sql-token-keyword {
+  color: #b9cbc1;
+}
+.agent-sql-token-string {
+  color: #d1c49a;
+}
+.agent-sql-token-number {
+  color: #ddbb9d;
+}
+.agent-sql-token-comment {
+  color: #92969d;
+  font-style: italic;
+}
+.agent-sql-token-operator {
+  color: #b1bec9;
+}
+.agent-sql-preview-error {
+  margin: 0;
+  padding: 0 12px 12px;
+  color: var(--danger);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.agent-sql-preview-spinner {
+  animation: agent-sql-preview-spin 1s linear infinite;
+}
+@keyframes agent-sql-preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-sql-preview-spinner {
+    animation: none;
+  }
+}
