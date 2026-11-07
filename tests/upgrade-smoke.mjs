@@ -1,5 +1,5 @@
 // Published supported installation -> candidate via the actual miracle update CLI.
-// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PREVIOUS-0.8.0.tar.gz
+// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PREVIOUS-0.8.1.tar.gz
 // Every archive needs its adjacent .sha256 and rendered install.sh. No live user
 // installation or workspace is read, stopped, or modified by this test.
 import assert from "node:assert/strict";
@@ -24,11 +24,11 @@ const [candidateArgument, previousArgument, ...extraArguments] =
   process.argv.slice(2);
 if (!candidateArgument || !previousArgument || extraArguments.length)
   throw new Error(
-    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.8.0.tar.gz",
+    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.8.1.tar.gz",
   );
 const candidate = resolve(candidateArgument);
 const previousArchive = resolve(previousArgument);
-const oldVersion = "0.8.0";
+const oldVersion = "0.8.1";
 const target = `${process.platform}-${process.arch}`;
 const candidateVersion = new RegExp(
   `^miracle-(\\d+\\.\\d+\\.\\d+)-${target}\\.tar\\.gz$`,
@@ -427,8 +427,9 @@ try {
       };
     }
     const before = await sqliteSnapshot(oldNode);
-    assert(
-      before.schema >= 5,
+    assert.equal(
+      before.schema,
+      5,
       "Published release has the supported project schema",
     );
     assert.notEqual(before.connection.password_encrypted, password);
@@ -612,9 +613,10 @@ try {
     });
     await run("stop", ...storageArgs);
     const after = await sqliteSnapshot(newNode);
-    assert(
-      after.schema >= before.schema,
-      "Update must preserve or advance the schema",
+    assert.equal(
+      after.schema,
+      6,
+      "Update must migrate the workspace to schema 6",
     );
     assert.equal(
       after.connection.password_encrypted,
@@ -631,6 +633,7 @@ try {
       "agent_chats",
       "agent_turns",
       "agent_messages",
+      "agent_query_runs",
       "project_events",
     ])
       assert(after.tables.includes(table), `Missing migrated table ${table}`);

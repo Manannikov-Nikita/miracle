@@ -1,0 +1,302 @@
+.agent-panel:has(.agent-activity-rail) {
+  --agent-rail-width: 56px;
+  width: calc(480px + var(--agent-rail-width));
+  display: grid;
+  grid-template-columns: var(--agent-rail-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.agent-main-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.agent-activity-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 4px;
+  min-height: 0;
+  border-right: 1px solid var(--agent-line);
+  background: var(--agent-bg);
+}
+.agent-rail-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+.agent-rail-summary {
+  display: grid;
+  flex: none;
+  gap: 4px;
+}
+.agent-rail-counter,
+.agent-rail-run {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--agent-muted);
+  cursor: pointer;
+}
+.agent-rail-counter:hover,
+.agent-rail-run:hover,
+.agent-rail-counter[aria-expanded="true"],
+.agent-rail-run[aria-expanded="true"] {
+  background: var(--agent-surface);
+  color: var(--agent-text);
+}
+.agent-activity-rail button:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: -2px;
+}
+.agent-rail-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 14px;
+  padding: 1px 3px;
+  border-radius: 5px;
+  background: var(--agent-surface);
+  color: var(--agent-text);
+  font-size: 10px;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.agent-rail-rings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* The narrow icon rail must not lose ring width to a scrollbar gutter. */
+  scrollbar-width: none;
+}
+.agent-rail-rings::-webkit-scrollbar {
+  display: none;
+}
+.agent-run-ring {
+  position: relative;
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  /* Rotating a square SVG otherwise expands its scrollable bounds at 45deg. */
+  overflow: clip;
+  color: var(--mint);
+}
+.agent-run-ring svg {
+  display: block;
+  flex: none;
+  width: 40px;
+  height: 40px;
+}
+.agent-run-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+.agent-ring-track {
+  stroke: var(--agent-hover);
+}
+.agent-ring-value {
+  stroke: currentColor;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: center;
+}
+.agent-run-ring > span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--agent-text);
+}
+.agent-run-ring > span svg {
+  width: 14px;
+  height: 14px;
+}
+.agent-run-ring.is-paused {
+  color: var(--agent-soft);
+}
+.agent-ring-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.agent-run-ring.is-indeterminate > svg {
+  animation: agent-rail-spin 1.4s linear infinite;
+}
+.agent-rail-health {
+  display: flex;
+  justify-content: center;
+  flex: none;
+  color: var(--agent-muted);
+}
+.agent-rail-loading {
+  animation: agent-rail-spin 1.4s linear infinite;
+}
+.agent-rail-details {
+  position: absolute;
+  z-index: 3;
+  inset: 12px 12px 12px calc(var(--agent-rail-width) + 12px);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--agent-bg);
+  border: 1px solid var(--agent-line);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px #0004;
+  overflow: hidden;
+}
+.agent-rail-details-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--agent-line);
+}
+.agent-rail-details-heading strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.agent-rail-details-body {
+  overflow: auto;
+  padding: 16px;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.agent-rail-items {
+  display: grid;
+  gap: 20px;
+}
+.agent-rail-item {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-rail-item + .agent-rail-item {
+  border-top: 1px solid var(--agent-line);
+  padding-top: 20px;
+}
+.agent-rail-item-heading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.agent-rail-item-heading > div {
+  display: grid;
+  gap: 4px;
+}
+.agent-rail-item strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.agent-rail-item-heading span:not(.agent-run-ring),
+.agent-rail-child-heading > span {
+  color: var(--agent-muted);
+  font-size: 11px;
+}
+.agent-rail-item p,
+.agent-rail-empty,
+.agent-rail-hint,
+.agent-rail-error {
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 8px 0;
+}
+.agent-rail-empty,
+.agent-rail-hint,
+.agent-rail-run-progress {
+  color: var(--agent-muted);
+}
+.agent-rail-run-progress p {
+  margin: 4px 0;
+}
+.agent-rail-child-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agent-rail-child-id {
+  display: block;
+  color: var(--agent-muted);
+  font-size: 10px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.agent-rail-error {
+  color: var(--agent-soft);
+}
+@keyframes agent-rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-run-ring.is-indeterminate > svg,
+  .agent-rail-loading {
+    animation: none;
+  }
+}
+@media (max-width: 620px) {
+  .agent-panel:has(.agent-activity-rail) {
+    inset: 8px 8px 76px;
+    width: auto;
+    max-width: none;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .agent-activity-rail {
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border-right: 0;
+    border-bottom: 1px solid var(--agent-line);
+  }
+  .agent-rail-content {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .agent-rail-summary {
+    display: flex;
+    flex: none;
+    gap: 4px;
+  }
+  .agent-rail-counter,
+  .agent-rail-run {
+    width: 40px;
+    padding: 0;
+  }
+  .agent-rail-rings {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .agent-rail-details {
+    inset: 56px 8px 8px;
+  }
+}

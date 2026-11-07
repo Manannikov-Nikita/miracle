@@ -333,6 +333,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const [runs, setRuns] = useState<Record<string, QueryRun>>({});
   const runsRef = useRef(runs);
   runsRef.current = runs;
+  // Restoring a finished run is not a new failure. Arm notifications only for
+  // work launched here or observed in progress, and consume them once per run.
+  const pendingRunErrors = useRef(new Set<string>());
   const [runActions, setRunActions] = useState<
     Record<string, "resume" | "cancel">
   >({});
@@ -642,6 +645,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           runsRef.current = { ...runsRef.current, [tabId]: update };
           setRuns((current) => ({ ...current, [tabId]: update }));
           const terminal = !["running", "cancelling"].includes(update.status);
+          if (!terminal) pendingRunErrors.current.add(id);
           if (
             update.resultSetId &&
             (update.batch || update.status === "completed")
@@ -663,7 +667,11 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
           failures = 0;
           clearTrackingError();
           if (terminal) {
-            if (update.status === "failed" || update.status === "interrupted")
+            const notifyError = pendingRunErrors.current.delete(id);
+            if (
+              notifyError &&
+              (update.status === "failed" || update.status === "interrupted")
+            )
               p.onNotify(update.error || "Запрос не завершён", "error");
             return;
           }
@@ -1331,6 +1339,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         ["runId"],
       );
       if (accepted?.runId !== started.id) return;
+      pendingRunErrors.current.add(started.id);
       setRuns((current) => ({ ...current, [tabId]: started }));
       if (!resultExpanded) {
         group.current?.setLayout({ editor: 55, results: 45 });
@@ -1530,6 +1539,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       );
       if (!mounted.current || !tabsRef.current.some((tab) => tab.id === tabId))
         return;
+      if (action === "resume") pendingRunErrors.current.add(run.id);
       setRuns((s) => ({ ...s, [tabId]: run }));
       void track(tabId, run.id);
     } catch (e) {

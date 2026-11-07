@@ -6,16 +6,9 @@ import {
 } from "../../shared/shapes";
 import { Select } from "../components/Select";
 import type { TextStyleSpec } from "../../shared/text-style";
+import ColorPicker from "../colors/ColorPicker";
 import "./shape-settings.css";
 
-const colors = [
-  { value: "#ffffff", label: "Белый" },
-  { value: "#dbeafe", label: "Голубой" },
-  { value: "#dcfce7", label: "Зелёный" },
-  { value: "#fef3c7", label: "Жёлтый" },
-  { value: "#fee2e2", label: "Красный" },
-  { value: "#172033", label: "Тёмный" },
-];
 const validColor = (value: string) => /^#[0-9a-f]{6}$/i.test(value);
 
 function ColorField({
@@ -38,12 +31,13 @@ function ColorField({
     <div className="shape-color-field" role="group" aria-label={label}>
       <div className="shape-color-row">
         <span>{label}</span>
-        <input
-          type="color"
-          aria-label={`Цвет · ${label}`}
-          value={transparent ? "#dbeafe" : value}
+        <ColorPicker
+          label={`Цвет · ${label}`}
+          value={value}
           disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
+          allowTransparent={allowTransparent}
+          compact
+          onChange={onChange}
         />
         <input
           className="shape-color-hex"
@@ -70,39 +64,6 @@ function ColorField({
             }
           }}
         />
-      </div>
-      <div className="shape-color-palette">
-        {colors.map((color) => (
-          <button
-            key={color.value}
-            type="button"
-            className="shape-color-swatch"
-            aria-label={`${label} · ${color.label}`}
-            title={color.label}
-            aria-pressed={value.toLowerCase() === color.value}
-            disabled={disabled}
-            onClick={() => onChange(color.value)}
-          >
-            <span style={{ backgroundColor: color.value }} />
-            {value.toLowerCase() === color.value && (
-              <span className="shape-color-check" aria-hidden="true">
-                ✓
-              </span>
-            )}
-          </button>
-        ))}
-        {allowTransparent && (
-          <button
-            type="button"
-            className="shape-transparent"
-            aria-label="Без заливки"
-            aria-pressed={transparent}
-            disabled={disabled}
-            onClick={() => onChange("transparent")}
-          >
-            Нет
-          </button>
-        )}
       </div>
     </div>
   );

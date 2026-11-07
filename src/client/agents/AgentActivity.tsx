@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import type { AgentMessage, AgentTurn } from "../../shared/agents";
 import { activityCount, activityItems } from "./agent-transcript";
+import { waitingForAnswer } from "./AgentQuestion";
 
 const itemStateLabel = {
   running: "Выполняется",
@@ -34,7 +35,9 @@ export default function AgentActivity({
   const cancelled =
     turn?.status === "cancelled" || turn?.status === "interrupted";
   const label = waiting
-    ? "Нужно разрешение"
+    ? waitingForAnswer(messages, turn)
+      ? "Нужен ответ"
+      : "Нужно разрешение"
     : failed
       ? "Ошибка"
       : cancelled

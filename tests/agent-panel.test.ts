@@ -16,6 +16,8 @@ describe("local agent panel", () => {
     project = new ProjectSync();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(api).mockImplementation(async (path) => {
+      if (path.endsWith("/sql-activity"))
+        return { runs: [], activeCount: 0 } as never;
       if (path === "/api/project")
         return { projectRoot: "/work/project" } as never;
       if (path === "/api/agent-profiles")

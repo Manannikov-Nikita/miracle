@@ -3,6 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import App from "../src/client/App";
+import { api } from "../src/client/api";
+import type { SqlSourceRequest } from "../src/client/components/SqlWorkspace";
+import type { QueryRun } from "../src/shared/types";
+
+const captured = vi.hoisted(() => ({
+  onOpenRun: undefined as ((id: string) => Promise<void>) | undefined,
+  sourceToOpen: null as SqlSourceRequest | null,
+  workspaceId: "",
+}));
 
 vi.mock("../src/client/api", () => ({
   api: vi.fn(async () => []),
@@ -12,7 +21,12 @@ vi.mock("../src/client/agents/ProjectSync", () => ({
   ProjectSyncProvider: ({ children }: { children: ReactNode }) => children,
   useProjectSync: () => null,
 }));
-vi.mock("../src/client/agents/AgentAssistant", () => ({ default: () => null }));
+vi.mock("../src/client/agents/AgentAssistant", () => ({
+  default: ({ onOpenRun }: { onOpenRun: (id: string) => Promise<void> }) => {
+    captured.onOpenRun = onOpenRun;
+    return null;
+  },
+}));
 vi.mock("../src/client/components/Connections", () => ({
   default: () => null,
 }));
@@ -26,7 +40,17 @@ vi.mock("../src/client/components/Explorer", async () => {
 vi.mock("../src/client/components/SqlWorkspace", async () => {
   const { createElement, useState } = await import("react");
   return {
-    default: ({ onCollapse }: { onCollapse: () => void }) => {
+    default: ({
+      onCollapse,
+      sourceToOpen,
+      workspaceId,
+    }: {
+      onCollapse: () => void;
+      sourceToOpen: SqlSourceRequest | null;
+      workspaceId: string;
+    }) => {
+      captured.sourceToOpen = sourceToOpen;
+      captured.workspaceId = workspaceId;
       const [sql, setSql] = useState("select 1");
       return createElement(
         "section",
@@ -65,6 +89,9 @@ describe("independent workspace panes on desktop", () => {
   const viewKey = "miracle:view:pane-workspace";
 
   beforeEach(() => {
+    captured.onOpenRun = undefined;
+    captured.sourceToOpen = null;
+    captured.workspaceId = "";
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("innerWidth", 980);
     vi.stubGlobal("matchMedia", (query: string) => ({
@@ -131,6 +158,31 @@ describe("independent workspace panes on desktop", () => {
   async function settle() {
     await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
   }
+
+  it("opens saved color settings from the bottom navigation group without resetting panes", async () => {
+    await render("split");
+    const settings = button("Настройки");
+    expect(
+      settings.closest('[aria-label="Управление рабочей областью"]'),
+    ).not.toBeNull();
+    await act(async () => {
+      settings.focus();
+      settings.click();
+    });
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("Сохранённые цвета");
+    expectPanes(true, true);
+    await act(async () =>
+      document
+        .querySelector<HTMLButtonElement>(
+          '[role="dialog"] [aria-label="Закрыть"]',
+        )!
+        .click(),
+    );
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await settle();
+    expect(document.activeElement).toBe(settings);
+  });
   async function render(mode: "sql" | "board" | "split") {
     localStorage.setItem(
       viewKey,
@@ -147,6 +199,65 @@ describe("independent workspace panes on desktop", () => {
     await act(async () => button(label).click());
     await settle();
   }
+
+  it("opens an agent run in the mounted editor and leaves panes untouched when loading fails", async () => {
+    await render("board");
+    expectPanes(false, true);
+    const sql = pane("sql");
+    const board = pane("board");
+    const run: QueryRun = {
+      id: "agent/run",
+      status: "completed",
+      startedAt: "2026-11-07T10:00:00.000Z",
+      finishedAt: "2026-11-07T10:01:00.000Z",
+      resultSetId: "agent-result",
+      rowCount: 2,
+      source: {
+        connectionId: "agent-connection",
+        database: "warehouse",
+        catalog: "analytics",
+        schema: "reports",
+        sql: "select count(*) from trips where day = :date",
+        dateRange: {
+          startDate: "2026-11-01",
+          endDate: "2026-11-02",
+          granularity: "day",
+          retries: 2,
+        },
+      },
+    };
+    vi.mocked(api).mockClear().mockResolvedValueOnce(run);
+    expect(captured.onOpenRun).toBeTypeOf("function");
+    await act(async () => captured.onOpenRun!(run.id));
+    await settle();
+
+    expectPanes(true, true);
+    expect(pane("sql")).toBe(sql);
+    expect(pane("board")).toBe(board);
+    expect(captured.workspaceId).toBe("pane-workspace");
+    expect(captured.sourceToOpen).toEqual({ source: run.source, run });
+    // Opening existing results is a read; the App must not execute SQL again.
+    expect(vi.mocked(api).mock.calls).toEqual([
+      ["/api/query-runs/agent%2Frun"],
+    ]);
+
+    await click("Редактор");
+    const previousSource = captured.sourceToOpen;
+    const failure = new Error("Запрос больше не доступен");
+    vi.mocked(api).mockClear().mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(captured.onOpenRun!("missing-run")).rejects.toBe(failure);
+    });
+    await settle();
+
+    expectPanes(false, true);
+    expect(pane("sql")).toBe(sql);
+    expect(pane("board")).toBe(board);
+    expect(captured.sourceToOpen).toBe(previousSource);
+    expect(vi.mocked(api).mock.calls).toEqual([
+      ["/api/query-runs/missing-run"],
+    ]);
+  });
 
   it("replaces the unfocused pane when opening a third and preserves all mounted workspaces", async () => {
     await render("split");

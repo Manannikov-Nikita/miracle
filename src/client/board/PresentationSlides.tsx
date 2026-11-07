@@ -23,6 +23,7 @@ import { PRESENTATION_MAX_SLIDES } from "../../shared/presentation";
 import type { AgentEntityWork } from "../../shared/agent-work";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import PresentationThumbnail from "./PresentationThumbnail";
+import ColorPicker from "../colors/ColorPicker";
 import "./presentation-slides.css";
 
 const noSlides: PresentationSlide[] = [];
@@ -463,13 +464,13 @@ export default function PresentationSlides({
                   <div className="presentation-slide-colors">
                     <label>
                       Цвет фона
-                      <input
-                        type="color"
+                      <ColorPicker
+                        label="Цвет фона"
                         value={(validBackground
                           ? backgroundColor
                           : dialog.slide.background
                         ).toLowerCase()}
-                        onChange={(event) => setBackground(event.target.value)}
+                        onChange={setBackground}
                       />
                     </label>
                     <label>

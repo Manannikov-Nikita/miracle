@@ -9,6 +9,7 @@ import AgentActivity from "./AgentActivity";
 import { transcriptTurns } from "./agent-transcript";
 import { AgentContextChips } from "./AgentFileMentions";
 import AgentMessageImages from "./AgentMessageImages";
+import AgentQuestion from "./AgentQuestion";
 
 function MessageReferences({ context }: { context: unknown }) {
   if (!context || typeof context !== "object") return null;
@@ -58,6 +59,24 @@ function MessageContent({ content }: { content: string }) {
         {content}
       </Markdown>
     </div>
+  );
+}
+
+function SteerReceipt({ value }: { value: unknown }) {
+  if (!value) return null;
+  const receipt =
+    typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return (
+    <span className="agent-steer-label">
+      {receipt.status === "sending"
+        ? "Передаём уточнение…"
+        : receipt.status === "failed"
+          ? "Доставка не подтверждена"
+          : "Уточнение по ходу работы"}
+      {receipt.status === "failed" && typeof receipt.error === "string" && (
+        <span className="agent-steer-error">{receipt.error}</span>
+      )}
+    </span>
   );
 }
 
@@ -118,7 +137,7 @@ function Approval({
           <div className="agent-approval-actions">
             <button
               type="button"
-              disabled={state.busy}
+              disabled={state.interactionBusy}
               onClick={() =>
                 void state.approve(approvalId, "allow").catch(() => {})
               }
@@ -127,7 +146,7 @@ function Approval({
             </button>
             <button
               type="button"
-              disabled={state.busy}
+              disabled={state.interactionBusy}
               onClick={() =>
                 void state.approve(approvalId, "deny").catch(() => {})
               }
@@ -221,12 +240,8 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
   return (
     <>
       {groups.map((group) => {
-        const userMessages = group.messages.filter(
-          (message) => message.role === "user",
-        );
-        const replyMessages = group.messages.filter(
-          (message) =>
-            message.role === "assistant" || message.role === "system",
+        const visibleMessages = group.messages.filter(
+          (message) => message.role !== "action" && message.role !== "approval",
         );
         const approvals = group.messages.filter(
           (message) => message.role === "approval",
@@ -240,37 +255,51 @@ export default function AgentMessages({ state }: { state: AgentChatState }) {
             key={group.id}
             data-turn-id={group.id}
           >
-            {userMessages.map((message) => (
-              <article key={message.id} className="agent-message user">
-                <small className="sr-only">Вы</small>
-                <MessageReferences
-                  context={message.details?.context || group.turn?.context}
-                />
-                <AgentMessageImages images={message.details?.images} />
-                <MessageContent content={message.content} />
-              </article>
-            ))}
-            {replyMessages.map((message) => (
-              <article
-                key={message.id}
-                className={`agent-message ${message.role}`}
-              >
-                <small
-                  className={
-                    message.role === "assistant"
-                      ? "sr-only"
-                      : "agent-message-label"
-                  }
+            {visibleMessages.map((message) => {
+              if (message.role === "question")
+                return (
+                  <AgentQuestion
+                    key={message.id}
+                    message={message}
+                    state={state}
+                  />
+                );
+              const user = message.role === "user";
+              return (
+                <article
+                  key={message.id}
+                  className={`agent-message ${message.role}`}
                 >
-                  {message.role === "assistant"
-                    ? conversation?.chat.provider === "claude"
-                      ? "Claude"
-                      : "Codex"
-                    : "Уведомление"}
-                </small>
-                <MessageContent content={message.content} />
-              </article>
-            ))}
+                  <small
+                    className={
+                      message.role === "system"
+                        ? "agent-message-label"
+                        : "sr-only"
+                    }
+                  >
+                    {user
+                      ? "Вы"
+                      : message.role === "assistant"
+                        ? conversation?.chat.provider === "claude"
+                          ? "Claude"
+                          : "Codex"
+                        : "Уведомление"}
+                  </small>
+                  {user && (
+                    <>
+                      <SteerReceipt value={message.details?.steer} />
+                      <MessageReferences
+                        context={
+                          message.details?.context || group.turn?.context
+                        }
+                      />
+                      <AgentMessageImages images={message.details?.images} />
+                    </>
+                  )}
+                  <MessageContent content={message.content} />
+                </article>
+              );
+            })}
             <Approvals messages={approvals} state={state} />
             {hasActivity && (
               <AgentActivity messages={group.messages} turn={group.turn} />

@@ -15,7 +15,11 @@ import { useAgentImageDrafts } from "./useAgentImageDrafts";
 import { useAgentPortalContainer } from "./useAgentPortalContainer";
 import "./agents.css";
 import "./agent-images.css";
-export default function AgentAssistant() {
+import { waitingForAnswer } from "./AgentQuestion";
+import AgentActivityRail from "./AgentActivityRail";
+export default function AgentAssistant({
+  onOpenRun,
+}: { onOpenRun?: (id: string) => Promise<void> } = {}) {
   const state = useAgentChat();
   const portalContainer = useAgentPortalContainer(state.open);
   const project = useProjectSync();
@@ -63,7 +67,9 @@ export default function AgentAssistant() {
   const active = state.active,
     status =
       active?.status === "waiting"
-        ? "Ожидает разрешения"
+        ? waitingForAnswer(state.conversation?.messages || [], active)
+          ? "Ожидает ответа"
+          : "Ожидает разрешения"
         : active
           ? "Работает"
           : state.unread
@@ -86,7 +92,7 @@ export default function AgentAssistant() {
       (!content && !images.length) ||
       imageDraft.loading ||
       state.busy ||
-      state.active
+      (state.active && state.active.chatId !== state.selected)
     )
       return;
     const current = project?.context() || targetContext;
@@ -152,8 +158,16 @@ export default function AgentAssistant() {
       );
       setDrafts((items) => ({
         ...items,
-        [draftKey]: "",
-        ...(createdId ? { [createdId]: "" } : {}),
+        [draftKey]:
+          (items[draftKey] || "").trim() === content ? "" : items[draftKey],
+        ...(createdId
+          ? {
+              [createdId]:
+                (items[createdId] || "").trim() === content
+                  ? ""
+                  : items[createdId],
+            }
+          : {}),
       }));
       setFiles((items) => ({
         ...items,
@@ -211,68 +225,71 @@ export default function AgentAssistant() {
             }
           }}
         >
-          {state.error && (
-            <div className="agent-error">
-              <ErrorBox>{state.error}</ErrorBox>
-              <button
-                className="text-button"
-                onClick={() =>
-                  void state
-                    .refresh()
-                    .then(() => state.setError(""))
-                    .catch((e) => state.setError(e.message))
+          <AgentActivityRail state={state} onOpenRun={onOpenRun} />
+          <div className="agent-main-pane">
+            {state.error && (
+              <div className="agent-error">
+                <ErrorBox>{state.error}</ErrorBox>
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    void state
+                      .refresh()
+                      .then(() => state.setError(""))
+                      .catch((e) => state.setError(e.message))
+                  }
+                >
+                  Повторить подключение
+                </button>
+              </div>
+            )}
+            {state.loading ? (
+              <div className="agent-empty" role="status">
+                <Spinner /> Загружаем разговоры…
+              </div>
+            ) : (
+              <AgentChatView
+                state={state}
+                selectedProfile={selectedProfile}
+                onProfileChange={setProfileId}
+                draft={draft}
+                onDraftChange={(value) =>
+                  setDrafts((items) => ({ ...items, [draftKey]: value }))
                 }
-              >
-                Повторить подключение
-              </button>
-            </div>
-          )}
-          {state.loading ? (
-            <div className="agent-empty" role="status">
-              <Spinner /> Загружаем разговоры…
-            </div>
-          ) : (
-            <AgentChatView
-              state={state}
-              selectedProfile={selectedProfile}
-              onProfileChange={setProfileId}
-              draft={draft}
-              onDraftChange={(value) =>
-                setDrafts((items) => ({ ...items, [draftKey]: value }))
-              }
-              onSend={send}
-              images={imageDraft.images}
-              imagesLoading={imageDraft.loading}
-              onImagesAdd={imageDraft.add}
-              onImageRemove={imageDraft.remove}
-              filePaths={files[draftKey] || []}
-              onFilesChange={(paths) => {
-                setFiles((items) => ({ ...items, [draftKey]: paths }));
-                setEditorTargets((items) =>
-                  items[draftKey]?.path &&
-                  !paths.includes(items[draftKey]!.path!)
-                    ? { ...items, [draftKey]: undefined }
-                    : items,
-                );
-              }}
-              editorTabs={editorTabs}
-              editorTarget={editorTargets[draftKey]}
-              onEditorTargetChange={(tab) =>
-                setEditorTargets((items) => ({ ...items, [draftKey]: tab }))
-              }
-              boardNodes={selectedNodes}
-              onDismissBoardNode={(id) =>
-                setDismissed((current) => ({
-                  key: currentSelection,
-                  ids: [
-                    ...(current.key === currentSelection ? current.ids : []),
-                    id,
-                  ],
-                }))
-              }
-              onSettings={() => setSettings(true)}
-            />
-          )}
+                onSend={send}
+                images={imageDraft.images}
+                imagesLoading={imageDraft.loading}
+                onImagesAdd={imageDraft.add}
+                onImageRemove={imageDraft.remove}
+                filePaths={files[draftKey] || []}
+                onFilesChange={(paths) => {
+                  setFiles((items) => ({ ...items, [draftKey]: paths }));
+                  setEditorTargets((items) =>
+                    items[draftKey]?.path &&
+                    !paths.includes(items[draftKey]!.path!)
+                      ? { ...items, [draftKey]: undefined }
+                      : items,
+                  );
+                }}
+                editorTabs={editorTabs}
+                editorTarget={editorTargets[draftKey]}
+                onEditorTargetChange={(tab) =>
+                  setEditorTargets((items) => ({ ...items, [draftKey]: tab }))
+                }
+                boardNodes={selectedNodes}
+                onDismissBoardNode={(id) =>
+                  setDismissed((current) => ({
+                    key: currentSelection,
+                    ids: [
+                      ...(current.key === currentSelection ? current.ids : []),
+                      id,
+                    ],
+                  }))
+                }
+                onSettings={() => setSettings(true)}
+              />
+            )}
+          </div>
           <Dialog.Root
             open={settings}
             onOpenChange={(open) => {

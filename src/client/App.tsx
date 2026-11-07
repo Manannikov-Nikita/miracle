@@ -12,6 +12,7 @@ import type {
   BoardKind,
   Connection,
   QueryDocument,
+  QueryRun,
   ResultSet,
 } from "../shared/types";
 import type { ProjectTextFile } from "../shared/project-files";
@@ -28,6 +29,7 @@ import BoardWorkspace from "./board/BoardWorkspace";
 import { ProjectSyncProvider, useProjectSync } from "./agents/ProjectSync";
 import AgentAssistant from "./agents/AgentAssistant";
 import WorkspaceRail from "./components/WorkspaceRail";
+import ColorSettings from "./colors/ColorSettings";
 import ProjectGitButton, {
   type ProjectGitEditorState,
 } from "./git/ProjectGitButton";
@@ -73,6 +75,7 @@ export default function App() {
   const [explorerDrawer, setExplorerDrawer] = useState(false);
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [queryRevision, setQueryRevision] = useState(0);
   const [sourceToOpen, setSourceToOpen] = useState<SqlSourceRequest | null>(
     null,
@@ -333,6 +336,7 @@ export default function App() {
             }}
             onConnections={() => setConnectionsOpen(true)}
             onHelp={() => setHelpOpen(true)}
+            onSettings={() => setSettingsOpen(true)}
           />
           {explorer && (!narrow || explorerDrawer) && (
             <ExplorerPanel
@@ -528,6 +532,7 @@ export default function App() {
           }}
           onNotify={notify}
         />
+        <ColorSettings open={settingsOpen} onOpenChange={setSettingsOpen} />
         <Modal
           open={helpOpen}
           onOpenChange={setHelpOpen}
@@ -569,7 +574,16 @@ export default function App() {
           items={toasts}
           onDismiss={(id) => setToasts((s) => s.filter((t) => t.id !== id))}
         />
-        <AgentAssistant />
+        <AgentAssistant
+          onOpenRun={async (id) => {
+            const run = await api<QueryRun>(
+              `/api/query-runs/${encodeURIComponent(id)}`,
+            );
+            setExplorerDrawer(false);
+            setSourceToOpen({ source: run.source, run });
+            showSql();
+          }}
+        />
       </div>
     </ProjectSyncProvider>
   );

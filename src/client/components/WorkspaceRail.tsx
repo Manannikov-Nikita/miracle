@@ -6,6 +6,7 @@ import {
   Code,
   Database,
   FolderSimple,
+  GearSix,
   PlugsConnected,
   Presentation,
   Question,
@@ -26,6 +27,7 @@ export default function WorkspaceRail({
   onResetLayout,
   onConnections,
   onHelp,
+  onSettings,
 }: {
   mode: PaneMode;
   explorer: ExplorerKind | null;
@@ -37,6 +39,7 @@ export default function WorkspaceRail({
   onResetLayout: () => void;
   onConnections: () => void;
   onHelp: () => void;
+  onSettings: () => void;
 }) {
   return (
     <nav className="activity-bar" aria-label="Рабочая область">
@@ -169,6 +172,9 @@ export default function WorkspaceRail({
           onClick={onConnections}
         >
           <PlugsConnected size={20} />
+        </IconButton>
+        <IconButton label="Настройки" onClick={onSettings}>
+          <GearSix size={20} />
         </IconButton>
         <IconButton label="Сочетания клавиш" onClick={onHelp}>
           <Question size={20} />

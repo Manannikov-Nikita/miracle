@@ -41,6 +41,18 @@ export function registerAgentRoutes(
     need(req);
     return manager.cancel(id(req));
   });
+  app.post(
+    "/api/agent-turns/:id/steer",
+    { bodyLimit: 29 * 1024 * 1024 },
+    async (req) => {
+      need(req);
+      return manager.steer(id(req), req.body);
+    },
+  );
+  app.post("/api/agent-questions/:id", async (req) => {
+    need(req);
+    return manager.answerQuestion(id(req), req.body);
+  });
   app.post("/api/agent-approvals/:id", async (req) => {
     need(req);
     return manager.respond(

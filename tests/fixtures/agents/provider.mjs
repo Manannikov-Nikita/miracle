@@ -44,6 +44,7 @@ if (process.env.FIXTURE_SCENARIO === "config-exit-error") {
   await write(process.stderr, configError());
   process.exit(1);
 }
+let initialUserId;
 let chain = Promise.resolve();
 const emit = (value) => {
   // All v2 turn/item notifications carry their owning thread and turn.
@@ -91,6 +92,118 @@ rl.on("line", async (line) => {
   trace({ wire: m });
   if (mode === "claude") {
     if (m.type !== "user" || m.message?.role !== "user") process.exit(10);
+    if (process.env.FIXTURE_SCENARIO.startsWith("steer")) {
+      if (!initialUserId) {
+        initialUserId = m.uuid || "initial";
+        await emit({
+          type: "system",
+          subtype: "init",
+          session_id: "claude-session",
+          claude_code_version: "2.1.300",
+        });
+        await emit({
+          type: "assistant",
+          ...(process.env.FIXTURE_SCENARIO !== "steer-old"
+            ? { user_message_uuid: initialUserId }
+            : {}),
+          message: {
+            id: "ready",
+            content: [
+              {
+                type: "tool_use",
+                id: "ready",
+                name: "parent-ready",
+                input: {},
+              },
+            ],
+          },
+        });
+      } else {
+        if (process.env.FIXTURE_SCENARIO === "steer-cancel") return;
+        await emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          user_message_uuid: initialUserId,
+          queued_turn_count: 1,
+        });
+        await emit({
+          type: "assistant",
+          parent_tool_use_id: "child-tool",
+          agent_id: "child",
+          session_id: "child-native-session",
+          message: {
+            id: "child-message",
+            content: [{ type: "text", text: "Child private reply" }],
+          },
+        });
+        await emit({
+          type: "assistant",
+          user_message_uuids: [initialUserId, m.uuid],
+          message: {
+            id: "steer-message",
+            content: [{ type: "text", text: "Steer received" }],
+          },
+        });
+        await emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          user_message_uuids: [initialUserId, m.uuid],
+          queued_turn_count: 0,
+        });
+      }
+      return;
+    }
+    if (process.env.FIXTURE_SCENARIO.startsWith("subagent")) {
+      await emit({
+        type: "system",
+        subtype: "init",
+        session_id: "claude-session",
+      });
+      await emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "child",
+        task_type: "local_agent",
+        tool_use_id: "spawn-tool",
+        description: "Analyze data",
+      });
+      await emit({
+        type: "assistant",
+        parent_tool_use_id: "child-tool",
+        agent_id: "child",
+        message: { content: [{ type: "text", text: "Child private reply" }] },
+      });
+      if (process.env.FIXTURE_SCENARIO === "subagent-foreground")
+        await emit({
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "spawn-tool",
+                content: "Analysis done",
+              },
+            ],
+          },
+          tool_use_result: { status: "completed", content: [] },
+        });
+      else
+        await emit({
+          type: "system",
+          subtype: "task_notification",
+          task_id: "child",
+          status: "completed",
+          summary: "Analysis done",
+        });
+      await emit({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Parent complete" }] },
+      });
+      await emit({ type: "result", subtype: "success", is_error: false });
+      return;
+    }
     if (process.env.FIXTURE_SCENARIO === "missing") {
       await emit({
         type: "result",
@@ -344,6 +457,148 @@ rl.on("line", async (line) => {
       id: m.id,
       result: { turn: { id: "turn-1", status: "inProgress" } },
     });
+    if (process.env.FIXTURE_SCENARIO.startsWith("question")) {
+      await emit({
+        id: "native-question",
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "codex-session",
+          turnId: "turn-1",
+          itemId: "q",
+          questions: [
+            {
+              id: "output",
+              header: "Output",
+              question: "Choose output",
+              isOther: true,
+              isSecret: false,
+              options: [
+                { label: "Table", description: "Rows" },
+                { label: "Chart", description: "Bars" },
+              ],
+            },
+          ],
+        },
+      });
+      if (process.env.FIXTURE_SCENARIO === "question-ended") {
+        process.on("SIGTERM", () => {});
+        await emit({
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed" } },
+        });
+      }
+      return;
+    }
+    if (process.env.FIXTURE_SCENARIO.startsWith("steer")) {
+      await emit({
+        method: "item/started",
+        params: {
+          item: {
+            type: "commandExecution",
+            id: "ready",
+            command: "parent-ready",
+          },
+        },
+      });
+      return;
+    }
+    if (process.env.FIXTURE_SCENARIO === "subagent-activity") {
+      const activity = async (kind, phase, agentThreadId = "child") =>
+        emit({
+          method: `item/${phase}`,
+          params: {
+            item: {
+              type: "subAgentActivity",
+              id: `activity-${kind}-${phase}-${agentThreadId}`,
+              kind,
+              agentThreadId,
+              agentPath: `/root/${agentThreadId}`,
+              model: "gpt-6-astra",
+              reasoningEffort: "xhigh",
+            },
+          },
+        });
+      await activity("started", "started");
+      // Completion of the reporting item is not completion of the child.
+      await activity("started", "completed");
+      await activity("interacted", "completed");
+      await activity("started", "completed", "codex-session");
+      await emit({
+        method: "item/completed",
+        params: {
+          item: { type: "subAgentActivity", id: "malformed", kind: "started" },
+        },
+      });
+      await emit({
+        method: "item/completed",
+        params: {
+          threadId: "child",
+          turnId: "child-turn",
+          item: {
+            id: "child-message",
+            type: "agentMessage",
+            text: "Private child reply",
+          },
+        },
+      });
+      await activity("interrupted", "completed", "cancelled-child");
+      await activity("completed", "started");
+      await activity("completed", "completed");
+      await emit({
+        method: "item/completed",
+        params: {
+          item: {
+            id: "root-message",
+            type: "agentMessage",
+            text: "Parent complete",
+          },
+        },
+      });
+      await emit({
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      return;
+    }
+    if (process.env.FIXTURE_SCENARIO === "subagent") {
+      await emit({
+        method: "item/completed",
+        params: {
+          item: {
+            id: "spawn",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "codex-session",
+            receiverThreadIds: ["child"],
+            prompt: "Analyze data",
+            agentsStates: { child: { status: "running", message: null } },
+          },
+        },
+      });
+      await emit({
+        method: "turn/completed",
+        params: {
+          threadId: "child",
+          turn: { id: "child-turn", status: "completed" },
+        },
+      });
+      await emit({
+        method: "item/completed",
+        params: {
+          item: {
+            id: "root-message",
+            type: "agentMessage",
+            text: "Parent complete",
+          },
+        },
+      });
+      await emit({
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      return;
+    }
     if (["hang", "stubborn"].includes(process.env.FIXTURE_SCENARIO)) {
       hang();
       return;
@@ -388,6 +643,28 @@ rl.on("line", async (line) => {
       method: "item/commandExecution/requestApproval",
       params: { command: "pwd", reason: "Please approve" },
     });
+    return;
+  }
+  if (m.id === "native-question" && m.result) {
+    await emit({
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    });
+    return;
+  }
+  if (m.method === "turn/steer") {
+    if (process.env.FIXTURE_SCENARIO === "steer-cancel") return;
+    if (process.env.FIXTURE_SCENARIO === "steer-completion-first")
+      await emit({
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+    await emit({ id: m.id, result: { turnId: "turn-1" } });
+    if (process.env.FIXTURE_SCENARIO !== "steer-completion-first")
+      await emit({
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
     return;
   }
   if (m.id === "child-approval" && m.result) {

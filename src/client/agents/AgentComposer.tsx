@@ -20,6 +20,7 @@ import AgentFileMentions, { AgentContextChips } from "./AgentFileMentions";
 import type { DraftAgentImage } from "./useAgentImageDrafts";
 import { useAgentPortalContainer } from "./useAgentPortalContainer";
 import type { OpenEditorTab } from "./ProjectSync";
+import { waitingForAnswer } from "./AgentQuestion";
 
 export interface ComposerProps {
   state: AgentChatState;
@@ -67,11 +68,16 @@ export default function AgentComposer({
   const imageInput = useRef<HTMLInputElement>(null);
   const profileId = state.conversation?.chat.profileId || selectedProfile;
   const profile = state.profiles.find((p) => p.id === profileId);
+  const steering = Boolean(
+    state.active && state.active.chatId === state.selected,
+  );
+  const hasContent = Boolean(draft.trim() || images.length);
+  const stopping = steering && !hasContent;
   const canSend =
     !state.busy &&
-    !state.active &&
+    (!state.active || steering) &&
     !imagesLoading &&
-    Boolean(draft.trim() || images.length) &&
+    hasContent &&
     Boolean(profile?.trusted);
   const submit = () => {
     if (canSend) void onSend();
@@ -120,7 +126,12 @@ export default function AgentComposer({
             {state.active.chatId !== state.selected
               ? "Задача выполняется в другом чате"
               : state.active.status === "waiting"
-                ? "Нужно ваше разрешение"
+                ? waitingForAnswer(
+                    state.conversation?.messages || [],
+                    state.active,
+                  )
+                  ? "Нужен ваш ответ"
+                  : "Нужно ваше разрешение"
                 : "Агент работает"}
             {state.active.chatId !== state.selected && (
               <button
@@ -152,7 +163,7 @@ export default function AgentComposer({
                   type="button"
                   title="Убрать изображение"
                   aria-label={`Убрать изображение ${image.name}`}
-                  disabled={state.busy}
+                  disabled={state.busy && !steering}
                   onClick={() => onImageRemove?.(image.localId)}
                 >
                   <X size={12} />
@@ -342,28 +353,34 @@ export default function AgentComposer({
                 </Menu.Content>
               </Menu.Portal>
             </Menu.Root>
-            {state.active ? (
-              <button
-                type="button"
-                className="agent-send agent-composer-control"
-                aria-label="Остановить"
-                title="Остановить задачу"
-                disabled={state.busy}
-                onClick={() => void state.stop().catch(() => {})}
-              >
+            <button
+              type={stopping ? "button" : "submit"}
+              className={`agent-send agent-composer-control${stopping ? " agent-stop" : ""}`}
+              aria-label={
+                stopping
+                  ? "Остановить"
+                  : steering
+                    ? "Направить агента"
+                    : "Отправить сообщение"
+              }
+              title={
+                stopping
+                  ? "Остановить задачу"
+                  : steering
+                    ? "Уточнить задачу без остановки · ⌘ / Ctrl + Enter"
+                    : "Отправить · ⌘ / Ctrl + Enter"
+              }
+              disabled={stopping ? state.interactionBusy : !canSend}
+              onClick={
+                stopping ? () => void state.stop().catch(() => {}) : undefined
+              }
+            >
+              {stopping ? (
                 <Stop size={16} weight="fill" />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                className="agent-send agent-composer-control"
-                aria-label="Отправить сообщение"
-                title="Отправить · ⌘ / Ctrl + Enter"
-                disabled={!canSend}
-              >
+              ) : (
                 <ArrowUp size={18} />
-              </button>
-            )}
+              )}
+            </button>
           </div>
         </div>
       </form>

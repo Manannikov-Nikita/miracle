@@ -31,9 +31,12 @@ export function useAgentChat() {
     [open, setOpen] = useState(false);
   const [newAutoApprove, setNewAutoApprove] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
+  const [interactionBusy, setInteractionBusy] = useState(false);
   const approvalChanging = useRef(false);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const openRef = useRef(open);
   openRef.current = open;
   const mounted = useRef(true),
@@ -48,6 +51,7 @@ export function useAgentChat() {
       string,
       {
         chatId: string;
+        turnId?: string;
         context: import("../../shared/agents").AgentTargetContext;
       }
     >(),
@@ -173,8 +177,9 @@ export function useAgentChat() {
       unsubscribe();
     };
   }, [project, refresh, loadConversation]);
-  const action = async (fn: () => Promise<void>) => {
-    setBusy(true);
+  const action = async (fn: () => Promise<void>, interaction = false) => {
+    const setPending = interaction ? setInteractionBusy : setBusy;
+    setPending(true);
     setError("");
     try {
       await fn();
@@ -182,7 +187,7 @@ export function useAgentChat() {
       setError((e as Error).message);
       throw e;
     } finally {
-      setBusy(false);
+      setPending(false);
     }
   };
   const create = async (profileId: string) => {
@@ -206,6 +211,12 @@ export function useAgentChat() {
     action(async () => {
       const selectedChat = selectedRef.current;
       const retry = sendRequests.current.get(clientRequestId);
+      // Capture the destination before flushing editor/board writes. A turn
+      // ending while prepare() awaits must not turn this input into a new task.
+      const activeTurn = activeRef.current;
+      if (!retry && activeTurn && activeTurn.chatId !== selectedChat)
+        throw new Error("Откройте работающий чат, чтобы направить агента");
+      const turnId = retry ? retry.turnId : activeTurn?.id;
       const context =
         retry?.context ||
         (await project?.prepare(references)) ||
@@ -216,12 +227,21 @@ export function useAgentChat() {
         chatId = chat.id;
         onCreated?.(chat.id);
       }
-      sendRequests.current.set(clientRequestId, { chatId, context });
-      const turn = await api<AgentTurn>(`/api/chats/${chatId}/messages`, {
-        method: "POST",
-        body: json({ content, context, clientRequestId, images }),
-      });
-      if (!terminalTurns.current.has(turn.id)) setActive(turn);
+      sendRequests.current.set(clientRequestId, { chatId, turnId, context });
+      const turn = await api<AgentTurn>(
+        turnId
+          ? `/api/agent-turns/${turnId}/steer`
+          : `/api/chats/${chatId}/messages`,
+        {
+          method: "POST",
+          body: json({ content, context, clientRequestId, images }),
+        },
+      );
+      if (
+        ["running", "waiting"].includes(turn.status) &&
+        !terminalTurns.current.has(turn.id)
+      )
+        setActive(turn);
       sendRequests.current.delete(clientRequestId);
       await loadConversation(chatId).catch((e) => setError(e.message));
     });
@@ -234,6 +254,7 @@ export function useAgentChat() {
         )
       : newAutoApprove,
     approvalBusy,
+    interactionBusy,
     setAutoApprove: async (enabled: boolean) => {
       if (approvalChanging.current) return;
       const id = selectedRef.current;
@@ -283,12 +304,32 @@ export function useAgentChat() {
     action,
     create,
     send,
+    answerQuestion: (id: string, answers: Record<string, string[]>) =>
+      action(async () => {
+        const message = await api<AgentMessage>(`/api/agent-questions/${id}`, {
+          method: "POST",
+          body: json({ answers }),
+        });
+        messageEpoch.current++;
+        if (selectedRef.current === message.chatId)
+          setConversation((current) =>
+            current?.chat.id === message.chatId
+              ? {
+                  ...current,
+                  messages: current.messages.map((item) =>
+                    item.id === message.id ? message : item,
+                  ),
+                }
+              : current,
+          );
+        await refresh();
+      }, true),
     stop: () =>
       action(async () => {
         if (!active) return;
         await api(`/api/agent-turns/${active.id}/cancel`, { method: "POST" });
         await refresh();
-      }),
+      }, true),
     approve: (id: string, decision: "allow" | "deny") =>
       action(async () => {
         await api(`/api/agent-approvals/${id}`, {
@@ -298,7 +339,7 @@ export function useAgentChat() {
         setResolvedApprovals((items) => new Map(items).set(id, decision));
         await loadConversation(selectedRef.current);
         await refresh();
-      }),
+      }, true),
   };
 }
 export type AgentChatState = ReturnType<typeof useAgentChat>;
