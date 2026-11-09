@@ -49,6 +49,7 @@ export const chartSpecSchema = z.object({
   showYAxis: z.boolean().optional(),
   showGrid: z.boolean().optional(),
   showLabels: z.boolean().optional(),
+  showTotals: z.boolean().optional(),
   labelPosition: z.enum(["auto", "outside", "inside"]).optional(),
   palette: z.enum(["default", "cool", "warm", "vivid"]).optional(),
   seriesColors: z

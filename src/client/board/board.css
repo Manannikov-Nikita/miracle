@@ -254,7 +254,38 @@
   border: 1px solid var(--board-border);
   background: var(--board-raised);
 }
+.board-header-empty .board-heading {
+  display: inline;
+}
+.board-collection-empty > svg {
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+.board-collection-empty h2 {
+  margin: 0;
+  color: var(--board-text);
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+.board-collection-empty p {
+  max-width: 330px;
+  margin: 0;
+}
+.board-workspace button.board-empty-create {
+  min-height: 34px;
+  margin-top: 8px;
+  padding: 7px 12px;
+  background: var(--board-accent);
+  border-color: var(--board-accent);
+  color: var(--accent-text, var(--board-bg));
+  font-weight: 500;
+}
+.board-workspace button.board-empty-create:hover {
+  background: var(--accent-hover, var(--board-accent));
+}
 .board-artifact {
+  --board-artifact-fill: var(--board-surface);
   width: 100%;
   height: 100%;
   border: 1px solid var(--board-border);
@@ -267,6 +298,67 @@
 }
 .board-artifact-selected {
   border-color: var(--board-accent);
+}
+@property --agent-border-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+/* Paint the gradient inside the existing border, including its rounded corners. */
+.board-artifact.agent-work-active:not(.board-artifact-shape):not(
+    .board-artifact-text
+  ):not(.presentation-artifact) {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--board-artifact-fill), var(--board-artifact-fill))
+      padding-box,
+    conic-gradient(
+        from var(--agent-border-angle),
+        color-mix(in srgb, var(--board-accent) 25%, var(--board-border)) 0% 35%,
+        var(--board-accent) 70%,
+        color-mix(in srgb, var(--board-accent) 65%, white) 85%,
+        color-mix(in srgb, var(--board-accent) 25%, var(--board-border)) 100%
+      )
+      border-box;
+  animation: agent-board-border 3.6s linear infinite;
+}
+.board-artifact-shape.agent-work-active
+  .board-shape-outline
+  > :is(rect, ellipse, polygon) {
+  stroke: var(--agent-shape-stroke);
+}
+.board-shape-work-gradient {
+  transform-origin: 50px 50px;
+}
+.board-artifact-shape.agent-work-active .board-shape-work-gradient {
+  animation: agent-shape-gradient 3.6s linear infinite;
+}
+.board-shape-work-gradient stop {
+  stop-color: color-mix(in srgb, var(--board-accent) 25%, var(--board-border));
+}
+.board-shape-work-gradient stop:nth-child(3) {
+  stop-color: var(--board-accent);
+}
+.board-shape-work-gradient stop:last-child {
+  stop-color: color-mix(in srgb, var(--board-accent) 65%, white);
+}
+@keyframes agent-board-border {
+  to {
+    --agent-border-angle: 360deg;
+  }
+}
+@keyframes agent-shape-gradient {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .board-artifact.agent-work-active:not(.board-artifact-shape):not(
+      .board-artifact-text
+    ):not(.presentation-artifact),
+  .board-artifact-shape.agent-work-active .board-shape-work-gradient {
+    animation: none;
+  }
 }
 .board-node-header {
   height: 35px;
@@ -323,6 +415,7 @@
   border-radius: 0 0 6px 6px;
 }
 .board-artifact-note {
+  --board-artifact-fill: #f4df88;
   background: #f4df88;
   border-color: #d4b951;
   border-radius: 3px;
@@ -396,6 +489,7 @@
   opacity: 1;
 }
 .board-artifact-markdown {
+  --board-artifact-fill: var(--board-bg);
   background: var(--board-bg);
   border-color: transparent;
   border-radius: 4px;

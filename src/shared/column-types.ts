@@ -5,3 +5,14 @@ const numericType =
 export function isNumericColumn(column: Column) {
   return numericType.test(column.type);
 }
+
+const dateType =
+  /^(?:(?:Nullable|LowCardinality)\(\s*)*(?:Date(?:32)?|DateTime(?:64)?|TIMESTAMP(?:TZ)?)(?=\s*(?:[(),]|with\b|without\b|$))/i;
+
+/** A display format does not change the semantic type of a column. */
+export function isDateColumn(
+  column: Column,
+  dataType?: "auto" | "date",
+): boolean {
+  return dataType === "date" || dateType.test(column.type.trim());
+}

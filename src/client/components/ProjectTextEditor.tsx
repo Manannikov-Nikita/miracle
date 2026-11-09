@@ -15,6 +15,10 @@ import {
 } from "../agents/useAgentWork";
 import { useProjectSync } from "../agents/ProjectSync";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
+import {
+  resolveSearchMatch,
+  type TextSearchRevealRequest,
+} from "../../shared/workspace-search";
 
 export default function ProjectTextEditor({
   workspaceId,
@@ -22,12 +26,16 @@ export default function ProjectTextEditor({
   saving,
   onChange,
   onSave,
+  revealRequest,
+  onRevealComplete,
 }: {
   workspaceId: string;
   file: ProjectFileDraft;
   saving: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
+  revealRequest?: TextSearchRevealRequest;
+  onRevealComplete?: (requestId: string, found: boolean) => void;
 }) {
   const project = useProjectSync();
   const work = useAgentWork({ kind: "file", id: file.path });
@@ -49,6 +57,49 @@ export default function ProjectTextEditor({
   const [cursor, setCursor] = useState({ lineNumber: 1, column: 1 });
   const [editor, setEditor] =
     useState<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const revealedRequest = useRef<string | null>(null);
+  useEffect(() => {
+    const model = editor?.getModel();
+    if (
+      isMarkdown ||
+      !editor ||
+      !model ||
+      !revealRequest ||
+      revealedRequest.current === revealRequest.requestId ||
+      model.uri.toString() !==
+        monaco.Uri.parse(
+          `miracle-file://${workspaceId}/${encodeURIComponent(file.path)}`,
+        ).toString()
+    )
+      return;
+    revealedRequest.current = revealRequest.requestId;
+    const match = revealRequest.match;
+    const range = match
+      ? resolveSearchMatch(model.getValue(), match)
+      : undefined;
+    if (range) {
+      const start = model.getPositionAt(range.start),
+        end = model.getPositionAt(range.end);
+      const selection = new monaco.Range(
+        start.lineNumber,
+        start.column,
+        end.lineNumber,
+        end.column,
+      );
+      editor.setSelection(selection);
+      editor.revealRangeInCenter(selection);
+    }
+    editor.focus();
+    onRevealComplete?.(revealRequest.requestId, !match || Boolean(range));
+  }, [
+    editor,
+    isMarkdown,
+    revealRequest,
+    file.path,
+    file.content,
+    workspaceId,
+    onRevealComplete,
+  ]);
   useEffect(() => {
     if (!editor) return;
     const updateCursor = () =>
@@ -113,6 +164,8 @@ export default function ProjectTextEditor({
               onSave={saveFile}
               onCursorChange={setCursor}
               maxLength={MAX_PROJECT_FILE_BYTES}
+              revealRequest={revealRequest}
+              onRevealComplete={onRevealComplete}
             />
           </div>
         ) : (

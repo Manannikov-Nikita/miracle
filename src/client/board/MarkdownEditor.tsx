@@ -35,6 +35,10 @@ import {
   type PreviewPart,
 } from "./markdown-live-preview";
 import "./markdown-editor.css";
+import {
+  resolveSearchMatch,
+  type TextSearchRevealRequest,
+} from "../../shared/workspace-search";
 
 const focusPreview = StateEffect.define<boolean>();
 const externalUpdate = Annotation.define<boolean>();
@@ -322,6 +326,8 @@ export type MarkdownEditorProps = {
   onSave?: () => void;
   onCursorChange?: (position: { lineNumber: number; column: number }) => void;
   maxLength?: number;
+  revealRequest?: TextSearchRevealRequest;
+  onRevealComplete?: (requestId: string, found: boolean) => void;
 };
 
 export default function MarkdownEditor({
@@ -332,9 +338,12 @@ export default function MarkdownEditor({
   onSave,
   onCursorChange,
   maxLength = MAX_MARKDOWN_LENGTH,
+  revealRequest,
+  onRevealComplete,
 }: MarkdownEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const revealedRequest = useRef<string | null>(null);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   const onCursorChangeRef = useRef(onCursorChange);
@@ -466,6 +475,29 @@ export default function MarkdownEditor({
         ],
       });
   }, [value, readOnly]);
+
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (
+      !view ||
+      !revealRequest ||
+      revealedRequest.current === revealRequest.requestId
+    )
+      return;
+    revealedRequest.current = revealRequest.requestId;
+    const match = revealRequest.match;
+    const range = match
+      ? resolveSearchMatch(view.state.doc.toString(), match)
+      : undefined;
+    if (range) {
+      view.dispatch({
+        selection: { anchor: range.start, head: range.end },
+        effects: EditorView.scrollIntoView(range.start, { y: "center" }),
+      });
+    }
+    view.focus();
+    onRevealComplete?.(revealRequest.requestId, !match || Boolean(range));
+  }, [revealRequest, value, onRevealComplete]);
 
   useLayoutEffect(() => {
     viewRef.current?.dispatch({

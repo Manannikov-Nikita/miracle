@@ -338,13 +338,20 @@ it("migrates existing chats with manual approvals and preserves the preference o
     await s.request("POST", "/api/chats", { profileId: profile.id })
   ).json();
   const db = s.app.miracle.db;
-  if (
+  const columns = new Set(
     db
       .query("PRAGMA table_info(agent_chats)")
-      .rows.some((column: any) => column.name === "auto_approve")
-  )
-    db.sqlite.exec("ALTER TABLE agent_chats DROP COLUMN auto_approve");
-  // Recreate the version-four shape, including removal of later SQL ownership storage.
+      .rows.map((column: any) => column.name),
+  );
+  for (const name of [
+    "auto_approve",
+    "model_settings_json",
+    "native_session_reset",
+  ])
+    if (columns.has(name))
+      db.sqlite.exec(`ALTER TABLE agent_chats DROP COLUMN ${name}`);
+  // Recreate the actual version-four shape, including removal of later SQL
+  // ownership storage and per-chat model settings.
   db.sqlite.exec(
     "DROP TABLE IF EXISTS agent_query_runs; DROP TABLE IF EXISTS agent_images; PRAGMA user_version=4",
   );

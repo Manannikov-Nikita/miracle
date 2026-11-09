@@ -40,12 +40,29 @@ export interface AgentProfile {
   trusted: boolean;
   createdAt: string;
 }
+export interface AgentModelSettings {
+  model?: string;
+  reasoningEffort?: string;
+}
+export interface AgentModelInfo {
+  id: string;
+  name: string;
+  description?: string;
+  reasoningEfforts: { id: string; name?: string; description?: string }[];
+  defaultReasoningEffort?: string;
+}
+export interface AgentModelCatalog {
+  models: AgentModelInfo[];
+  defaultModel?: string;
+  defaultReasoningEffort?: string;
+}
 export interface AgentChat {
   id: string;
   title: string;
   profileId: string;
   provider: AgentProvider;
   autoApprove?: boolean;
+  modelSettings?: AgentModelSettings;
   createdAt: string;
   updatedAt: string;
 }

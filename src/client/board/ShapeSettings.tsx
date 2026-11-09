@@ -1,9 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import {
-  SHAPE_OPTIONS,
-  resolveShape,
-  type ShapeSpec,
-} from "../../shared/shapes";
+import { resolveShape, type ShapeSpec } from "../../shared/shapes";
 import { Select } from "../components/Select";
 import type { TextStyleSpec } from "../../shared/text-style";
 import ColorPicker from "../colors/ColorPicker";
@@ -314,6 +310,7 @@ export default function ShapeSettings({
   onChange: (patch: { shape?: ShapeSpec; text?: string }) => void;
 }) {
   const value = resolveShape(shape);
+  const isLine = value.type === "line";
   const update = (patch: Partial<ShapeSpec>) => {
     if (!disabled) onChange({ shape: { ...shape, ...patch } });
   };
@@ -326,42 +323,57 @@ export default function ShapeSettings({
       onCut={(event) => event.stopPropagation()}
       onPaste={(event) => event.stopPropagation()}
     >
-      <label>
-        Вид фигуры
-        <Select
-          aria-label="Вид фигуры"
-          value={value.type}
-          disabled={disabled}
-          options={SHAPE_OPTIONS.map(({ type, label }) => ({
-            value: type,
-            label,
-          }))}
-          onValueChange={(type) => update({ type: type as ShapeSpec["type"] })}
-        />
-      </label>
-      <label>
-        Текст фигуры
-        <textarea
-          aria-label="Текст фигуры"
-          className="shape-text-editor"
-          maxLength={200000}
-          value={text}
-          readOnly={disabled}
-          placeholder="Введите текст…"
-          onChange={(event) => {
-            if (!disabled) onChange({ text: event.target.value });
-          }}
-        />
-      </label>
+      {isLine && (
+        <fieldset className="shape-settings-section">
+          <legend>Линия</legend>
+          <div className="shape-settings-grid">
+            {(["lineStart", "lineEnd"] as const).map((end) => (
+              <label key={end}>
+                {end === "lineStart" ? "Начало линии" : "Конец линии"}
+                <Select
+                  aria-label={
+                    end === "lineStart" ? "Начало линии" : "Конец линии"
+                  }
+                  value={value[end]}
+                  disabled={disabled}
+                  options={[
+                    { value: "none", label: "Без стрелки" },
+                    { value: "arrow", label: "Стрелка" },
+                  ]}
+                  onValueChange={(ending) => update({ [end]: ending })}
+                />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      )}
+      {!isLine && (
+        <label>
+          Текст фигуры
+          <textarea
+            aria-label="Текст фигуры"
+            className="shape-text-editor"
+            maxLength={200000}
+            value={text}
+            readOnly={disabled}
+            placeholder="Введите текст…"
+            onChange={(event) => {
+              if (!disabled) onChange({ text: event.target.value });
+            }}
+          />
+        </label>
+      )}
       <fieldset className="shape-settings-section">
         <legend>Оформление фигуры</legend>
-        <ColorField
-          label="Заливка"
-          value={value.fill}
-          disabled={disabled}
-          allowTransparent
-          onChange={(fill) => update({ fill })}
-        />
+        {!isLine && (
+          <ColorField
+            label="Заливка"
+            value={value.fill}
+            disabled={disabled}
+            allowTransparent
+            onChange={(fill) => update({ fill })}
+          />
+        )}
         <ColorField
           label="Обводка"
           value={value.stroke}
@@ -416,7 +428,9 @@ export default function ShapeSettings({
           )}
         </div>
       </fieldset>
-      <TextSettings value={value} disabled={disabled} update={update} />
+      {!isLine && (
+        <TextSettings value={value} disabled={disabled} update={update} />
+      )}
     </div>
   );
 }

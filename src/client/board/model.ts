@@ -1,4 +1,6 @@
-import { isNumericColumn } from "../../shared/column-types";
+import { isDateColumn, isNumericColumn } from "../../shared/column-types";
+import { compareDateValues } from "../../shared/date-values";
+import type { TableColumnOptions } from "../../shared/tableTypes";
 export { isNumericColumn } from "../../shared/column-types";
 import type {
   BoardDocument,
@@ -141,7 +143,7 @@ export type ChartCellFormatter = (
 ) => { text: string; color?: string };
 
 export function chartSeries(
-  columns: Column[],
+  columns: (Column & { options?: Pick<TableColumnOptions, "dataType"> })[],
   rows: Cell[][],
   spec: ChartSpec,
   formatCell?: ChartCellFormatter,
@@ -163,6 +165,20 @@ export function chartSeries(
     : undefined;
   const stacked =
     spec.kind !== "scatter" && spec.stacked && Boolean(spec.series);
+  const dateCategory =
+    spec.kind !== "scatter" &&
+    isDateColumn(columns[xi], columns[xi].options?.dataType);
+  const orderedDates = dateCategory && spec.sort && spec.sort !== "none";
+  const compareCategories = (
+    a: string | number | null,
+    b: string | number | null,
+  ) =>
+    dateCategory
+      ? compareDateValues(a, b, spec.sort === "desc" ? "desc" : "asc")
+      : (typeof a === "number" && typeof b === "number"
+          ? a - b
+          : String(a).localeCompare(String(b), undefined, { numeric: true })) *
+        (spec.sort === "desc" ? -1 : 1);
   const stackedCategories = new Map<string, Set<string | number | null>>();
   const xCategories = new Set<string>();
   for (const row of rows) {
@@ -179,7 +195,7 @@ export function chartSeries(
       spec.kind === "scatter" ? "metric" : "category",
     ).text;
     if (categoryLabels) categoryLabels[String(x)] = displayX!;
-    if (stacked) xCategories.add(String(x));
+    if (stacked || orderedDates) xCategories.add(String(x));
     for (const yi of ys) {
       const rawGroup = si < 0 ? undefined : row[si];
       if (
@@ -234,35 +250,27 @@ export function chartSeries(
           point,
           display: series.displayData?.[index],
         }))
-        .sort(
-          ({ point: a }, { point: b }) =>
-            (typeof a[0] === "number" && typeof b[0] === "number"
-              ? a[0] - b[0]
-              : String(a[0]).localeCompare(String(b[0]), undefined, {
-                  numeric: true,
-                })) * (spec.sort === "desc" ? -1 : 1),
-        );
+        .sort(({ point: a }, { point: b }) => compareCategories(a[0], b[0]));
       series.data = ordered.map(({ point }) => point);
       if (series.displayData)
         series.displayData = ordered.map(({ display }) => display!);
     }
-  if (stacked) {
+  if (stacked || orderedDates) {
     // A sparse first series may not contain the globally first category.
     // Keep one shared union in source order, or sort the whole union together.
     const categories = [...xCategories];
-    if (spec.kind !== "bar" && result.length * categories.length > 5000)
+    if (
+      stacked &&
+      spec.kind !== "bar" &&
+      result.length * categories.length > 5000
+    )
       throw new Error(
         "График ограничен 5 000 точками с учётом пропусков. Агрегируйте данные в SQL.",
       );
-    if (spec.sort && spec.sort !== "none")
-      categories.sort(
-        (a, b) =>
-          a.localeCompare(b, undefined, { numeric: true }) *
-          (spec.sort === "desc" ? -1 : 1),
-      );
+    if (spec.sort && spec.sort !== "none") categories.sort(compareCategories);
     for (const series of result) {
       series.xCategories = categories;
-      if (spec.kind !== "bar") {
+      if (stacked && spec.kind !== "bar") {
         // Line/area paths must follow the shared axis order. Explicit nulls
         // also prevent a lower band from bridging a missing breakdown value.
         const byCategory = new Map(series.data);

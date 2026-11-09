@@ -1,0 +1,182 @@
+.shape-transform-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.shape-transform-frame {
+  position: absolute;
+  inset: 0;
+  border: var(--board-resize-unit) solid var(--board-accent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.board-artifact .shape-transform-controls .shape-rotation-handle,
+.board-artifact .shape-transform-controls .shape-transform-resize {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--board-accent);
+  pointer-events: auto;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+}
+
+.board-artifact .shape-transform-controls .shape-rotation-handle {
+  top: calc(-26 * var(--board-resize-unit));
+  left: 50%;
+  z-index: 2;
+  width: calc(24 * var(--board-resize-unit));
+  height: calc(24 * var(--board-resize-unit));
+  cursor: grab;
+}
+
+.shape-rotation-handle::before {
+  content: "";
+  position: absolute;
+  top: calc(50% + 5 * var(--board-resize-unit));
+  left: calc(50% - 0.5 * var(--board-resize-unit));
+  width: var(--board-resize-unit);
+  height: calc(21 * var(--board-resize-unit));
+  background: var(--board-accent);
+  pointer-events: none;
+}
+
+.shape-rotation-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  box-sizing: border-box;
+  width: calc(10 * var(--board-resize-unit));
+  height: calc(10 * var(--board-resize-unit));
+  border: var(--board-resize-unit) solid var(--board-accent);
+  border-radius: 50%;
+  background: var(--board-surface);
+  transform: translate(-50%, -50%);
+}
+
+.board-artifact .shape-transform-controls .shape-rotation-handle:active {
+  cursor: grabbing;
+}
+.board-artifact .shape-transform-controls .shape-rotation-handle:hover::after {
+  background: var(--board-accent);
+}
+.board-artifact .shape-transform-controls .shape-rotation-handle:focus-visible {
+  outline: none;
+}
+.board-artifact
+  .shape-transform-controls
+  .shape-rotation-handle:focus-visible::after {
+  outline: calc(2 * var(--board-resize-unit)) solid var(--board-accent);
+  outline-offset: calc(3 * var(--board-resize-unit));
+}
+
+.board-artifact .shape-transform-controls .shape-transform-resize {
+  z-index: 1;
+  width: calc(16 * var(--board-resize-unit));
+  height: calc(16 * var(--board-resize-unit));
+}
+
+.shape-transform-resize::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(5 * var(--board-resize-unit));
+  height: calc(5 * var(--board-resize-unit));
+  border: var(--board-resize-unit) solid var(--board-surface);
+  border-radius: var(--board-resize-unit);
+  background: var(--board-accent);
+  transform: translate(-50%, -50%);
+}
+
+.shape-transform-resize-top-left {
+  top: 0;
+  left: 0;
+}
+.shape-transform-resize-top {
+  top: 0;
+  left: 50%;
+}
+.shape-transform-resize-top-right {
+  top: 0;
+  left: 100%;
+}
+.shape-transform-resize-right {
+  top: 50%;
+  left: 100%;
+}
+.shape-transform-resize-bottom-right {
+  top: 100%;
+  left: 100%;
+}
+.shape-transform-resize-bottom {
+  top: 100%;
+  left: 50%;
+}
+.shape-transform-resize-bottom-left {
+  top: 100%;
+  left: 0;
+}
+.shape-transform-resize-left {
+  top: 50%;
+  left: 0;
+}
+
+/* Board toolbar button rules must not enlarge or paint the invisible targets. */
+.board-artifact .shape-transform-controls .shape-rotation-handle:hover,
+.board-artifact .shape-transform-controls .shape-rotation-handle:active,
+.board-artifact .shape-transform-controls .shape-rotation-handle:focus-visible,
+.board-artifact .shape-transform-controls .shape-transform-resize:hover,
+.board-artifact .shape-transform-controls .shape-transform-resize:active,
+.board-artifact
+  .shape-transform-controls
+  .shape-transform-resize:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+/* Side resizing uses the edge, leaving the connection anchors above it at z=6. */
+.board-artifact .shape-transform-controls .shape-transform-resize-top,
+.board-artifact .shape-transform-controls .shape-transform-resize-bottom {
+  left: 0;
+  z-index: 0;
+  width: 100%;
+  height: calc(12 * var(--board-resize-unit));
+}
+.board-artifact .shape-transform-controls .shape-transform-resize-top {
+  transform: translate(0, calc(-10 * var(--board-resize-unit)));
+}
+.board-artifact .shape-transform-controls .shape-transform-resize-bottom {
+  transform: translate(0, calc(-2 * var(--board-resize-unit)));
+}
+.board-artifact .shape-transform-controls .shape-transform-resize-left,
+.board-artifact .shape-transform-controls .shape-transform-resize-right {
+  top: 0;
+  z-index: 0;
+  width: calc(12 * var(--board-resize-unit));
+  height: 100%;
+}
+.board-artifact .shape-transform-controls .shape-transform-resize-left {
+  transform: translate(calc(-10 * var(--board-resize-unit)), 0);
+}
+.board-artifact .shape-transform-controls .shape-transform-resize-right {
+  transform: translate(calc(-2 * var(--board-resize-unit)), 0);
+}
+.board-artifact .shape-transform-controls .shape-transform-resize-top::after,
+.board-artifact .shape-transform-controls .shape-transform-resize-right::after,
+.board-artifact .shape-transform-controls .shape-transform-resize-bottom::after,
+.board-artifact .shape-transform-controls .shape-transform-resize-left::after {
+  display: none;
+}

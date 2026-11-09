@@ -11,7 +11,10 @@ import {
 } from "./transport.js";
 
 export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
-  const command = buildAgentCommand("claude", options.command);
+  const command = buildAgentCommand("claude", options.command, {
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
+  });
   const mcp = JSON.stringify({
     mcpServers: {
       miracle: {

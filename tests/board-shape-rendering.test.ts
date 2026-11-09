@@ -49,7 +49,12 @@ describe("shape artifact rendering", () => {
 
   async function render(
     shape: ShapeSpec,
-    options: { text?: string; editable?: boolean; presentation?: boolean } = {},
+    options: {
+      text?: string;
+      editable?: boolean;
+      presentation?: boolean;
+      selected?: boolean;
+    } = {},
   ) {
     function Canvas() {
       const [data, update] = useState<BoardNodeData>({
@@ -81,6 +86,15 @@ describe("shape artifact rendering", () => {
             metadata() {},
             resizeStart() {},
             resize() {},
+            shapeTransformStart: () => true,
+            shapeTransform(_id, patch) {
+              if (patch.rotation !== undefined)
+                update((previous) => ({
+                  ...previous,
+                  shape: { ...previous.shape!, rotation: patch.rotation },
+                }));
+            },
+            shapeTransformEnd() {},
             busy: {},
           },
         },
@@ -95,6 +109,7 @@ describe("shape artifact rendering", () => {
               position: { x: 0, y: 0 },
               width: 240,
               height: 160,
+              selected: options.selected ?? false,
               data,
             },
           ],
@@ -193,6 +208,93 @@ describe("shape artifact rendering", () => {
     expect(handle("bottom").style.left).toBe("62%");
     await act(async () => change({ ...current, shape: { type: "rectangle" } }));
     expect(handle("top").style.left).toBe("");
+  });
+
+  it("rotates the complete shape and its local anchors without rotating the flow position", async () => {
+    await render({ type: "triangle", rotation: 90 }, { selected: true });
+    const card = host.querySelector<HTMLElement>(".board-artifact")!;
+    expect(card.style.transform).toBe("rotate(90deg)");
+    expect(
+      host.querySelector<HTMLElement>(".react-flow__node")!.style.transform,
+    ).not.toContain("rotate");
+    const top = host.querySelector<HTMLElement>(
+      '.react-flow__handle[data-handleid="top"]',
+    )!;
+    expect(top.style.left).toBe("50%");
+    expect(top.style.top).toBe("0%");
+    expect(top.classList.contains("react-flow__handle-right")).toBe(true);
+    const left = host.querySelector<HTMLElement>(
+      '.react-flow__handle[data-handleid="left"]',
+    )!;
+    expect(left.style.left).toBe("25%");
+    expect(left.classList.contains("react-flow__handle-top")).toBe(true);
+    expect(host.querySelector(".react-flow__resize-control")).toBeNull();
+    expect(
+      host.querySelector('[aria-label="Повернуть фигуру"]'),
+    ).not.toBeNull();
+    expect(host.querySelectorAll(".shape-transform-resize")).toHaveLength(8);
+    await act(async () => setEditable(false));
+    expect(host.querySelector('[aria-label="Повернуть фигуру"]')).toBeNull();
+    expect(host.querySelector(".shape-transform-frame")).toBeNull();
+  });
+
+  it.each(["chart", "table"] as const)(
+    "does not apply shape rotation to a %s block",
+    async (view) => {
+      await render({ type: "rectangle", rotation: 35 }, { selected: true });
+      await act(async () =>
+        change({
+          title: "Результат",
+          kind: "result",
+          view,
+          shape: { type: "rectangle", rotation: 35 },
+        }),
+      );
+      expect(
+        host.querySelector<HTMLElement>(".board-artifact")!.style.transform,
+      ).toBe("");
+      expect(host.querySelector('[aria-label="Повернуть фигуру"]')).toBeNull();
+      expect(host.querySelector(".react-flow__resize-control")).not.toBeNull();
+    },
+  );
+
+  it.each([false, true])(
+    "renders a standalone arrow without exposed connection controls or a text editor on presentation=%s",
+    async (presentation) => {
+      await render({ type: "line", lineEnd: "arrow" }, { presentation });
+      expect(host.querySelector(".board-shape-line")).not.toBeNull();
+      for (const anchor of host.querySelectorAll<HTMLElement>(
+        ".react-flow__handle",
+      )) {
+        expect(anchor.style.visibility).toBe("hidden");
+        expect(anchor.style.pointerEvents).toBe("none");
+        expect(anchor.classList.contains("connectable")).toBe(false);
+      }
+      expect(host.querySelector(".board-node-header")).toBeNull();
+      expect(host.querySelector(".board-shape-text")).toBeNull();
+      await doubleClick();
+      expect(host.querySelector("textarea")).toBeNull();
+      expect(updates).toEqual([]);
+    },
+  );
+
+  it("keeps measurable legacy anchors after changing an attached shape into a line", async () => {
+    await render({ type: "rectangle" });
+    const original = [
+      ...host.querySelectorAll<HTMLElement>(".react-flow__handle"),
+    ];
+    await act(async () => change({ ...current, shape: { type: "line" } }));
+    const anchors = [
+      ...host.querySelectorAll<HTMLElement>(".react-flow__handle"),
+    ];
+    expect(anchors.map((anchor) => anchor.dataset.handleid)).toEqual(
+      original.map((anchor) => anchor.dataset.handleid),
+    );
+    for (const anchor of anchors) {
+      expect(anchor.style.visibility).toBe("hidden");
+      expect(anchor.style.display).not.toBe("none");
+      expect(anchor.getAttribute("aria-hidden")).toBe("true");
+    }
   });
 
   it("allows dragging before edit, then keeps typing, selection and shortcuts local", async () => {

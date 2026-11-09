@@ -1,5 +1,5 @@
 // Published supported installation -> candidate via the actual miracle update CLI.
-// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PREVIOUS-0.8.1.tar.gz
+// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PREVIOUS-0.9.0.tar.gz
 // Every archive needs its adjacent .sha256 and rendered install.sh. No live user
 // installation or workspace is read, stopped, or modified by this test.
 import assert from "node:assert/strict";
@@ -24,11 +24,11 @@ const [candidateArgument, previousArgument, ...extraArguments] =
   process.argv.slice(2);
 if (!candidateArgument || !previousArgument || extraArguments.length)
   throw new Error(
-    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.8.1.tar.gz",
+    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.9.0.tar.gz",
   );
 const candidate = resolve(candidateArgument);
 const previousArchive = resolve(previousArgument);
-const oldVersion = "0.8.1";
+const oldVersion = "0.9.0";
 const target = `${process.platform}-${process.arch}`;
 const candidateVersion = new RegExp(
   `^miracle-(\\d+\\.\\d+\\.\\d+)-${target}\\.tar\\.gz$`,
@@ -291,9 +291,9 @@ try {
       };
       return browser.body;
     }
-    async function api(path, payload) {
+    async function api(path, payload, method) {
       const response = await fetch(`http://127.0.0.1:${browser.port}${path}`, {
-        method: payload === undefined ? "GET" : "POST",
+        method: method ?? (payload === undefined ? "GET" : "POST"),
         headers: {
           cookie: browser.cookie,
           "x-csrf-token": browser.body.csrfToken,
@@ -373,7 +373,49 @@ try {
         viewport: { x: 10, y: 20, zoom: 0.75 },
       },
     });
+    const draft = await api("/api/editor-documents", {
+      id: randomUUID(),
+      name: "Browser draft.sql",
+      ...source,
+      sql: "SELECT 43",
+    });
+    const profile = await api("/api/agent-profiles", {
+      name: "Configured locally before upgrade",
+      provider: "codex",
+      command: "not-installed-upgrade-fixture",
+    });
+    const chat = await api("/api/chats", {
+      profileId: profile.id,
+      title: "Chat before upgrade",
+      autoApprove: true,
+    });
     await run("stop", ...storageArgs);
+    // Seed a completed historical turn in this isolated fixture without ever
+    // starting an agent or submitting a model request.
+    const history = {
+      chatId: chat.id,
+      turnId: randomUUID(),
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      time: "2026-11-09T12:00:00.000Z",
+      content: "Synthetic conversation retained across the release update",
+    };
+    await command(oldNode, [
+      "--input-type=module",
+      "-e",
+      `
+        import { DatabaseSync } from 'node:sqlite';
+        const db = new DatabaseSync(process.argv[1]);
+        const fixture = JSON.parse(process.argv[2]);
+        db.prepare("INSERT INTO agent_turns(id,chat_id,request_id,status,context_json,created_at,finished_at) VALUES(?,?,?,'completed','{}',?,?)")
+          .run(fixture.turnId,fixture.chatId,fixture.requestId,fixture.time,fixture.time);
+        db.prepare("INSERT INTO agent_messages(id,chat_id,turn_id,role,content,created_at) VALUES(?,?,?,'user',?,?)")
+          .run(fixture.messageId,fixture.chatId,fixture.turnId,fixture.content,fixture.time);
+        db.prepare("UPDATE agent_chats SET native_session_id='synthetic-upgrade-session' WHERE id=?").run(fixture.chatId);
+        db.close();`,
+      join(data, "miracle.sqlite"),
+      JSON.stringify(history),
+    ]);
     const key = await readFile(join(data, "encryption.key"));
     async function sqliteSnapshot(node, directory = data) {
       const result = await command(node, [
@@ -387,6 +429,8 @@ try {
           const contents = tables.map(name => [name, db.prepare('SELECT * FROM ' + JSON.stringify(name)).all().map(row => JSON.stringify(row)).sort()]);
           console.log(JSON.stringify({schema: db.prepare('PRAGMA user_version').get().user_version,
             connection: db.prepare('SELECT * FROM connections').get(),
+            chatColumns: db.prepare('PRAGMA table_info(agent_chats)').all().map(row=>row.name),
+            chats: db.prepare('SELECT * FROM agent_chats ORDER BY id').all(),
             tables, digest: createHash('sha256').update(JSON.stringify(contents)).digest('hex')}));
           db.close();`,
         join(directory, "miracle.sqlite"),
@@ -429,9 +473,11 @@ try {
     const before = await sqliteSnapshot(oldNode);
     assert.equal(
       before.schema,
-      5,
+      6,
       "Published release has the supported project schema",
     );
+    assert(!before.chatColumns.includes("model_settings_json"));
+    assert(!before.chatColumns.includes("native_session_reset"));
     assert.notEqual(before.connection.password_encrypted, password);
     const oldBackup = join(project, "backup before upgrade");
     await run("backup", oldBackup, ...storageArgs);
@@ -441,6 +487,9 @@ try {
       before.schema,
     );
     await run("start", "--port", String(port), ...storageArgs);
+    await session();
+    const savedConversation = await api(`/api/chats/${chat.id}`);
+    assert.equal(savedConversation.messages[0].content, history.content);
     const protectedBefore = await protectedState();
 
     // Test-only HTTP/curl fixtures supply this unpublished candidate at the
@@ -572,7 +621,7 @@ try {
       ),
     );
     assert.equal((await session()).workspaceId, workspaceId);
-    async function verifyStored() {
+    async function verifyStored(trusted = true) {
       const connections = await api("/api/connections");
       assert.equal(connections.length, 1);
       assert.equal(connections[0].id, connection.id);
@@ -590,33 +639,59 @@ try {
         (await api(`/api/result-sets/${completed.resultSetId}/rows`)).rows,
         [row],
       );
+      const editors = await api("/api/editor-documents");
+      assert.deepEqual(editors, [draft]);
+      const profiles = await api("/api/agent-profiles");
+      assert.equal(profiles.length, 1);
+      assert.equal(profiles[0].id, profile.id);
+      assert.equal(profiles[0].command, profile.command);
+      assert.equal(profiles[0].trusted, trusted);
+      assert.deepEqual(await api(`/api/chats/${chat.id}`), savedConversation);
+      const legacyChat = (await api("/api/chats")).find(
+        (item) => item.id === chat.id,
+      );
+      assert.equal(legacyChat.autoApprove, true);
+      assert.equal(legacyChat.modelSettings, undefined);
       await execute(); // Proves the encrypted password/CA remain usable.
     }
     await verifyStored();
-    const draft = await api("/api/editor-documents", {
-      id: randomUUID(),
-      name: "Browser draft.sql",
-      ...source,
-      sql: "SELECT 43",
-    });
-    const editors = await api("/api/editor-documents");
-    assert.equal(editors.length, 1);
-    assert.equal(editors[0].sql, draft.sql);
-    const profile = await api("/api/agent-profiles", {
-      name: "Configured locally",
-      provider: "codex",
-      command: "not-installed-upgrade-fixture",
-    });
-    const chat = await api("/api/chats", {
+    const modelSettings = { model: "synthetic-model", reasoningEffort: "high" };
+    const configuredChat = await api("/api/chats", {
       profileId: profile.id,
-      title: "Restored chat",
+      title: "Chat with per-dialog model settings",
+      modelSettings,
     });
+    assert.deepEqual(configuredChat.modelSettings, modelSettings);
+    const updatedChat = await api(
+      `/api/chats/${configuredChat.id}`,
+      {
+        modelSettings: { ...modelSettings, reasoningEffort: "ultra" },
+      },
+      "PATCH",
+    );
+    assert.equal(updatedChat.modelSettings.reasoningEffort, "ultra");
     await run("stop", ...storageArgs);
     const after = await sqliteSnapshot(newNode);
     assert.equal(
       after.schema,
-      6,
-      "Update must migrate the workspace to schema 6",
+      7,
+      "Update must migrate the workspace to schema 7",
+    );
+    for (const column of ["model_settings_json", "native_session_reset"])
+      assert(
+        after.chatColumns.includes(column),
+        `Missing migrated chat column ${column}`,
+      );
+    const retainedChat = after.chats.find((item) => item.id === chat.id);
+    assert.equal(retainedChat.native_session_id, "synthetic-upgrade-session");
+    assert.equal(retainedChat.model_settings_json, null);
+    assert.equal(retainedChat.native_session_reset, 0);
+    assert.deepEqual(
+      JSON.parse(
+        after.chats.find((item) => item.id === configuredChat.id)
+          .model_settings_json,
+      ),
+      updatedChat.modelSettings,
     );
     assert.equal(
       after.connection.password_encrypted,
@@ -657,20 +732,20 @@ try {
         (await session(restoredState.port)).workspaceId,
         workspaceId,
       );
-      await verifyStored();
-      const restoredEditors = await api("/api/editor-documents");
-      assert.equal(restoredEditors.length, label === "new backup" ? 1 : 0);
+      await verifyStored(false);
+      const restoredChats = await api("/api/chats");
+      assert.equal(restoredChats.length, label === "new backup" ? 2 : 1);
       if (label === "new backup") {
-        assert.equal(restoredEditors[0].sql, draft.sql);
-        const profiles = await api("/api/agent-profiles");
-        assert.equal(profiles[0].id, profile.id);
-        assert.equal(profiles[0].trusted, false);
-        assert.equal((await api("/api/chats"))[0].id, chat.id);
+        assert.deepEqual(
+          restoredChats.find((item) => item.id === configuredChat.id)
+            .modelSettings,
+          updatedChat.modelSettings,
+        );
       }
       await run("stop", "--project-dir", restored);
     }
     console.log(
-      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result, editor, old/new backup restore`,
+      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, schema 6 -> 7, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
     );
   }
   console.log(

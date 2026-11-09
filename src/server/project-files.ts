@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { opendir } from "node:fs/promises";
+import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import {
   basename,
@@ -441,6 +441,162 @@ export function readProjectFile(
   } catch (error) {
     fileError(error);
   }
+}
+
+/** Search uses the explorer's text boundary, but never blocks HTTP on file I/O. */
+export async function scanProjectTextFiles(
+  context: FileContext,
+  visit: (file: ProjectTextFile) => void,
+  signal?: AbortSignal,
+): Promise<{ incomplete: boolean }> {
+  const { root, data, allowed } = scope(context);
+  const dataIdentity = await lstat(data).catch(() => undefined);
+  const check = () => signal?.throwIfAborted();
+  const accessible = async (path: string, directory = false) => {
+    check();
+    if (!(directory && path === "") && !validRelativePath(path))
+      throw problem(403, "Недоступный путь проекта", "INVALID_FILE_PATH");
+    let absolute = root;
+    for (const part of path ? path.split("/") : []) {
+      absolute = join(absolute, part);
+      if (!allowed(absolute) || internalNames.has(part.toLowerCase()))
+        throw problem(403, "Служебная папка", "INVALID_FILE_PATH");
+      const info = await lstat(absolute);
+      if (
+        info.isSymbolicLink() ||
+        (info.isDirectory() &&
+          (excludedDirectories.has(part.toLowerCase()) ||
+            part.toLowerCase() === ".codegraph" ||
+            (info.dev === dataIdentity?.dev && info.ino === dataIdentity.ino)))
+      )
+        throw problem(403, "Недоступный путь проекта", "INVALID_FILE_PATH");
+    }
+    if (!allowed(await realpath(absolute)))
+      throw problem(403, "Путь вне проекта", "INVALID_FILE_PATH");
+    const info = await lstat(absolute);
+    if (directory ? !info.isDirectory() : !info.isFile()) throw conflict();
+    check();
+    return { absolute, info };
+  };
+  const read = async (path: string) => {
+    const { absolute } = await accessible(path);
+    const handle = await open(
+      absolute,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const info = await handle.stat();
+      const current = await accessible(path);
+      if (
+        !info.isFile() ||
+        info.dev !== current.info.dev ||
+        info.ino !== current.info.ino
+      )
+        throw conflict();
+      if (info.size > MAX_PROJECT_FILE_BYTES) throw tooLarge();
+      const buffer = Buffer.alloc(
+        Math.min(MAX_PROJECT_FILE_BYTES + 1, info.size + 1),
+      );
+      let length = 0;
+      while (length < buffer.length) {
+        check();
+        const { bytesRead } = await handle.read(
+          buffer,
+          length,
+          buffer.length - length,
+          length,
+        );
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      const after = await handle.stat();
+      if (
+        after.size > MAX_PROJECT_FILE_BYTES ||
+        length > MAX_PROJECT_FILE_BYTES
+      )
+        throw tooLarge();
+      if (
+        info.size !== after.size ||
+        info.mtimeMs !== after.mtimeMs ||
+        info.ctimeMs !== after.ctimeMs
+      )
+        throw conflict();
+      const bytes = buffer.subarray(0, length);
+      let content: string;
+      try {
+        content = new TextDecoder("utf-8", {
+          fatal: true,
+          ignoreBOM: true,
+        }).decode(bytes);
+      } catch {
+        throw notText();
+      }
+      if (binaryControls.test(content)) throw notText();
+      check();
+      visit({
+        path,
+        name: basename(path),
+        content,
+        revision: createHash("sha256").update(bytes).digest("hex"),
+        size: length,
+        updatedAt: info.mtime.toISOString(),
+      });
+    } finally {
+      await handle.close();
+    }
+  };
+  let incomplete = false;
+  const pending = new Set<Promise<void>>();
+  const directories = [""];
+  try {
+    for (let cursor = 0; cursor < directories.length; cursor++) {
+      check();
+      const path = directories[cursor];
+      try {
+        const { absolute } = await accessible(path, true);
+        const directory = await opendir(absolute);
+        for await (const entry of directory) {
+          check();
+          const relativePath = path ? `${path}/${entry.name}` : entry.name;
+          if (
+            !validRelativePath(relativePath) ||
+            internalNames.has(entry.name.toLowerCase()) ||
+            !allowed(join(root, relativePath))
+          )
+            continue;
+          if (entry.isDirectory()) {
+            if (
+              !excludedDirectories.has(entry.name.toLowerCase()) &&
+              entry.name.toLowerCase() !== ".codegraph"
+            )
+              directories.push(relativePath);
+          } else if (entry.isFile()) {
+            let task: Promise<void>;
+            task = read(relativePath)
+              .catch((error: unknown) => {
+                if (
+                  !signal?.aborted &&
+                  !["FILE_TOO_LARGE", "FILE_NOT_TEXT"].includes(
+                    (error as { code?: string }).code ?? "",
+                  )
+                )
+                  incomplete = true;
+              })
+              .finally(() => pending.delete(task));
+            pending.add(task);
+            if (pending.size >= 4) await Promise.race(pending);
+          }
+        }
+      } catch {
+        check();
+        incomplete = true;
+      }
+    }
+  } finally {
+    await Promise.all(pending);
+  }
+  check();
+  return { incomplete };
 }
 
 export function createProjectFile(

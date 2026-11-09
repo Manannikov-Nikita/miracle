@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import type { AgentModelSettings } from "../../shared/agents.js";
 
 export type AgentProvider = "codex" | "claude";
 export interface ParsedAgentCommand {
@@ -197,7 +198,26 @@ const quoteArg = (value: string) =>
     ? value
     : "'" + value.replaceAll("'", "'\\''") + "'";
 
-export function buildAgentCommand(provider: AgentProvider, command: string) {
+export function buildAgentCommand(
+  provider: AgentProvider,
+  command: string,
+  modelSettings?: AgentModelSettings,
+) {
+  if (provider === "claude") {
+    for (const value of [
+      modelSettings?.model,
+      modelSettings?.reasoningEffort,
+    ]) {
+      if (
+        value !== undefined &&
+        (!value.trim() ||
+          value.length > 512 ||
+          /^[\s-]/.test(value) ||
+          /[\x00-\x1f\x7f]/.test(value))
+      )
+        throw new Error("Invalid Claude model or effort override");
+    }
+  }
   const parsed = parseAgentCommand(command);
   const prefixArgs = agentLaunchPrefix(parsed);
   const args: string[] = [...prefixArgs];
@@ -247,6 +267,16 @@ export function buildAgentCommand(provider: AgentProvider, command: string) {
     const arg = parsed.args[i++]!;
     const equal = arg.indexOf("=");
     const flag = equal >= 0 ? arg.slice(0, equal) : arg;
+    if (
+      provider === "claude" &&
+      ((flag === "--model" && modelSettings?.model !== undefined) ||
+        (flag === "--effort" && modelSettings?.reasoningEffort !== undefined))
+    ) {
+      const previous = equal >= 0 ? arg.slice(equal + 1) : parsed.args[i++];
+      if (!previous || previous.startsWith("-"))
+        throw new Error(`${flag} needs a value`);
+      continue;
+    }
     if (managed.includes(flag) || (provider === "codex" && /^-C./.test(arg)))
       throw new Error(
         `${flag} is managed by Miracle; remove it from the profile command`,
@@ -300,6 +330,10 @@ export function buildAgentCommand(provider: AgentProvider, command: string) {
       } else args.push(arg);
     }
   }
+  if (provider === "claude" && modelSettings?.model !== undefined)
+    args.push("--model", modelSettings.model);
+  if (provider === "claude" && modelSettings?.reasoningEffort !== undefined)
+    args.push("--effort", modelSettings.reasoningEffort);
   if (provider === "claude")
     args.push(
       "-p",

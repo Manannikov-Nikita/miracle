@@ -1,0 +1,12 @@
+.board-shape-line .board-line-outline {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.board-artifact-shape.agent-work-active .board-shape-line .board-line-shaft {
+  stroke: var(--agent-shape-stroke);
+}
+.board-artifact-shape.agent-work-active .board-shape-line .board-line-arrow {
+  fill: var(--agent-shape-stroke);
+  stroke: none;
+}

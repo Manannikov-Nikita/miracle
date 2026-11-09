@@ -33,6 +33,8 @@ export function transcriptTurns(
 
 const toolLabels: Record<string, string> = {
   project_context: "Контекст проекта",
+  begin_entity_work: "Начало работы с объектами",
+  end_entity_work: "Завершение работы с объектами",
   list_connections: "Источники данных",
   read_schema: "Схема данных",
   list_editors: "Документы SQL",
@@ -51,6 +53,10 @@ const toolLabels: Record<string, string> = {
   create_board: "Создание доски",
   board_patch: "Изменение доски",
   refresh_node: "Обновление результата",
+  chart_guide: "Справка по графикам",
+  custom_chart_guide: "Справка по кастомным графикам",
+  read_custom_chart_status: "Проверка кастомного графика",
+  permission_prompt: "Запрос разрешения",
   fileChange: "Изменение файлов",
   subAgentActivity: "Работа помощника",
   wait: "Ожидание помощника",

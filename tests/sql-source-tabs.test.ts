@@ -125,6 +125,15 @@ describe("chart source SQL tabs", () => {
       configurable: true,
       value: vi.fn(),
     });
+    // jsdom has no layout API for ranges; CodeMirror measures them in its RAF.
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: () => [],
+    });
+    Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value: () => new DOMRect(),
+    });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -150,6 +159,8 @@ describe("chart source SQL tabs", () => {
     container.remove();
     localStorage.clear();
     Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+    Reflect.deleteProperty(Range.prototype, "getClientRects");
+    Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
     vi.unstubAllGlobals();
   });
   async function render(request?: SqlSourceRequest) {
@@ -185,10 +196,12 @@ describe("chart source SQL tabs", () => {
       }),
     );
     expect((editor() as HTMLTextAreaElement).readOnly).toBe(true);
+    await openContextDialog();
     expect(
-      container.querySelector<HTMLInputElement>('[aria-label="База запроса"]')
+      document.querySelector<HTMLInputElement>('[aria-label="База запроса"]')
         ?.disabled,
     ).toBe(true);
+    await closeContextDialog();
     expect(container.querySelector(".agent-work-indicator")?.textContent).toBe(
       "Агент работает",
     );
@@ -372,6 +385,72 @@ describe("chart source SQL tabs", () => {
       ).toBe("45");
     },
   );
+  function panelLayout() {
+    return Object.fromEntries(
+      ["editor", "results"].map((id) => [
+        id,
+        Number(
+          container.querySelector<HTMLElement>(`#${id}[data-panel]`)?.style
+            .flexGrow,
+        ),
+      ]),
+    );
+  }
+  async function clickResultLayout(label: string) {
+    const button = container.querySelector<HTMLButtonElement>(
+      `.results-heading [aria-label="${label}"]`,
+    );
+    expect(button, label).not.toBeNull();
+    await act(async () => button!.click());
+  }
+  async function withMeasuredPanels(check: () => Promise<void>) {
+    // jsdom has no layout. Give the real resizable panels a non-zero canvas so
+    // their public resize actions are not deferred as if the group were hidden.
+    const height = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute("data-panel")
+          ? Number(this.style.flexGrow || 50) * 8
+          : 0;
+      });
+    try {
+      await check();
+    } finally {
+      height.mockRestore();
+    }
+  }
+  it("expands the result and restores the query and result on the second click", async () => {
+    await withMeasuredPanels(async () => {
+      await render();
+      await clickResultLayout("Развернуть результат");
+      expect(panelLayout()).toEqual({ editor: 0, results: 100 });
+      await clickResultLayout("Восстановить запрос и результат");
+      expect(panelLayout()).toEqual({ editor: 50, results: 50 });
+      expect(
+        container.querySelector('[aria-label="Развернуть результат"]'),
+      ).not.toBeNull();
+    });
+  });
+  it("restores a persisted maximized result and follows layout reset", async () => {
+    await withMeasuredPanels(async () => {
+      localStorage.setItem(
+        "miracle:editor-layout:source-tab-test",
+        JSON.stringify({ editor: 0, results: 100 }),
+      );
+      await render();
+      expect(panelLayout()).toEqual({ editor: 0, results: 100 });
+      await clickResultLayout("Восстановить запрос и результат");
+      expect(panelLayout()).toEqual({ editor: 50, results: 50 });
+      await clickResultLayout("Развернуть результат");
+      expect(panelLayout()).toEqual({ editor: 0, results: 100 });
+      await act(async () =>
+        window.dispatchEvent(new Event("miracle:reset-layout")),
+      );
+      expect(panelLayout()).toEqual({ editor: 55, results: 45 });
+      await clickResultLayout("Развернуть результат");
+      expect(panelLayout()).toEqual({ editor: 0, results: 100 });
+    });
+  });
   const projectFile = (path: string, content = "# Notes") => ({
     path,
     name: path.split("/").pop()!,
@@ -403,6 +482,54 @@ describe("chart source SQL tabs", () => {
     );
     await readyEditor();
   }
+  it("opens a saved Markdown search hit in the existing dirty tab and reanchors its selection", async () => {
+    const saved = "# Notes\n\nA needle in saved text.\n";
+    const path = "docs/search.md";
+    await openProjectFile(path, saved);
+    const start = saved.indexOf("needle");
+    await act(async () =>
+      markdownView()!.dispatch({
+        changes: { from: 0, insert: "Draft prefix\n" },
+      }),
+    );
+    const dirty = editorValue();
+    props.searchNavigation = {
+      requestId: "markdown-hit",
+      target: {
+        kind: "file",
+        path,
+        revision: "disk-v1",
+        match: {
+          start,
+          end: start + 6,
+          text: "needle",
+          before: saved.slice(0, start),
+          after: saved.slice(start + 6),
+        },
+      },
+    };
+    props.onSearchNavigationConsumed = vi.fn();
+    await openProjectFile(path, saved);
+    // Let CodeMirror's scheduled DOM measurement run before unmounting.
+    await act(async () => {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    });
+    expect(editorValue()).toBe(dirty);
+    expect(tabs()).toHaveLength(2);
+    expect(markdownView()!.state.selection.main.from).toBe(
+      dirty.indexOf("needle"),
+    );
+    expect(markdownView()!.state.selection.main.to).toBe(
+      dirty.indexOf("needle") + 6,
+    );
+    expect(props.onSearchNavigationConsumed).toHaveBeenCalledWith(
+      "markdown-hit",
+    );
+    expect(props.onNotify).not.toHaveBeenCalled();
+  });
+
   it("publishes exactly the open tab strip with file paths and live rename/close updates", async () => {
     seed("draft.sql");
     const sync = new ProjectSync();
@@ -1171,9 +1298,37 @@ describe("chart source SQL tabs", () => {
     expect(editorValue()).toBe("select 2");
     expect(props.onQueriesChanged).toHaveBeenCalledOnce();
   });
+  async function openContextDialog() {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Действия SQL"]',
+    );
+    expect(trigger).not.toBeNull();
+    await act(async () =>
+      trigger!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
+    const item = [
+      ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ].find((entry) => entry.textContent?.trim() === "Контекст запроса");
+    expect(item).toBeDefined();
+    await act(async () => item!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Контекст запроса",
+    );
+  }
+  async function closeContextDialog() {
+    const done = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+    ].find((button) => button.textContent?.trim() === "Готово");
+    expect(done).toBeDefined();
+    await act(async () => done!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  }
   function context(label: string) {
-    return container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)
-      ?.value;
+    return document.querySelector<HTMLInputElement>(
+      `[role="dialog"] [aria-label="${label}"]`,
+    )?.value;
   }
   async function clickTab(name: string) {
     await readyEditor();
@@ -1277,8 +1432,11 @@ describe("chart source SQL tabs", () => {
     await render({ source, name: "Выручка / месяц" });
     expect(activeTab()).toBe("Выручка / месяц");
     expect(editorValue()).toBe(source.sql);
+    expect(container.querySelector(".query-context")).toBeNull();
+    await openContextDialog();
     expect(context("Каталог запроса")).toBe("analytics");
     expect(context("Схема запроса")).toBe("finance");
+    await closeContextDialog();
     expect(props.onConnectionChange).toHaveBeenCalledWith("trino");
     expect(props.onSourceConsumed).toHaveBeenCalledOnce();
   });
@@ -1303,7 +1461,9 @@ describe("chart source SQL tabs", () => {
     expect(activeTab()).toBe("Выручка");
     expect(tabs()).toHaveLength(2);
     expect(editorValue()).toBe("select unsaved_draft");
+    await openContextDialog();
     expect(context("База запроса")).toBe("private_draft");
+    await closeContextDialog();
     expect(props.onConnectionChange).toHaveBeenLastCalledWith("clickhouse");
   });
 
@@ -1384,7 +1544,9 @@ describe("chart source SQL tabs", () => {
     );
     await render();
     expect(activeTab()).toBe("my-name.sql");
+    await openContextDialog();
     expect(context("База запроса")).toBe("my-draft-database");
+    await closeContextDialog();
     expect(container.textContent).toContain("Ваш черновик сохранён");
   });
 });

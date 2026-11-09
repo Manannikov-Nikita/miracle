@@ -15,6 +15,7 @@ import type {
 import type { BoardFragment } from "./board/clipboard";
 import { api, json } from "./api";
 import { ErrorBox, Modal, Spinner } from "./components/UI";
+import type { CanvasSearchTarget } from "../shared/canvas-search-text";
 
 export type CanvasDestination = {
   kind: BoardKind;
@@ -23,6 +24,10 @@ export type CanvasDestination = {
 };
 type Point = { x: number; y: number };
 export interface CanvasHandle {
+  openSearchResult?(
+    target: CanvasSearchTarget,
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
   ready?(): boolean;
   visible?(): boolean;
   destination(): CanvasDestination | null;
@@ -44,6 +49,7 @@ export interface CanvasHandle {
 /** Routes one user action to the document captured before layout/focus changes. */
 export class CanvasWorkspace {
   private canvases = new Map<BoardKind, CanvasHandle>();
+  private searchNavigation?: AbortController;
   private attempts = new Map<string, { id: string; pending?: Promise<void> }>();
   constructor(
     private callbacks: {
@@ -62,6 +68,28 @@ export class CanvasWorkspace {
   }
   open(kind: BoardKind) {
     this.callbacks.onOpen(kind);
+  }
+  cancelSearchNavigation() {
+    this.searchNavigation?.abort();
+    this.searchNavigation = undefined;
+  }
+  async openSearchResult(
+    target: CanvasSearchTarget,
+    options: { signal?: AbortSignal } = {},
+  ) {
+    this.cancelSearchNavigation();
+    const controller = new AbortController();
+    this.searchNavigation = controller;
+    const signal = options.signal
+      ? AbortSignal.any([controller.signal, options.signal])
+      : controller.signal;
+    signal.throwIfAborted();
+    const handle = this.canvases.get(target.kind);
+    if (!handle?.openSearchResult)
+      throw new Error("Переход к документу ещё недоступен. Попробуйте снова.");
+    this.open(target.kind);
+    await handle.openSearchResult(structuredClone(target), { signal });
+    signal.throwIfAborted();
   }
   async addResult(kind: BoardKind, result: ResultSet) {
     const handle = this.requireCanvas(kind);
@@ -174,6 +202,7 @@ export function CanvasWorkspaceProvider({
         },
       }),
   );
+  useEffect(() => () => registry.cancelSearchNavigation(), [registry]);
   return (
     <CanvasContext.Provider value={registry}>
       {children}

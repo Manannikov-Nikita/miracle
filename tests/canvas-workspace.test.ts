@@ -51,6 +51,56 @@ function setup() {
 }
 
 describe("canvas destination routing", () => {
+  it("opens the correct canvas before navigating to a search result", async () => {
+    const calls: string[] = [];
+    const { handle } = setup();
+    const registry = new CanvasWorkspace({
+      onOpen: (kind) => calls.push(`open:${kind}`),
+      onTransfer() {},
+    });
+    registry.register("presentation", {
+      ...handle,
+      // A populated collection may have no selected document after deletion or
+      // an agent-created first document; search must still be able to select it.
+      ready: () => false,
+      openSearchResult: async (target, options) => {
+        expect(options?.signal?.aborted).toBe(false);
+        calls.push(`select:${target.id}/${target.nodeId}`);
+      },
+    });
+    await registry.openSearchResult({
+      kind: "presentation",
+      id: "deck",
+      revision: 1,
+      nodeId: "note",
+    });
+    expect(calls).toEqual(["open:presentation", "select:deck/note"]);
+  });
+
+  it("cancels a previous search navigation when a new result is chosen", async () => {
+    const { registry, handle } = setup();
+    let previous: AbortSignal | undefined;
+    registry.register("presentation", {
+      ...handle,
+      openSearchResult: async (_target, options) => {
+        if (previous) expect(previous.aborted).toBe(true);
+        previous = options?.signal;
+      },
+    });
+    await registry.openSearchResult({
+      kind: "presentation",
+      id: "one",
+      revision: 1,
+    });
+    await registry.openSearchResult({
+      kind: "presentation",
+      id: "two",
+      revision: 1,
+    });
+    registry.cancelSearchNavigation();
+    expect(previous?.aborted).toBe(true);
+  });
+
   it("does not mistake a loading destination for an empty workspace", async () => {
     const { registry, handle, writes } = setup();
     registry.register("presentation", { ...handle, ready: () => false });

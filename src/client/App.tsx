@@ -29,6 +29,9 @@ import BoardWorkspace from "./board/BoardWorkspace";
 import { ProjectSyncProvider, useProjectSync } from "./agents/ProjectSync";
 import AgentAssistant from "./agents/AgentAssistant";
 import WorkspaceRail from "./components/WorkspaceRail";
+import WorkspaceSearch, {
+  type SearchNavigation,
+} from "./components/WorkspaceSearch";
 import ColorSettings from "./colors/ColorSettings";
 import ProjectGitButton, {
   type ProjectGitEditorState,
@@ -76,6 +79,12 @@ export default function App() {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchNavigation, setSearchNavigation] = useState<SearchNavigation>();
+  useEffect(() => {
+    setSearchOpen(false);
+    setSearchNavigation(undefined);
+  }, [workspaceId]);
   const [queryRevision, setQueryRevision] = useState(0);
   const [sourceToOpen, setSourceToOpen] = useState<SqlSourceRequest | null>(
     null,
@@ -337,6 +346,7 @@ export default function App() {
             onConnections={() => setConnectionsOpen(true)}
             onHelp={() => setHelpOpen(true)}
             onSettings={() => setSettingsOpen(true)}
+            onSearch={() => setSearchOpen(true)}
           />
           {explorer && (!narrow || explorerDrawer) && (
             <ExplorerPanel
@@ -403,6 +413,27 @@ export default function App() {
                 onTransferOpen={openCanvasPair}
                 onNotify={notify}
               >
+                <WorkspaceSearch
+                  key={`search:${workspaceId}`}
+                  workspaceId={workspaceId}
+                  open={searchOpen}
+                  onOpenChange={setSearchOpen}
+                  onNavigate={() => setExplorerDrawer(false)}
+                  onOpenFile={(file, navigation) => {
+                    setSavedToOpen(null);
+                    setSourceToOpen(null);
+                    setFileToOpen(file);
+                    setSearchNavigation(navigation);
+                    showSql();
+                  }}
+                  onOpenQuery={(query, navigation) => {
+                    setFileToOpen(null);
+                    setSourceToOpen(null);
+                    setSavedToOpen(query);
+                    setSearchNavigation(navigation);
+                    showSql();
+                  }}
+                />
                 <Group
                   orientation="horizontal"
                   groupRef={group}
@@ -454,6 +485,14 @@ export default function App() {
                                 sourceToOpen={sourceToOpen}
                                 savedToOpen={savedToOpen}
                                 fileToOpen={fileToOpen}
+                                searchNavigation={searchNavigation}
+                                onSearchNavigationConsumed={(requestId) =>
+                                  setSearchNavigation((current) =>
+                                    current?.requestId === requestId
+                                      ? undefined
+                                      : current,
+                                  )
+                                }
                                 onFileConsumed={() => setFileToOpen(null)}
                                 onProjectFileSaved={projectFilesChanged}
                                 onGitEditorStateChange={setGitEditorState}
@@ -540,6 +579,7 @@ export default function App() {
         >
           <div className="shortcut-list">
             {[
+              ["Поиск по проекту", "⌘ / Ctrl + K"],
               [
                 "Выполнить запрос под курсором или выделение",
                 "⌘ / Ctrl + Enter",

@@ -35,6 +35,7 @@ import { ProjectStore } from "./project-store.js";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerProjectGitRoutes } from "./project-git-routes.js";
 import { WorkspaceOperations } from "./workspace-operations.js";
+import { registerWorkspaceSearchRoutes } from "./workspace-search.js";
 import {
   mergeClickHouseOptions,
   publicClickHouseOptions,
@@ -789,9 +790,14 @@ export async function buildApp(
       },
     );
     const operations = new WorkspaceOperations(projectStore, connection);
+    registerWorkspaceSearchRoutes(app, projectStore, need);
     app.get("/api/queries", async (req) => {
       need(req);
       return operations.queries();
+    });
+    app.get("/api/queries/:id", async (req) => {
+      need(req);
+      return operations.query(uuid(req));
     });
     app.post("/api/queries", async (req, reply) => {
       need(req);

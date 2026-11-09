@@ -1,4 +1,5 @@
 import {
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -12,6 +13,7 @@ import {
   type ShapeSpec,
 } from "../../shared/shapes";
 import "./shapes.css";
+import LineShapeContent from "./LineShapeContent";
 
 const polygons: Partial<Record<ShapeKind, string>> = {
   triangle: "50,0 100,100 0,100",
@@ -30,6 +32,8 @@ function Geometry({
   cornerRadius = 0,
   ...appearance
 }: SVGAttributes<SVGElement> & { type: ShapeKind; cornerRadius?: number }) {
+  if (type === "line")
+    return <line x1="5" y1="50" x2="95" y2="50" {...appearance} />;
   if (type === "ellipse")
     return <ellipse cx="50" cy="50" rx="50" ry="50" {...appearance} />;
   if (type === "rectangle" || type === "rounded-rectangle")
@@ -83,18 +87,29 @@ function clipPath(type: ShapeKind, cornerRadius: number) {
 
 const stopPropagation = (event: SyntheticEvent) => event.stopPropagation();
 
-export default function ShapeContent({
-  text,
-  shape,
-  editable,
-  onChange,
-}: {
+type ShapeContentProps = {
   text: string;
   shape?: ShapeSpec;
   editable: boolean;
   onChange: (text: string) => void;
-}) {
+};
+
+export default function ShapeContent(props: ShapeContentProps) {
+  return props.shape?.type === "line" ? (
+    <LineShapeContent shape={props.shape} />
+  ) : (
+    <TextShapeContent {...props} />
+  );
+}
+
+function TextShapeContent({
+  text,
+  shape,
+  editable,
+  onChange,
+}: ShapeContentProps) {
   const spec = resolveShape(shape);
+  const workGradientId = useId();
   const [editing, setEditing] = useState(false);
   const editor = useRef<HTMLTextAreaElement>(null);
   const isEditing = editable && editing;
@@ -162,11 +177,32 @@ export default function ShapeContent({
           height: `calc(100% - ${spec.strokeWidth}px)`,
         }}
       >
+        <defs>
+          <linearGradient
+            id={workGradientId}
+            className="board-shape-work-gradient"
+            gradientUnits="userSpaceOnUse"
+            x1="0"
+            y1="50"
+            x2="100"
+            y2="50"
+          >
+            <stop offset="0%" />
+            <stop offset="50%" />
+            <stop offset="80%" />
+            <stop offset="100%" />
+          </linearGradient>
+        </defs>
         <Geometry
           type={spec.type}
           cornerRadius={spec.cornerRadius}
           fill={spec.fill}
           stroke={spec.stroke}
+          style={
+            {
+              "--agent-shape-stroke": `url(#${workGradientId})`,
+            } as CSSProperties
+          }
           strokeWidth={spec.strokeWidth}
           strokeDasharray={dash}
           strokeLinecap={spec.strokeStyle === "dotted" ? "round" : "butt"}

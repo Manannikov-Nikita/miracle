@@ -24,6 +24,18 @@ export const problem = (statusCode: number, message: string, code?: string) =>
 export const hash = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 export const now = () => new Date().toISOString();
+const modelIdentifier = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .regex(/^[^\s\x00-\x1f\x7f]+$/u);
+export const agentModelSettingsSchema = z
+  .object({
+    model: modelIdentifier.optional(),
+    reasoningEffort: modelIdentifier.optional(),
+  })
+  .strict();
 export const editorFields = z.object({
   name: z.string().trim().min(1).max(200),
   sql: z.string().max(1000000),
@@ -378,6 +390,13 @@ export class ProjectStore {
       profileId: r.profile_id,
       provider: r.provider,
       autoApprove: Boolean(r.auto_approve),
+      ...(r.model_settings_json !== null && r.model_settings_json !== undefined
+        ? {
+            modelSettings: agentModelSettingsSchema.parse(
+              JSON.parse(r.model_settings_json),
+            ),
+          }
+        : {}),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -393,26 +412,81 @@ export class ProjectStore {
         profileId: z.uuid(),
         title: z.string().trim().min(1).max(200).optional(),
         autoApprove: z.boolean().default(false),
+        modelSettings: agentModelSettingsSchema.optional(),
       })
       .parse(input);
     const p = this.profile(b.profileId);
     const id = randomUUID(),
       time = now();
     this.db.query(
-      "INSERT INTO agent_chats(id,title,profile_id,provider,created_at,updated_at,auto_approve) VALUES(?1,?2,?3,?4,?5,?5,?6)",
-      [id, b.title || "Новый чат", p.id, p.provider, time, b.autoApprove],
+      "INSERT INTO agent_chats(id,title,profile_id,provider,created_at,updated_at,auto_approve,model_settings_json) VALUES(?1,?2,?3,?4,?5,?5,?6,?7)",
+      [
+        id,
+        b.title || "Новый чат",
+        p.id,
+        p.provider,
+        time,
+        b.autoApprove,
+        b.modelSettings?.model || b.modelSettings?.reasoningEffort
+          ? JSON.stringify(b.modelSettings)
+          : null,
+      ],
     );
     const chat = this.chat(id);
     this.publish("chat.updated", id, chat);
     return chat;
   }
   updateChat(id: string, input: unknown): AgentChat {
-    const b = z.object({ autoApprove: z.boolean() }).parse(input);
-    this.chat(id);
-    return this.atomic(() => {
+    const b = z
+      .object({
+        autoApprove: z.boolean().optional(),
+        modelSettings: agentModelSettingsSchema.optional(),
+      })
+      .strict()
+      .refine(
+        (value) =>
+          value.autoApprove !== undefined || value.modelSettings !== undefined,
+      )
+      .parse(input);
+    const current = this.chat(id);
+    if (
+      b.modelSettings !== undefined &&
       this.db.query(
-        "UPDATE agent_chats SET auto_approve=?2,updated_at=?3 WHERE id=?1",
-        [id, b.autoApprove, now()],
+        "SELECT id FROM agent_turns WHERE chat_id=?1 AND status IN ('running','waiting')",
+        [id],
+      ).rowCount
+    )
+      throw problem(
+        409,
+        "Дождитесь завершения задачи перед изменением модели",
+        "AGENT_BUSY",
+      );
+    return this.atomic(() => {
+      // A default-only legacy chat has never changed its native settings.
+      // Keep its compatible launch path even when its CLI cannot list models.
+      const nextSettings =
+        b.modelSettings === undefined
+          ? current.modelSettings
+          : current.provider === "codex" &&
+              current.modelSettings === undefined &&
+              !b.modelSettings.model &&
+              !b.modelSettings.reasoningEffort
+            ? undefined
+            : b.modelSettings;
+      const resetSession =
+        current.provider === "claude" &&
+        b.modelSettings !== undefined &&
+        JSON.stringify(current.modelSettings) !==
+          JSON.stringify(b.modelSettings);
+      this.db.query(
+        "UPDATE agent_chats SET auto_approve=?2,updated_at=?3,model_settings_json=?4,native_session_reset=CASE WHEN ?5 AND native_session_id IS NOT NULL THEN 1 ELSE native_session_reset END,native_session_id=CASE WHEN ?5 THEN NULL ELSE native_session_id END WHERE id=?1",
+        [
+          id,
+          b.autoApprove ?? current.autoApprove ?? false,
+          now(),
+          nextSettings === undefined ? null : JSON.stringify(nextSettings),
+          resetSession,
+        ],
       );
       const chat = this.chat(id);
       this.publish("chat.updated", id, chat);

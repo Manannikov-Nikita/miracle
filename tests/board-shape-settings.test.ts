@@ -48,7 +48,11 @@ describe("shape inspector", () => {
     vi.unstubAllGlobals();
   });
 
-  async function render(editable = true, presentation = false) {
+  async function render(
+    editable = true,
+    presentation = false,
+    shape: BoardNode["data"]["shape"] = styledShape,
+  ) {
     function Board() {
       const [node, setNode] = useState<BoardNode>({
         id: "shape-1",
@@ -60,7 +64,7 @@ describe("shape inspector", () => {
           title: "План",
           kind: "shape",
           text: "Первый шаг\nПродолжение",
-          shape: styledShape,
+          shape,
         },
       });
       current = node;
@@ -156,19 +160,24 @@ describe("shape inspector", () => {
     },
   );
 
-  it("switches all seven shape types while retaining text and full styling", async () => {
-    await render();
-    for (const [label, type] of [
-      ["Прямоугольник", "rectangle"],
-      ["Скруглённый прямоугольник", "rounded-rectangle"],
-      ["Эллипс", "ellipse"],
-      ["Треугольник", "triangle"],
-      ["Ромб", "diamond"],
-      ["Шестиугольник", "hexagon"],
-      ["Стрелка", "arrow"],
-    ]) {
-      await choose("Вид фигуры", label);
-      expect(current.data.shape).toEqual({ ...styledShape, type });
+  it("edits each shape's styling without changing its type, title or text", async () => {
+    for (const type of [
+      "rectangle",
+      "rounded-rectangle",
+      "ellipse",
+      "triangle",
+      "diamond",
+      "hexagon",
+      "arrow",
+    ] as const) {
+      await render(true, false, { ...styledShape, type });
+      await input("Непрозрачность, %", "50");
+      expect(current.data.shape).toEqual({
+        ...styledShape,
+        type,
+        opacity: 0.5,
+      });
+      expect(current.data.title).toBe("План");
       expect(current.data.text).toBe("Первый шаг\nПродолжение");
       expect(Boolean(host.querySelector('[aria-label="Скругление, %"]'))).toBe(
         type === "rectangle" || type === "rounded-rectangle",
@@ -205,6 +214,35 @@ describe("shape inspector", () => {
       opacity: 0.455,
       cornerRadius: 50,
     });
+  });
+
+  it("edits line arrowheads while retaining legacy direction, rotation and styling", async () => {
+    const lineShape = {
+      ...styledShape,
+      type: "line" as const,
+      lineDirection: "diagonal-up" as const,
+      rotation: 37,
+    };
+    await render(true, false, lineShape);
+    expect(host.querySelector('[aria-label="Текст фигуры"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Цвет · Заливка"]')).toBeNull();
+    await choose("Конец линии", "Стрелка");
+    await choose("Начало линии", "Стрелка");
+    expect(current.data.kind).toBe("shape");
+    expect(current.data.shape).toEqual({
+      ...lineShape,
+      lineStart: "arrow",
+      lineEnd: "arrow",
+    });
+    expect(current.position).toEqual({ x: 15, y: 30 });
+    await choose("Конец линии", "Без стрелки");
+    expect(current.data.shape).toEqual({
+      ...lineShape,
+      lineStart: "arrow",
+      lineEnd: "none",
+    });
+    expect(current.data.title).toBe("План");
+    expect(current.data.text).toBe("Первый шаг\nПродолжение");
   });
 
   it("opens the shared color picker instead of a system color input", async () => {
@@ -253,7 +291,6 @@ describe("shape inspector", () => {
   it("blocks locked shape edits while leaving text available for reading", async () => {
     await render(false);
     expect(field("Текст фигуры").readOnly).toBe(true);
-    expect(button("Вид фигуры").disabled).toBe(true);
     for (const target of host.querySelectorAll<
       HTMLButtonElement | HTMLInputElement
     >(".shape-settings button, .shape-settings input"))
@@ -263,6 +300,8 @@ describe("shape inspector", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     await input("Текст фигуры", "Не сохранить");
     expect(changes).toHaveLength(0);
+    expect(current.data.title).toBe("План");
+    expect(current.data.shape).toEqual(styledShape);
     expect(current.data.text).toBe("Первый шаг\nПродолжение");
   });
 

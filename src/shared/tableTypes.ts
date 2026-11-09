@@ -18,6 +18,7 @@ export interface TableColumnOptions {
   hidden?: boolean;
   width?: number;
   align?: "left" | "center" | "right";
+  dataType?: "auto" | "date";
   format?: TableFormat;
   decimals?: number;
   currency?: "RUB" | "USD" | "EUR";

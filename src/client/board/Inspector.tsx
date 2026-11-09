@@ -39,7 +39,8 @@ export default function Inspector({
   useLayoutEffect(() => {
     const trigger = document.activeElement as HTMLElement | null;
     const element = panel.current;
-    if (autoFocus) firstField.current?.focus({ preventScroll: true });
+    if (autoFocus)
+      (firstField.current ?? element)?.focus({ preventScroll: true });
     return () => {
       if (element?.contains(document.activeElement) && trigger?.isConnected)
         trigger.focus({ preventScroll: true });
@@ -50,6 +51,7 @@ export default function Inspector({
       ref={panel}
       className="board-inspector nodrag nopan nowheel"
       aria-label="Свойства блока"
+      tabIndex={-1}
     >
       <header>
         <strong>Свойства блока</strong>
@@ -62,18 +64,23 @@ export default function Inspector({
         </button>
       </header>
       <div className="board-inspector-body">
-        <label>
-          Название
-          <input
-            ref={firstField}
-            maxLength={500}
-            value={node.data.title}
-            readOnly={!editable}
-            onChange={(e) =>
-              change({ ...node, data: { ...node.data, title: e.target.value } })
-            }
-          />
-        </label>
+        {node.data.kind !== "shape" && (
+          <label>
+            Название
+            <input
+              ref={firstField}
+              maxLength={500}
+              value={node.data.title}
+              readOnly={!editable}
+              onChange={(e) =>
+                change({
+                  ...node,
+                  data: { ...node.data, title: e.target.value },
+                })
+              }
+            />
+          </label>
+        )}
         {node.data.kind === "shape" && (
           <ShapeSettings
             key={node.id}
@@ -196,6 +203,10 @@ export default function Inspector({
                 visibleColumns={node.data.visibleColumns}
                 spec={node.data.chart ?? defaultChart(result.columns)}
                 disabled={!editable}
+                onTableChange={(table) => {
+                  if (editable)
+                    change({ ...node, data: { ...node.data, table } });
+                }}
                 onChange={(chart) => {
                   if (editable)
                     change({ ...node, data: { ...node.data, chart } });

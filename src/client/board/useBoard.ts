@@ -268,7 +268,8 @@ export function useBoard(
     });
   }, [projectSync, parkProtectedDraft]);
   const select = useCallback(
-    async (id: string) => {
+    async (id: string, options: { signal?: AbortSignal } = {}) => {
+      if (options.signal?.aborted) return;
       flushDraft();
       if (saving.current) {
         notify("Дождитесь сохранения доски.", "info");
@@ -277,9 +278,16 @@ export function useBoard(
       setLoading(true);
       const sequence = ++loadSequence.current;
       try {
-        const loaded = await api<Board>(`/api/boards/${id}`);
+        const loaded = await api<Board>(`/api/boards/${id}`, {
+          signal: options.signal,
+        });
         while (savingDone.current) await savingDone.current;
-        if (!mounted.current || sequence !== loadSequence.current) return;
+        if (
+          !mounted.current ||
+          sequence !== loadSequence.current ||
+          options.signal?.aborted
+        )
+          return;
         if (boardKind(loaded.document) !== kind)
           throw new Error("Выбранный документ принадлежит другой панели.");
         flushDraft();
@@ -349,7 +357,7 @@ export function useBoard(
         } catch {}
         setState(restored ? "Восстановлен локальный черновик" : "Сохранено");
       } catch (e) {
-        if (sequence === loadSequence.current) {
+        if (sequence === loadSequence.current && !options.signal?.aborted) {
           notify((e as Error).message, "error");
           setState("Не удалось загрузить");
         }
@@ -991,53 +999,59 @@ export function useBoard(
     setConflict(false);
     await select(current.current.id);
   };
-  const recordHistory = (
-    document: BoardDocument,
-    touched?: { nodeIds: string[]; edgeIds: string[] },
-  ) => {
-    if (current.current && touched) {
-      const after = current.current.document;
-      const restore = <T extends { id: string }>(
-        before: T[],
-        current: T[],
-        touched: string[],
-      ) => {
-        const values = new Map(current.map((value) => [value.id, value]));
-        for (const id of touched) {
-          const original = before.find((value) => value.id === id);
-          if (original) values.set(id, original);
-          else values.delete(id);
-        }
-        const order = current
-          .map((value) => value.id)
-          .filter((id) => values.has(id));
-        for (let index = 0; index < before.length; index++) {
-          const id = before[index].id;
-          if (!values.has(id) || order.includes(id)) continue;
-          const successor = before
-            .slice(index + 1)
-            .find((value) => order.includes(value.id));
-          if (successor) order.splice(order.indexOf(successor.id), 0, id);
-          else order.push(id);
-        }
-        return order.map((id) => values.get(id)!);
-      };
-      document = {
-        ...after,
-        nodes: restore(document.nodes, after.nodes, touched.nodeIds),
-        edges: restore(document.edges, after.edges, touched.edgeIds),
-      };
-    }
-    if (
-      !current.current ||
-      boardValuesEqual(document, current.current.document)
-    )
-      return;
-    history.current.push({ before: document, after: current.current.document });
-    if (history.current.length > 60) history.current.shift();
-    future.current = [];
-    setHistoryTick((n) => n + 1);
-  };
+  const recordHistory = useCallback(
+    (
+      document: BoardDocument,
+      touched?: { nodeIds: string[]; edgeIds: string[] },
+    ) => {
+      if (current.current && touched) {
+        const after = current.current.document;
+        const restore = <T extends { id: string }>(
+          before: T[],
+          current: T[],
+          touched: string[],
+        ) => {
+          const values = new Map(current.map((value) => [value.id, value]));
+          for (const id of touched) {
+            const original = before.find((value) => value.id === id);
+            if (original) values.set(id, original);
+            else values.delete(id);
+          }
+          const order = current
+            .map((value) => value.id)
+            .filter((id) => values.has(id));
+          for (let index = 0; index < before.length; index++) {
+            const id = before[index].id;
+            if (!values.has(id) || order.includes(id)) continue;
+            const successor = before
+              .slice(index + 1)
+              .find((value) => order.includes(value.id));
+            if (successor) order.splice(order.indexOf(successor.id), 0, id);
+            else order.push(id);
+          }
+          return order.map((id) => values.get(id)!);
+        };
+        document = {
+          ...after,
+          nodes: restore(document.nodes, after.nodes, touched.nodeIds),
+          edges: restore(document.edges, after.edges, touched.edgeIds),
+        };
+      }
+      if (
+        !current.current ||
+        boardValuesEqual(document, current.current.document)
+      )
+        return;
+      history.current.push({
+        before: document,
+        after: current.current.document,
+      });
+      if (history.current.length > 60) history.current.shift();
+      future.current = [];
+      setHistoryTick((n) => n + 1);
+    },
+    [],
+  );
   const recordInsertion = (inserted: Inserted) => {
     const value = current.current;
     if (
@@ -1126,6 +1140,7 @@ export function useBoard(
     canDelete,
     parkedDrafts,
     change,
+    receive,
     select,
     create,
     applyTo,

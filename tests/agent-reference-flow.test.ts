@@ -134,6 +134,92 @@ async function attachFile() {
   await act(async () => option!.click());
 }
 
+it.each([false, true])(
+  "does not attach an active editor after opening chat (switch tabs: %s)",
+  async (switchTabs) => {
+    const toggle = () =>
+      host.querySelector<HTMLButtonElement>('[aria-controls="agent-panel"]')!;
+    let activeEditor = "editor-first";
+    await act(async () => toggle().click());
+    await act(async () => {
+      project.register("editor", {
+        context: () => ({
+          editorDocumentId: activeEditor,
+          selection: "SELECT private_selection",
+        }),
+        editorTabs: () => [
+          { id: "editor-first", name: "First.sql" },
+          { id: "editor-second", name: "Second.sql" },
+        ],
+        flush: async () => {},
+      });
+    });
+    await act(async () => toggle().click());
+    if (switchTabs)
+      await act(async () => {
+        activeEditor = "editor-second";
+        project.contextChanged();
+      });
+    expect(host.querySelector("form")?.textContent).not.toContain("First.sql");
+    expect(host.querySelector("form")?.textContent).not.toContain("Second.sql");
+    await type("Test");
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+        .click(),
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0].context).toEqual({
+      boardId: "board-a",
+      boardNodes: [{ id: "chart-a", title: "Revenue" }],
+      filePaths: [],
+    });
+  },
+);
+
+it.each([undefined, "sql/attached.sql"])(
+  "does not fall back to the active editor after removing an explicit editor (%s)",
+  async (path) => {
+    await act(async () => {
+      project.register("editor", {
+        context: () => ({
+          editorDocumentId: "editor-active",
+          selection: "SELECT unrelated_selection",
+        }),
+        editorTabs: () => [
+          { id: "editor-attached", name: "Attached.sql", path },
+        ],
+        flush: async () => {},
+      });
+    });
+    await type("Explain @Attached");
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('[role="option"]')!.click(),
+    );
+    const label = path ? `Убрать файл ${path}` : "Убрать запрос Attached.sql";
+    const remove = host.querySelector<HTMLButtonElement>(
+      `[aria-label="${label}"]`,
+    );
+    expect(remove).not.toBeNull();
+    await act(async () => remove!.click());
+    await act(async () => project.contextChanged());
+    expect(host.querySelector("form")?.textContent).not.toContain(
+      "Attached.sql",
+    );
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+        .click(),
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0].context).toEqual({
+      boardId: "board-a",
+      boardNodes: [{ id: "chart-a", title: "Revenue" }],
+      filePaths: [],
+    });
+  },
+);
+
 it("uses a new request identity when the same instruction targets another slide", async () => {
   const original = vi.mocked(api).getMockImplementation()!;
   const attempts: { clientRequestId: string; context: AgentTargetContext }[] =

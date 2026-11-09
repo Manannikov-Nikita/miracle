@@ -394,6 +394,10 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
                 { threadId: options.resumeSessionId, excludeTurns: true }
               : {}),
             cwd: options.cwd,
+            ...(options.model ? { model: options.model } : {}),
+            ...(options.reasoningEffort
+              ? { config: { model_reasoning_effort: options.reasoningEffort } }
+              : {}),
           },
         );
       } catch (error: any) {
@@ -418,6 +422,8 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       const turn = await request("turn/start", {
         threadId: sessionId,
         cwd: options.cwd,
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.reasoningEffort ? { effort: options.reasoningEffort } : {}),
         input: [
           { type: "text", text: options.prompt, text_elements: [] },
           ...(options.images || []).flatMap((image) => [

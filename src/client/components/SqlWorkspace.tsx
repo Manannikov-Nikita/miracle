@@ -11,6 +11,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Rows,
   ArrowsOutSimple,
+  ArrowsInSimple,
   CaretDown,
   Code,
   Database,
@@ -41,7 +42,14 @@ import type {
   SqlFunctionCatalog,
 } from "../../shared/types";
 import { api, ApiRequestError, json } from "../api";
-import type { ProjectTextFile } from "../../shared/project-files";
+import {
+  MAX_SQL_FILE_CHARACTERS,
+  type ProjectTextFile,
+} from "../../shared/project-files";
+import {
+  resolveSearchMatch,
+  type TextSearchNavigationRequest,
+} from "../../shared/workspace-search";
 import {
   isSqlProjectFile,
   loadProjectFileDrafts,
@@ -149,6 +157,8 @@ interface Props {
   sourceToOpen?: SqlSourceRequest | null;
   savedToOpen?: QueryDocument | null;
   fileToOpen?: ProjectTextFile | null;
+  searchNavigation?: TextSearchNavigationRequest | null;
+  onSearchNavigationConsumed?: (requestId: string) => void;
   onFileConsumed?: () => void;
   onProjectFileSaved?: () => void;
   onGitEditorStateChange?: (state: ProjectGitEditorState | null) => void;
@@ -316,6 +326,26 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const activeRef = useRef(active);
   activeRef.current = active;
   const activeTabRef = useRef<HTMLDivElement>(null);
+  const [searchReveal, setSearchReveal] = useState<
+    (TextSearchNavigationRequest & { documentId: string }) | null
+  >(null);
+  const searchRequestSeen = useRef<string | null>(null);
+  const searchRequestRevealed = useRef<string | null>(null);
+  const revealSqlSearch = useRef<() => void>(() => {});
+  function finishSearchReveal(requestId: string, found: boolean) {
+    if (p.searchNavigation?.requestId !== requestId) return;
+    setSearchReveal(null);
+    if (!found)
+      p.onNotify(
+        "Совпадение найдено в сохранённой версии; в открытом документе оно изменено.",
+        "info",
+      );
+    p.onSearchNavigationConsumed?.(requestId);
+  }
+  function activateTab(id: string) {
+    if (searchReveal) finishSearchReveal(searchReveal.requestId, true);
+    setActiveId(id);
+  }
   useEffect(() => {
     const node = activeTabRef.current;
     const strip = node?.parentElement;
@@ -349,6 +379,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const mounted = useRef(true);
   const [saving, setSaving] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveError, setSaveError] = useState("");
   const [batchRequest, setBatchRequest] = useState<{
@@ -395,19 +426,25 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       end = model.getPositionAt(oldEnd);
     const selection = editor.getSelection(),
       scroll = editor.getScrollTop();
-    editor.pushUndoStop();
-    editor.executeEdits("project-agent", [
-      {
-        range: new monaco.Range(
-          start.lineNumber,
-          start.column,
-          end.lineNumber,
-          end.column,
-        ),
-        text: after.slice(from, newEnd),
-      },
-    ]);
-    editor.pushUndoStop();
+    // Remote changes must reach the model even while the agent's claim makes
+    // the editor read-only. Editor.executeEdits rejects edits in that state.
+    model.pushStackElement();
+    model.pushEditOperations(
+      selection ? [selection] : null,
+      [
+        {
+          range: new monaco.Range(
+            start.lineNumber,
+            start.column,
+            end.lineNumber,
+            end.column,
+          ),
+          text: after.slice(from, newEnd),
+        },
+      ],
+      () => (selection ? [selection] : null),
+    );
+    model.pushStackElement();
     if (selection) editor.setSelection(selection);
     editor.setScrollTop(scroll);
     // Local keystroke renders and save acknowledgments may trail Monaco's latest
@@ -429,6 +466,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     return () => window.removeEventListener("miracle:reset-layout", reset);
   }, [group]);
   const [resultExpanded, setResultExpanded] = useState(true);
+  const [resultMaximized, setResultMaximized] = useState(false);
   const [cursor, setCursor] = useState({ lineNumber: 1, column: 1 });
   const activeRun = runs[active.id];
   const result = results[active.id];
@@ -787,7 +825,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     if (!document) return;
     if (
       isSqlProjectFile(document.path) &&
-      document.content.length > 1_000_000
+      document.content.length > MAX_SQL_FILE_CHARACTERS
     ) {
       p.onNotify(
         "SQL-файл превышает лимит редактора: 1 000 000 символов.",
@@ -849,6 +887,73 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     setActiveId(file.id);
     p.onFileConsumed?.();
   }, [p.fileToOpen]);
+  useEffect(() => {
+    const request = p.searchNavigation;
+    if (!request) {
+      setSearchReveal(null);
+      return;
+    }
+    if (searchRequestSeen.current === request.requestId) return;
+    const target = request.target;
+    const documentId =
+      target.kind === "file"
+        ? filesRef.current.find((file) => file.path === target.path)?.id
+        : tabsRef.current.find((tab) => tab.queryId === target.id)?.id;
+    if (!documentId) {
+      if (p.fileToOpen || p.savedToOpen) return;
+      searchRequestSeen.current = request.requestId;
+      p.onSearchNavigationConsumed?.(request.requestId);
+      return;
+    }
+    searchRequestSeen.current = request.requestId;
+    setSearchReveal({ ...request, documentId });
+    setActiveId(documentId);
+  }, [p.searchNavigation, p.fileToOpen, p.savedToOpen, tabs, files]);
+  revealSqlSearch.current = () => {
+    const request = searchReveal;
+    const editor = editorRef.current,
+      model = editor?.getModel();
+    if (
+      !request ||
+      p.searchNavigation?.requestId !== request.requestId ||
+      searchRequestRevealed.current === request.requestId ||
+      activeTextFile ||
+      visibleId !== request.documentId ||
+      !editor ||
+      !model ||
+      model.uri.toString() !==
+        `miracle-query://${p.workspaceId}/${request.documentId}.sql`
+    )
+      return;
+    searchRequestRevealed.current = request.requestId;
+    if (group.current?.getLayout().editor === 0)
+      group.current.setLayout({ editor: 50, results: 50 });
+    const match = request.target.match;
+    const range = match
+      ? resolveSearchMatch(model.getValue(), match)
+      : undefined;
+    if (range) {
+      const start = model.getPositionAt(range.start),
+        end = model.getPositionAt(range.end);
+      const selection = new monaco.Range(
+        start.lineNumber,
+        start.column,
+        end.lineNumber,
+        end.column,
+      );
+      editor.setSelection(selection);
+      editor.revealRangeInCenter(selection);
+    }
+    editor.focus();
+    finishSearchReveal(request.requestId, !match || Boolean(range));
+  };
+  useEffect(() => {
+    if (searchReveal && visibleId !== searchReveal.documentId) {
+      finishSearchReveal(searchReveal.requestId, true);
+      return;
+    }
+    revealSqlSearch.current();
+  }, [searchReveal, visibleId, active.sql, active.externalSqlRevision]);
   refreshFile.current = async (id: string) => {
     const file = filesRef.current.find((item) => item.id === id);
     if (!file || workForId(id)) return;
@@ -1515,6 +1620,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     });
     editor.onDidChangeCursorSelection(updateExecutableSql);
     editor.onDidChangeModel(updateExecutableSql);
+    editor.onDidChangeModel(() => revealSqlSearch.current());
     updateExecutableSql();
     editor.onDidScrollChange((e) => {
       patch(activeRef.current.id, { scrollTop: e.scrollTop });
@@ -1522,6 +1628,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     const t = activeRef.current;
     if (t.cursor) editor.setPosition(t.cursor);
     if (t.scrollTop) editor.setScrollTop(t.scrollTop);
+    revealSqlSearch.current();
   };
   async function actOnRun(action: "resume" | "cancel") {
     const tabId = activeRef.current.id;
@@ -1709,7 +1816,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                 role="tab"
                 aria-selected={t.id === visibleId}
                 title={files.find((file) => file.id === t.id)?.path || t.name}
-                onClick={() => setActiveId(t.id)}
+                onClick={() => activateTab(t.id)}
               >
                 <Code size={13} />
                 <span>{t.name}</span>
@@ -1752,7 +1859,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                   role="tab"
                   title={file.path}
                   aria-selected={file.id === visibleId}
-                  onClick={() => setActiveId(file.id)}
+                  onClick={() => activateTab(file.id)}
                 >
                   <Code size={13} />
                   <span>{file.name}</span>
@@ -1834,6 +1941,16 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             );
           }}
           onSave={() => void saveProjectFile(activeTextFile.id)}
+          revealRequest={
+            searchReveal?.documentId === activeTextFile.id &&
+            p.searchNavigation?.requestId === searchReveal.requestId
+              ? {
+                  requestId: searchReveal.requestId,
+                  match: searchReveal.target.match,
+                }
+              : undefined
+          }
+          onRevealComplete={finishSearchReveal}
         />
       ) : (
         <>
@@ -1897,6 +2014,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                     sideOffset={6}
                     collisionPadding={8}
                     onCloseAutoFocus={(event) => {
+                      if (contextOpen) {
+                        event.preventDefault();
+                        return;
+                      }
                       if (!restoreEditorFocus.current) return;
                       restoreEditorFocus.current = false;
                       if (editorRef.current) {
@@ -1914,6 +2035,11 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       <DownloadSimple size={16} /> Скачать .sql файл
                     </DropdownMenu.Item>
                     <DropdownMenu.Separator />
+                    {connection && (
+                      <DropdownMenu.Item onSelect={() => setContextOpen(true)}>
+                        <Database size={16} /> Контекст запроса
+                      </DropdownMenu.Item>
+                    )}
                     <DropdownMenu.Item
                       disabled={Boolean(activeWork)}
                       onSelect={() => {
@@ -1978,52 +2104,6 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
               )}
             </div>
           </div>
-          {connection && (
-            <div className="query-context">
-              {connection.engine === "trino" ? (
-                <>
-                  <label>
-                    Каталог
-                    <input
-                      aria-label="Каталог запроса"
-                      disabled={Boolean(activeWork)}
-                      value={active.catalog ?? connection.catalog ?? ""}
-                      placeholder="catalog"
-                      onChange={(e) =>
-                        patch(active.id, { catalog: e.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Схема
-                    <input
-                      aria-label="Схема запроса"
-                      disabled={Boolean(activeWork)}
-                      value={active.schema ?? connection.schema ?? ""}
-                      placeholder="schema"
-                      onChange={(e) =>
-                        patch(active.id, { schema: e.target.value })
-                      }
-                    />
-                  </label>
-                </>
-              ) : (
-                <label>
-                  База
-                  <input
-                    aria-label="База запроса"
-                    disabled={Boolean(activeWork)}
-                    value={active.database ?? connection.database ?? ""}
-                    placeholder="default"
-                    onChange={(e) =>
-                      patch(active.id, { database: e.target.value })
-                    }
-                  />
-                </label>
-              )}
-              <span className="readonly-tag">READ ONLY</span>
-            </div>
-          )}
           <Group
             orientation="vertical"
             groupRef={group}
@@ -2037,6 +2117,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                 JSON.stringify(l),
               );
               setResultExpanded((l.results || 0) > 0);
+              setResultMaximized(l.editor === 0);
             }}
             className="editor-results-group"
           >
@@ -2162,12 +2243,26 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       />
                     )}
                     <IconButton
-                      label="Развернуть результат"
-                      onClick={() =>
-                        group.current?.setLayout({ editor: 0, results: 100 })
+                      label={
+                        resultMaximized
+                          ? "Восстановить запрос и результат"
+                          : "Развернуть результат"
                       }
+                      onClick={() => {
+                        const panels = group.current;
+                        if (!panels) return;
+                        panels.setLayout(
+                          panels.getLayout().editor === 0
+                            ? { editor: 50, results: 50 }
+                            : { editor: 0, results: 100 },
+                        );
+                      }}
                     >
-                      <ArrowsOutSimple size={13} />
+                      {resultMaximized ? (
+                        <ArrowsInSimple size={13} />
+                      ) : (
+                        <ArrowsOutSimple size={13} />
+                      )}
                     </IconButton>
                   </div>
                 </div>
@@ -2308,6 +2403,71 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             Сохранить и закрыть
           </button>
         </div>
+      </Modal>
+      <Modal
+        open={contextOpen && Boolean(connection) && !activeTextFile}
+        onOpenChange={setContextOpen}
+        title="Контекст запроса"
+        onCloseAutoFocus={(event) => {
+          if (editorRef.current) {
+            event.preventDefault();
+            editorRef.current.focus();
+          }
+        }}
+      >
+        {connection && (
+          <>
+            {connection.engine === "trino" ? (
+              <>
+                <label>
+                  Каталог
+                  <input
+                    aria-label="Каталог запроса"
+                    disabled={Boolean(activeWork)}
+                    value={active.catalog ?? connection.catalog ?? ""}
+                    placeholder="catalog"
+                    onChange={(e) =>
+                      patch(active.id, { catalog: e.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  Схема
+                  <input
+                    aria-label="Схема запроса"
+                    disabled={Boolean(activeWork)}
+                    value={active.schema ?? connection.schema ?? ""}
+                    placeholder="schema"
+                    onChange={(e) =>
+                      patch(active.id, { schema: e.target.value })
+                    }
+                  />
+                </label>
+              </>
+            ) : (
+              <label>
+                База
+                <input
+                  aria-label="База запроса"
+                  disabled={Boolean(activeWork)}
+                  value={active.database ?? connection.database ?? ""}
+                  placeholder="default"
+                  onChange={(e) =>
+                    patch(active.id, { database: e.target.value })
+                  }
+                />
+              </label>
+            )}
+            <div className="modal-actions">
+              <button
+                className="button primary"
+                onClick={() => setContextOpen(false)}
+              >
+                Готово
+              </button>
+            </div>
+          </>
+        )}
       </Modal>
       <DateBatchDialog
         open={Boolean(batchRequest)}
