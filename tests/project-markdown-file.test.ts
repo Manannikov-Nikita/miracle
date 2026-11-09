@@ -79,6 +79,15 @@ describe("Markdown project files", () => {
         disconnect() {}
       },
     );
+    // jsdom has no layout API for ranges; CodeMirror measures them in its RAF.
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: () => [],
+    });
+    Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value: () => new DOMRect(),
+    });
     vi.clearAllMocks();
     project = new ProjectSync();
     container = document.createElement("div");
@@ -105,6 +114,8 @@ describe("Markdown project files", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    Reflect.deleteProperty(Range.prototype, "getClientRects");
+    Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
     vi.unstubAllGlobals();
   });
 
@@ -224,6 +235,43 @@ describe("Markdown project files", () => {
     expect(container.querySelector(".md-preview-h1")?.textContent).toBe(
       "Guide",
     );
+  });
+
+  it("reveals a Markdown search match without changing source or undo history", async () => {
+    const text = "bold";
+    const start = props.file.content.indexOf(text);
+    const complete = vi.fn();
+    await render({
+      revealRequest: {
+        requestId: "first",
+        match: {
+          start,
+          end: start + text.length,
+          text,
+          before: props.file.content.slice(0, start),
+          after: props.file.content.slice(start + text.length),
+        },
+      },
+      onRevealComplete: complete,
+    });
+    // Let CodeMirror's scheduled DOM measurement run before unmounting.
+    await act(async () => {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    });
+    expect(view().state.selection.main.from).toBe(start);
+    expect(view().state.selection.main.to).toBe(start + text.length);
+    expect(view().state.doc.toString()).toBe(props.file.content);
+    expect(changes).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith("first", true);
+    expect(undo(view())).toBe(false);
+    await act(async () => view().dispatch({ selection: { anchor: 0 } }));
+    await render({
+      revealRequest: { ...props.revealRequest!, requestId: "second" },
+    });
+    expect(view().state.selection.main.from).toBe(start);
+    expect(complete).toHaveBeenCalledWith("second", true);
   });
 
   it("allows edits beyond the board card's 200k limit without truncating the file", async () => {

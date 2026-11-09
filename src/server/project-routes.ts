@@ -16,6 +16,10 @@ export function registerProjectRoutes(
   store: ProjectStore,
   need: (req: FastifyRequest) => void,
 ) {
+  const modelRequests = new Set<AbortController>();
+  app.addHook("onClose", async () => {
+    for (const controller of modelRequests) controller.abort();
+  });
   const id = (req: FastifyRequest) =>
     z.uuid().parse((req.params as { id: string }).id);
   app.get("/api/project", async (req) => {
@@ -143,6 +147,55 @@ export function registerProjectRoutes(
       profile.command,
       store.context.projectRoot,
     );
+  });
+  app.get("/api/agent-profiles/:id/models", async (req, reply) => {
+    need(req);
+    const profile = store.profile(id(req));
+    if (!profile.trusted)
+      throw problem(
+        403,
+        "Сначала подтвердите локальную настройку команды",
+        "AGENT_PROFILE_UNTRUSTED",
+      );
+    if (modelRequests.size >= 4)
+      throw problem(
+        429,
+        "Список моделей уже загружается. Повторите через несколько секунд",
+        "AGENT_MODELS_BUSY",
+      );
+    const controller = new AbortController();
+    modelRequests.add(controller);
+    const abort = () => controller.abort();
+    req.raw.on("aborted", abort);
+    reply.raw.on("close", abort);
+    reply.header("Cache-Control", "no-store");
+    try {
+      const discover =
+        profile.provider === "codex"
+          ? (await import("./agents/codex-models.js")).discoverCodexModels
+          : (await import("./agents/claude-models.js")).discoverClaudeModels;
+      const catalog = await discover(
+        profile.command,
+        store.context.projectRoot,
+        controller.signal,
+      );
+      const current = store.profile(profile.id);
+      if (
+        !current.trusted ||
+        current.command !== profile.command ||
+        current.provider !== profile.provider
+      )
+        throw problem(
+          409,
+          "Профиль изменился. Обновите список моделей",
+          "AGENT_PROFILE_CHANGED",
+        );
+      return catalog;
+    } finally {
+      req.raw.off("aborted", abort);
+      reply.raw.off("close", abort);
+      modelRequests.delete(controller);
+    }
   });
   app.get("/api/chats", async (req) => {
     need(req);

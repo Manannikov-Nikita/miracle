@@ -542,7 +542,13 @@ export class AgentManager {
     };
     this.active = active;
     active.completion = Promise.resolve().then(() =>
-      this.execute(active, profile.provider, profile.command, b.content),
+      this.execute(
+        active,
+        profile.provider,
+        profile.command,
+        b.content,
+        chat.modelSettings,
+      ),
     );
     return active.turn;
   }
@@ -748,14 +754,25 @@ export class AgentManager {
     provider: "codex" | "claude",
     command: string,
     content: string,
+    modelSettings?: import("../../shared/agents.js").AgentModelSettings,
   ) {
     try {
       if (active.cancelled) return;
-      const native =
-        this.store.db.query(
-          "SELECT native_session_id FROM agent_chats WHERE id=?1",
-          [active.turn.chatId],
-        ).rows[0].native_session_id || undefined;
+      const nativeState = this.store.db.query(
+        "SELECT native_session_id,native_session_reset FROM agent_chats WHERE id=?1",
+        [active.turn.chatId],
+      ).rows[0];
+      const settingsReset = Boolean(nativeState.native_session_reset);
+      const native = settingsReset
+        ? undefined
+        : nativeState.native_session_id || undefined;
+      if (settingsReset)
+        this.store.message(
+          active.turn.chatId,
+          active.turn.id,
+          "system",
+          "Настройки модели изменены. Новая сессия Claude получит сохранённую историю чата.",
+        );
       const launch = (
         resumeSessionId: string | undefined,
         fallback = false,
@@ -763,6 +780,7 @@ export class AgentManager {
         active.process = startAgentTurn({
           provider,
           command,
+          modelSettings,
           cwd: this.store.context.projectRoot,
           prompt: this.prompt(active, content, fallback),
           images: this.imagesForTurn(active, fallback),
@@ -773,7 +791,7 @@ export class AgentManager {
         return active.process.completion;
       };
       try {
-        await launch(native);
+        await launch(native, settingsReset);
       } catch (error) {
         if (
           native &&
@@ -797,6 +815,11 @@ export class AgentManager {
           await launch(undefined, true);
         } else throw error;
       }
+      if (settingsReset)
+        this.store.db.query(
+          "UPDATE agent_chats SET native_session_reset=0 WHERE id=?1",
+          [active.turn.chatId],
+        );
       this.flush(active);
       active.ending = true;
       await Promise.allSettled(active.steers.values());

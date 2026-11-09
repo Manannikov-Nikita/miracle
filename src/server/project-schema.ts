@@ -5,6 +5,10 @@ export const agentQueryRunsSchema = `
 CREATE TABLE agent_query_runs(run_id TEXT PRIMARY KEY REFERENCES query_runs(id) ON DELETE CASCADE,chat_id TEXT NOT NULL REFERENCES agent_chats(id),turn_id TEXT NOT NULL REFERENCES agent_turns(id));
 CREATE INDEX agent_query_runs_chat ON agent_query_runs(chat_id);
 `;
+export const agentModelSettingsMigration = `
+ALTER TABLE agent_chats ADD COLUMN model_settings_json TEXT CHECK(model_settings_json IS NULL OR json_valid(model_settings_json));
+ALTER TABLE agent_chats ADD COLUMN native_session_reset INTEGER NOT NULL DEFAULT 0 CHECK(native_session_reset IN (0,1));
+`;
 export const projectSchema = `
 CREATE TABLE editor_documents(id TEXT PRIMARY KEY,document TEXT NOT NULL CHECK(json_valid(document)),revision INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL);
 CREATE TABLE project_events(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,entity_id TEXT,payload TEXT NOT NULL CHECK(json_valid(payload)));
@@ -19,5 +23,6 @@ CREATE TABLE agent_messages(id TEXT PRIMARY KEY,chat_id TEXT NOT NULL REFERENCES
 CREATE INDEX agent_messages_chat ON agent_messages(chat_id,created_at);
 CREATE INDEX agent_turns_chat ON agent_turns(chat_id,created_at);
 ${agentQueryRunsSchema}
-PRAGMA user_version=6;
+${agentModelSettingsMigration}
+PRAGMA user_version=7;
 `;

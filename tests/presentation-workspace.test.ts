@@ -4,17 +4,23 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ReactFlowProps } from "@xyflow/react";
 import type { Board, BoardNode } from "../src/shared/types";
-import { CanvasWorkspaceProvider } from "../src/client/canvas-workspace";
+import {
+  CanvasWorkspaceProvider,
+  useCanvasWorkspace,
+  type CanvasWorkspace,
+} from "../src/client/canvas-workspace";
 import {
   ProjectSync,
   ProjectSyncContext,
 } from "../src/client/agents/ProjectSync";
 import BoardWorkspace from "../src/client/board/BoardWorkspace";
+import { findSearchMatch } from "../src/shared/workspace-search";
 
 const flow = vi.hoisted(() => ({
   board: {} as ReactFlowProps,
   deck: {} as ReactFlowProps,
   viewport: { x: 0, y: 0, zoom: 1 },
+  fits: [] as string[][],
 }));
 vi.mock("@xyflow/react", async (original) => {
   const actual = await original<typeof import("@xyflow/react")>();
@@ -25,7 +31,11 @@ vi.mock("@xyflow/react", async (original) => {
       flow.viewport = viewport;
       return true;
     },
-    fitView: async () => true,
+    fitView: async (options?: { nodes?: { id: string }[] }) => {
+      flow.fits.push(options?.nodes?.map((node) => node.id) ?? []);
+      return true;
+    },
+    fitBounds: async () => true,
     screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({
       x: x - 500,
       y,
@@ -68,6 +78,11 @@ describe("presentation workspace routing", () => {
   let board: Board;
   let deck: Board;
   let writes: string[];
+  let registry: CanvasWorkspace;
+  function CaptureRegistry() {
+    registry = useCanvasWorkspace()!;
+    return null;
+  }
   const rect = (left: number, right: number) => ({
     left,
     right,
@@ -96,6 +111,7 @@ describe("presentation workspace routing", () => {
             onTransferOpen() {},
             onNotify: notify,
             children: [
+              createElement(CaptureRegistry, { key: "registry" }),
               createElement(BoardWorkspace, {
                 ...common,
                 key: "board",
@@ -117,6 +133,7 @@ describe("presentation workspace routing", () => {
   beforeEach(async () => {
     localStorage.clear();
     flow.viewport = { x: 0, y: 0, zoom: 1 };
+    flow.fits = [];
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     project = new ProjectSync();
@@ -183,6 +200,112 @@ describe("presentation workspace routing", () => {
       { type: "position", id: "source", position: { x, y }, dragging },
     ]);
   };
+
+  it("reveals a saved match on its current slide after restoring the camera", async () => {
+    await act(async () =>
+      registry.openSearchResult({
+        kind: "presentation",
+        id: deck.id,
+        revision: deck.revision,
+        nodeId: "second-note",
+        slideId: "first",
+        field: "node.text",
+        match: findSearchMatch("Independent context", "context"),
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(registry.getCanvas("presentation")?.destination()?.slideId).toBe(
+      "second",
+    );
+    expect(
+      flow.deck.nodes?.find((node) => node.id === "second-note")?.selected,
+    ).toBe(true);
+    expect(flow.fits).toContainEqual(["second-note"]);
+    expect(writes).toEqual([]);
+  });
+
+  it("waits for the search dialog to close and does not steal focus after cancellation", async () => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("data-state", "open");
+    document.body.append(dialog);
+    const controller = new AbortController();
+    await act(async () =>
+      registry.openSearchResult(
+        {
+          kind: "presentation",
+          id: deck.id,
+          revision: deck.revision,
+          nodeId: "second-note",
+          field: "node.text",
+          match: findSearchMatch("Independent context", "context"),
+        },
+        { signal: controller.signal },
+      ),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(flow.fits).not.toContainEqual(["second-note"]);
+    controller.abort();
+    dialog.remove();
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(flow.fits).not.toContainEqual(["second-note"]);
+    expect(
+      flow.deck.nodes?.find((node) => node.id === "second-note")?.selected,
+    ).not.toBe(true);
+  });
+
+  it("reuses a current board without replacing its local changes", async () => {
+    await act(async () => moveSource(250, 100, false));
+    await act(async () =>
+      registry.openSearchResult({
+        kind: "board",
+        id: board.id,
+        revision: board.revision,
+        nodeId: "source",
+        field: "node.text",
+        match: findSearchMatch("Independent context", "context"),
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(
+      flow.board.nodes?.find((node) => node.id === "source"),
+    ).toMatchObject({
+      position: { x: 250, y: 100 },
+      selected: true,
+    });
+    expect(writes).toEqual([]);
+  });
+
+  it("refreshes a saved match through the merge without losing disjoint local changes", async () => {
+    await act(async () => moveSource(250, 100, false));
+    board.revision++;
+    board.document.nodes.push({
+      ...note("fresh"),
+      data: { kind: "note", title: "New note", text: "Freshly saved target" },
+    });
+    await act(async () =>
+      registry.openSearchResult({
+        kind: "board",
+        id: board.id,
+        revision: board.revision,
+        nodeId: "fresh",
+        field: "node.text",
+        match: findSearchMatch("Freshly saved target", "target"),
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(flow.board.nodes?.find((node) => node.id === "fresh")).toMatchObject(
+      {
+        selected: true,
+        data: { text: "Freshly saved target" },
+      },
+    );
+    expect(
+      flow.board.nodes?.find((node) => node.id === "source")?.position,
+    ).toEqual({ x: 250, y: 100 });
+    expect(writes).toEqual([]);
+  });
 
   it.each(["board", "presentation"] as const)(
     "creates a styled text block in the chosen %s panel and preserves it through undo/redo",

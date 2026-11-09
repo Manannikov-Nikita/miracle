@@ -992,7 +992,7 @@ svg {
   height: 44px;
   padding: 0 10px;
   gap: 8px;
-  border-bottom: 0;
+  border-bottom: 1px solid var(--border-subtle);
   background: var(--bg);
 }
 .sql-toolbar-context {
@@ -1051,45 +1051,6 @@ svg {
   color: #e5b3b7;
   background: #493339;
   border-color: #725059;
-}
-.query-context {
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg);
-  flex-shrink: 0;
-}
-.query-context label {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 7px;
-  color: var(--text-quiet);
-  font-size: 12px;
-  min-width: 0;
-  flex: 1;
-}
-.query-context input {
-  height: 20px;
-  padding: 1px 4px;
-  border: 0;
-  border-radius: 2px;
-  background: transparent;
-  font-size: 12px;
-  width: 100%;
-  color: var(--muted);
-}
-.query-context input:focus {
-  background: var(--hover);
-}
-.readonly-tag {
-  font-size: 12px;
-  letter-spacing: 0;
-  color: var(--text-quiet);
-  flex-shrink: 0;
 }
 .editor-results-group {
   flex: 1;
@@ -2021,9 +1982,6 @@ kbd {
 @media (max-width: 650px) {
   .sql-toolbar .shortcut {
     display: none;
-  }
-  .query-context {
-    gap: 6px;
   }
   .sql-toolbar {
     height: 40px;

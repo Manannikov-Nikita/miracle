@@ -7,6 +7,7 @@ import {
   Database,
   FolderSimple,
   GearSix,
+  MagnifyingGlass,
   PlugsConnected,
   Presentation,
   Question,
@@ -28,6 +29,7 @@ export default function WorkspaceRail({
   onConnections,
   onHelp,
   onSettings,
+  onSearch,
 }: {
   mode: PaneMode;
   explorer: ExplorerKind | null;
@@ -40,6 +42,7 @@ export default function WorkspaceRail({
   onConnections: () => void;
   onHelp: () => void;
   onSettings: () => void;
+  onSearch?: () => void;
 }) {
   return (
     <nav className="activity-bar" aria-label="Рабочая область">
@@ -102,6 +105,16 @@ export default function WorkspaceRail({
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
+
+      {onSearch && (
+        <IconButton
+          label="Поиск по проекту (⌘K / Ctrl+K)"
+          aria-keyshortcuts="Meta+K Control+K"
+          onClick={onSearch}
+        >
+          <MagnifyingGlass size={21} />
+        </IconButton>
+      )}
 
       <div
         className="activity-group"

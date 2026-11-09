@@ -41,6 +41,10 @@ import TextBlockContent from "./TextBlockContent";
 import { boardHandleOptions } from "./connection-sides";
 import type { ResizeSides } from "./resize-snapping";
 import { presentationColors } from "./presentation-colors";
+import ShapeTransformControls, {
+  type ShapeTransformPatch,
+} from "./ShapeTransformControls";
+import { normalizeRotation } from "./shape-rotation";
 const handlePositions = {
   top: Position.Top,
   right: Position.Right,
@@ -67,6 +71,9 @@ export const BoardActions = createContext<{
   metadata: (result: ResultSet) => void;
   resizeStart: (id: string, sides: ResizeSides, raw: ResizeParams) => void;
   resize: (id: string, raw: ResizeParams, moved: boolean) => void;
+  shapeTransformStart?: (id: string) => boolean;
+  shapeTransform?: (id: string, patch: ShapeTransformPatch) => void;
+  shapeTransformEnd?: (id: string, cancelled: boolean) => void;
   busy: Record<string, boolean>;
 }>({
   boardId: "",
@@ -83,7 +90,15 @@ export const BoardActions = createContext<{
 });
 const selectZoom = (state: ReactFlowState) => state.transform[2];
 
-function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
+function ArtifactNode({
+  id,
+  data,
+  selected,
+  width,
+  height,
+  positionAbsoluteX,
+  positionAbsoluteY,
+}: NodeProps<ArtifactFlowNode>) {
   const actions = useContext(BoardActions);
   const editable = actions.editable && (actions.canEditNode?.(id) ?? true);
   const presentation = actions.presentation === true;
@@ -97,12 +112,16 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   const content = useRef<HTMLDivElement>(null);
   const updateNodeInternals = useUpdateNodeInternals();
   const shapeType = data.kind === "shape" ? data.shape?.type : undefined;
-  const previousShapeType = useRef(shapeType);
+  const rotation =
+    data.kind === "shape" ? normalizeRotation(data.shape?.rotation ?? 0) : 0;
+  const anchorGeometry = `${shapeType}:${rotation}:${width}:${height}`;
+  const previousAnchorGeometry = useRef(anchorGeometry);
   useLayoutEffect(() => {
-    // A type switch can move anchors without changing the node's dimensions.
-    if (previousShapeType.current !== shapeType) updateNodeInternals(id);
-    previousShapeType.current = shapeType;
-  }, [id, shapeType, updateNodeInternals]);
+    // Shape rotation moves the anchors inside XYFlow's unrotated wrapper.
+    if (previousAnchorGeometry.current !== anchorGeometry)
+      updateNodeInternals(id);
+    previousAnchorGeometry.current = anchorGeometry;
+  }, [id, anchorGeometry, updateNodeInternals]);
   useLayoutEffect(() => {
     const element = content.current;
     if (!presentation || !element) return;
@@ -157,6 +176,10 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
       style={
         {
           "--board-resize-unit": `${1 / zoom}px`,
+          ...(data.kind === "shape" && {
+            transform: `rotate(${rotation}deg)`,
+            transformOrigin: "center",
+          }),
           ...(colors && {
             "--board-text": colors.text,
             "--board-muted": colors.muted,
@@ -171,7 +194,7 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
       <NodeResizer
         minWidth={freeform ? 40 : data.kind === "markdown" ? 240 : 280}
         minHeight={freeform ? 40 : data.kind === "markdown" ? 140 : 180}
-        isVisible={selected && editable}
+        isVisible={selected && editable && rotation === 0}
         lineClassName="board-resize-line"
         handleClassName="board-resize-handle"
         autoScale={false}
@@ -179,25 +202,90 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
         onResize={resize}
         onResizeEnd={resizeEnd}
       />
-      {boardHandleOptions.map(({ value, label }) => (
+      {selected &&
+        editable &&
+        data.kind === "shape" &&
+        actions.shapeTransformStart &&
+        actions.shapeTransform &&
+        actions.shapeTransformEnd && (
+          <ShapeTransformControls
+            key={`${actions.boardId}:${id}`}
+            rotation={rotation}
+            zoom={zoom}
+            rectangle={{
+              x: positionAbsoluteX,
+              y: positionAbsoluteY,
+              width: width ?? 480,
+              height: height ?? 300,
+            }}
+            onStart={() => actions.shapeTransformStart!(id)}
+            onChange={(patch) => actions.shapeTransform!(id, patch)}
+            onEnd={(cancelled) => actions.shapeTransformEnd!(id, cancelled)}
+          />
+        )}
+      {/* Retain measured anchors for existing edges when a shape becomes a line. */}
+      {boardHandleOptions.map(({ value, label }, index) => (
         <Handle
           key={value}
           id={value}
           type="source"
-          position={handlePositions[value]}
-          style={
-            shapeType === "triangle" && value === "left"
-              ? { left: "25%" }
-              : shapeType === "triangle" && value === "right"
-                ? { right: "25%" }
-                : shapeType === "arrow" &&
-                    (value === "top" || value === "bottom")
-                  ? { left: "62%" }
-                  : undefined
+          position={
+            handlePositions[
+              boardHandleOptions[(index + Math.round(rotation / 90)) % 4].value
+            ]
           }
-          isConnectable={editable}
-          title={`Соединить ${label.toLowerCase()}`}
-          aria-label={`Соединить ${label.toLowerCase()}: ${data.title}`}
+          style={
+            rotation !== 0
+              ? {
+                  left:
+                    value === "left"
+                      ? shapeType === "triangle"
+                        ? "25%"
+                        : "0%"
+                      : value === "right"
+                        ? shapeType === "triangle"
+                          ? "75%"
+                          : "100%"
+                        : shapeType === "arrow"
+                          ? "62%"
+                          : "50%",
+                  top:
+                    value === "top"
+                      ? "0%"
+                      : value === "bottom"
+                        ? "100%"
+                        : "50%",
+                  right: "auto",
+                  bottom: "auto",
+                  transform: "translate(-50%, -50%)",
+                  ...(shapeType === "line" && {
+                    visibility: "hidden",
+                    pointerEvents: "none",
+                  }),
+                }
+              : shapeType === "line"
+                ? { visibility: "hidden", pointerEvents: "none" }
+                : shapeType === "triangle" && value === "left"
+                  ? { left: "25%" }
+                  : shapeType === "triangle" && value === "right"
+                    ? { right: "25%" }
+                    : shapeType === "arrow" &&
+                        (value === "top" || value === "bottom")
+                      ? { left: "62%" }
+                      : undefined
+          }
+          isConnectable={editable && shapeType !== "line"}
+          title={
+            shapeType === "line"
+              ? undefined
+              : `Соединить ${label.toLowerCase()}`
+          }
+          aria-hidden={shapeType === "line" || undefined}
+          aria-label={
+            shapeType === "line"
+              ? undefined
+              : `Соединить ${label.toLowerCase()}: ${data.title}`
+          }
         />
       ))}
       {!presentation && !freeform && (
@@ -330,12 +418,16 @@ function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
   );
 }
 
-// Position, drag flags and measured dimensions belong to XYFlow's wrapper.
-// The card consumes only these props; resizer/zoom subscriptions remain live.
+// Only shape controls consume geometry; other cards keep their cheap memo path.
 export default memo(
   ArtifactNode,
   (previous, next) =>
     previous.id === next.id &&
     previous.data === next.data &&
-    previous.selected === next.selected,
+    previous.selected === next.selected &&
+    (next.data.kind !== "shape" ||
+      (previous.width === next.width &&
+        previous.height === next.height &&
+        previous.positionAbsoluteX === next.positionAbsoluteX &&
+        previous.positionAbsoluteY === next.positionAbsoluteY)),
 );

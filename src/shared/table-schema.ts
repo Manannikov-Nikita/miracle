@@ -54,6 +54,7 @@ const column = z.object({
   hidden: z.boolean().optional(),
   width: z.number().int().min(80).max(800).optional(),
   align: z.enum(["left", "center", "right"]).optional(),
+  dataType: z.enum(["auto", "date"]).optional(),
   format: z
     .enum([
       "auto",

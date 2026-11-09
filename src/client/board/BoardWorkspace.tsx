@@ -41,6 +41,7 @@ import {
 } from "@phosphor-icons/react";
 import "@xyflow/react/dist/style.css";
 import type {
+  Board,
   BoardDocument,
   BoardKind,
   PresentationSlide,
@@ -52,6 +53,11 @@ import type {
   ResultSet,
 } from "../../shared/types";
 import { api, waitForRun } from "../api";
+import {
+  readCanvasSearchText,
+  type CanvasSearchTarget,
+} from "../../shared/canvas-search-text";
+import { resolveSearchMatch } from "../../shared/workspace-search";
 import {
   useCanvasWorkspace,
   type CanvasDestination,
@@ -74,6 +80,8 @@ import {
 import { Select } from "../components/Select";
 import { ErrorBox } from "../components/UI";
 import DateBatchProgress from "../components/DateBatchProgress";
+import { normalizeRotation } from "./shape-rotation";
+import type { ShapeTransformPatch } from "./ShapeTransformControls";
 import ArtifactNode, {
   BoardActions,
   type ArtifactFlowNode,
@@ -218,6 +226,7 @@ function Workspace({
   const registry = useCanvasWorkspace();
   const store = useBoard(workspaceId, notify, kind, false);
   const { board, editable, change, flushDraft } = store;
+  const emptyCollection = store.ready && !board && store.list.length === 0;
   const agentLocks = useAgentWorkLocks();
   const presentation = kind === "presentation";
   const canvasName = presentation ? "Презентация" : "Доска";
@@ -379,6 +388,17 @@ function Workspace({
   const suppressDragClick = useRef(false);
   const [inspecting, setInspecting] = useState(false);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const searchNavigation = useRef<{
+    controller: AbortController;
+    dispose(): void;
+  } | null>(null);
+  const [searchReveal, setSearchReveal] = useState<{
+    target: CanvasSearchTarget;
+    signal: AbortSignal;
+    selectionSequence: number;
+    slideId?: string;
+    dispose(): void;
+  } | null>(null);
   const hasSelection =
     board?.document.nodes.some((node) => selectedIds.has(node.id)) ||
     board?.document.edges.some((edge) => edge.id === selectedEdge);
@@ -503,6 +523,155 @@ function Workspace({
     },
     [store.current],
   );
+  const shapeGesture = useRef<{
+    boardId: string;
+    slideId?: string;
+    node: BoardNode;
+    rotation: boolean;
+    rectangle: boolean;
+  } | null>(null);
+  const shapeTransformStart = useCallback(
+    (id: string) => {
+      const current = store.current.current;
+      if (
+        !editableRef.current ||
+        !current ||
+        gesture.current ||
+        !store.canEditNode(id) ||
+        conflictRef.current
+      )
+        return false;
+      const node = current.document.nodes.find((item) => item.id === id);
+      if (
+        !node ||
+        node.data.kind !== "shape" ||
+        !node.data.shape ||
+        node.slideId !== slideRef.current
+      )
+        return false;
+      shapeGesture.current = {
+        boardId: current.id,
+        slideId: slideRef.current,
+        node,
+        rotation: false,
+        rectangle: false,
+      };
+      gesture.current = current.document;
+      gestureNodes.current = new Set([id]);
+      gestureEdges.current.clear();
+      movingIds.current = null;
+      setGuides([]);
+      return true;
+    },
+    [store.current, store.canEditNode],
+  );
+  const shapeTransform = useCallback(
+    (id: string, patch: ShapeTransformPatch) => {
+      const active = shapeGesture.current;
+      const current = store.current.current;
+      if (
+        !active ||
+        active.node.id !== id ||
+        active.boardId !== current?.id ||
+        active.slideId !== slideRef.current ||
+        !gesture.current ||
+        !editableRef.current ||
+        !store.canEditNode(id) ||
+        conflictRef.current
+      )
+        return;
+      const node = current.document.nodes.find((item) => item.id === id);
+      if (!node || node.data.kind !== "shape" || !node.data.shape) return;
+      const next = { ...node };
+      if (patch.rotation !== undefined && Number.isFinite(patch.rotation)) {
+        active.rotation = true;
+        next.data = {
+          ...node.data,
+          shape: {
+            ...node.data.shape,
+            rotation: normalizeRotation(patch.rotation),
+          },
+        };
+      }
+      if (patch.rectangle) {
+        const { x, y, width, height } = patch.rectangle;
+        if (
+          [x, y, width, height].every(Number.isFinite) &&
+          Math.abs(x) <= 1_000_000 &&
+          Math.abs(y) <= 1_000_000 &&
+          width >= 40 &&
+          height >= 40 &&
+          width <= 10_000 &&
+          height <= 10_000
+        ) {
+          active.rectangle = true;
+          next.position = { x, y };
+          next.width = width;
+          next.height = height;
+        }
+      }
+      change(
+        {
+          ...current.document,
+          nodes: current.document.nodes.map((item) =>
+            item.id === id ? next : item,
+          ),
+        },
+        false,
+        { deferDraft: true },
+      );
+    },
+    [change, store.current, store.canEditNode],
+  );
+  const shapeTransformEnd = useCallback(
+    (id: string, cancelled: boolean) => {
+      const active = shapeGesture.current;
+      if (!active || active.node.id !== id) return;
+      shapeGesture.current = null;
+      const before = gesture.current;
+      gesture.current = null;
+      gestureNodes.current.clear();
+      gestureEdges.current.clear();
+      const current = store.current.current;
+      if (
+        !before ||
+        active.boardId !== current?.id ||
+        active.slideId !== slideRef.current ||
+        !store.canEditNode(id) ||
+        !editableRef.current ||
+        conflictRef.current
+      )
+        return;
+      // Both cancellation and undo restore only this gesture's fields. Preserve
+      // edits to other nodes and to other properties of this same shape.
+      const restored = {
+        ...current.document,
+        nodes: current.document.nodes.map((node) => {
+          if (node.id !== id || node.data.kind !== "shape" || !node.data.shape)
+            return node;
+          const next = { ...node };
+          if (active.rectangle) {
+            next.position = active.node.position;
+            next.width = active.node.width;
+            next.height = active.node.height;
+          }
+          if (active.rotation) {
+            const shape = { ...node.data.shape };
+            if (active.node.data.shape?.rotation === undefined)
+              delete shape.rotation;
+            else shape.rotation = active.node.data.shape.rotation;
+            next.data = { ...node.data, shape };
+          }
+          return next;
+        }),
+      };
+      if (cancelled) change(restored, false);
+      else store.recordHistory(restored);
+      flushDraft();
+      setGuides([]);
+    },
+    [change, flushDraft, store.current, store.canEditNode, store.recordHistory],
+  );
   const cancelDuplicateDrag = useCallback(() => {
     const active = duplicateDrag.current;
     const current = store.current.current;
@@ -599,6 +768,8 @@ function Workspace({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      searchNavigation.current?.controller.abort();
+      searchNavigation.current?.dispose();
       for (const controller of controllers.current) controller.abort();
     };
   }, []);
@@ -686,6 +857,128 @@ function Workspace({
     )
       setSelectedEdge(null);
   }, [visibleContent]);
+  useEffect(() => {
+    if (!searchReveal) return;
+    const {
+      target,
+      signal,
+      selectionSequence,
+      slideId: requestedSlide,
+    } = searchReveal;
+    let frame = 0;
+    let applying = false;
+    const finish = () => {
+      setSearchReveal((current) => (current === searchReveal ? null : current));
+      searchReveal.dispose();
+    };
+    const reveal = () => {
+      frame = 0;
+      if (applying) return;
+      if (
+        signal.aborted ||
+        store.current.current?.id !== target.id ||
+        store.selectionSequence() !== selectionSequence
+      ) {
+        finish();
+        return;
+      }
+      // The opening dialog must relinquish focus before the canvas takes it.
+      // Camera/slide restoration runs above this effect, then the next frame
+      // applies the search destination after the formerly hidden panel is sized.
+      if (
+        board?.id !== target.id ||
+        requestedSlide !== slideId ||
+        !visibleCanvasBounds() ||
+        document.querySelector(
+          '[role="dialog"][aria-modal="true"][data-state="open"]',
+        )
+      )
+        return;
+      applying = true;
+      setInspecting(false);
+      setEditingEdge(null);
+      const current = store.current.current;
+      const node = target.nodeId
+        ? current.document.nodes.find((item) => item.id === target.nodeId)
+        : undefined;
+      const edge = target.edgeId
+        ? current.document.edges.find((item) => item.id === target.edgeId)
+        : undefined;
+      setSelected(node?.id ?? null);
+      selectNodes(new Set(node ? [node.id] : []));
+      setSelectedEdge(edge?.id ?? null);
+      if (node) {
+        void flow.fitView({
+          ...boardFitOptions,
+          nodes: [{ id: node.id }],
+          maxZoom: 1,
+          duration: 0,
+        });
+      } else if (edge) {
+        const converted = toBoardFlow(current.document, new Set());
+        const renderedEdge = converted.edges.find(
+          (item) => item.edge.id === edge.id,
+        );
+        const endpoints = converted.nodes.filter(
+          (item) =>
+            item.id === renderedEdge?.source ||
+            item.id === renderedEdge?.target,
+        );
+        const points = endpoints.flatMap((item) => [
+          item.position,
+          {
+            x: item.position.x + (item.width ?? 1),
+            y: item.position.y + (item.height ?? 1),
+          },
+        ]);
+        if (edge.bend) points.push(edge.bend);
+        if (points.length) {
+          const left = Math.min(...points.map((point) => point.x));
+          const top = Math.min(...points.map((point) => point.y));
+          void flow.fitBounds(
+            {
+              x: left,
+              y: top,
+              width: Math.max(
+                1,
+                Math.max(...points.map((point) => point.x)) - left,
+              ),
+              height: Math.max(
+                1,
+                Math.max(...points.map((point) => point.y)) - top,
+              ),
+            },
+            { padding: 0.2, duration: 0 },
+          );
+        }
+      } else if (requestedSlide) fitSlide();
+      if (!signal.aborted) workspaceRef.current?.focus({ preventScroll: true });
+      finish();
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(reveal);
+    };
+    const resize =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(schedule);
+    if (canvasRef.current) resize?.observe(canvasRef.current);
+    const dialogs = new MutationObserver(schedule);
+    dialogs.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["inert", "hidden", "data-state"],
+    });
+    signal.addEventListener("abort", schedule, { once: true });
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame);
+      resize?.disconnect();
+      dialogs.disconnect();
+      signal.removeEventListener("abort", schedule);
+    };
+  }, [searchReveal, cameraId, board?.id, slideId]);
   const startShow = async (trigger: HTMLElement) => {
     const target = store.current.current;
     const id = slideRef.current;
@@ -935,7 +1228,116 @@ function Workspace({
     selectInserted(updated.ids, destination, updated.boardId);
   };
   const registryHandle = useRef<CanvasHandle | null>(null);
+  const openSearchResult = async (
+    requested: CanvasSearchTarget,
+    options: { signal?: AbortSignal } = {},
+  ) => {
+    searchNavigation.current?.controller.abort();
+    searchNavigation.current?.dispose();
+    const controller = new AbortController();
+    const signal = options.signal
+      ? AbortSignal.any([controller.signal, options.signal])
+      : controller.signal;
+    const cancelOnInteraction = (event: Event) => {
+      const element = event.target instanceof Element ? event.target : null;
+      if (!element?.closest('[role="dialog"]')) controller.abort();
+    };
+    const dispose = () => {
+      window.removeEventListener("pointerdown", cancelOnInteraction, true);
+      window.removeEventListener("keydown", cancelOnInteraction, true);
+      if (searchNavigation.current?.controller === controller)
+        searchNavigation.current = null;
+    };
+    searchNavigation.current = { controller, dispose };
+    window.addEventListener("pointerdown", cancelOnInteraction, true);
+    window.addEventListener("keydown", cancelOnInteraction, true);
+    const initialSequence = store.selectionSequence();
+    const check = (sequence: number) => {
+      signal.throwIfAborted();
+      if (!mounted.current || store.selectionSequence() !== sequence)
+        throw new DOMException("Переход отменён", "AbortError");
+    };
+    try {
+      check(initialSequence);
+      if (requested.kind !== kind)
+        throw new Error("Документ принадлежит другой панели.");
+      const saved = await api<Board>(
+        `/api/boards/${encodeURIComponent(requested.id)}`,
+        { signal },
+      );
+      check(initialSequence);
+      if ((saved.document.kind ?? "board") !== kind)
+        throw new Error("Документ принадлежит другой панели.");
+      let expectedSequence = initialSequence;
+      if (store.current.current?.id !== requested.id) {
+        await store.flush();
+        check(initialSequence);
+        const loading = store.select(requested.id, { signal });
+        expectedSequence = store.selectionSequence();
+        await loading;
+        check(expectedSequence);
+      } else {
+        // Apply the fresh saved revision through the same merge used by SSE;
+        // do not replace an open draft or reset its history by reselecting it.
+        store.receive(saved);
+      }
+      const current = store.current.current;
+      if (!current || current.id !== requested.id)
+        throw new Error(
+          "Не удалось открыть найденный документ. Попробуйте снова.",
+        );
+      const node = requested.nodeId
+        ? current.document.nodes.find((item) => item.id === requested.nodeId)
+        : undefined;
+      const edge = requested.edgeId
+        ? current.document.edges.find((item) => item.id === requested.edgeId)
+        : undefined;
+      const requestedSlide =
+        node?.slideId ?? edge?.slideId ?? requested.slideId;
+      const destinationSlide = current.document.slides?.find(
+        (item) => item.id === requestedSlide,
+      )?.id;
+      const savedText = readCanvasSearchText(saved, requested);
+      const currentText = readCanvasSearchText(current, requested);
+      const missing =
+        (requested.nodeId && !node) ||
+        (requested.edgeId && !edge) ||
+        (requestedSlide && !destinationSlide) ||
+        (requested.match &&
+          (savedText === undefined ||
+            !resolveSearchMatch(savedText, requested.match) ||
+            currentText === undefined ||
+            !resolveSearchMatch(currentText, requested.match)));
+      const target = missing
+        ? { kind: requested.kind, id: requested.id, revision: current.revision }
+        : requested;
+      if (missing)
+        notify(
+          "Документ изменился: найденное совпадение больше недоступно. Открыт сам документ.",
+          "info",
+        );
+      const fallbackSlide =
+        current.document.slides?.find((item) => item.id === slideRef.current)
+          ?.id ?? current.document.slides?.[0]?.id;
+      const targetSlide = missing
+        ? fallbackSlide
+        : (destinationSlide ?? fallbackSlide);
+      if (targetSlide) selectSlide(targetSlide);
+      check(expectedSequence);
+      setSearchReveal({
+        target,
+        signal,
+        selectionSequence: expectedSequence,
+        slideId: targetSlide,
+        dispose,
+      });
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+  };
   registryHandle.current = {
+    openSearchResult,
     destination: () => {
       const current = store.current.current;
       return current
@@ -962,6 +1364,8 @@ function Workspace({
   useEffect(
     () =>
       registry?.register(kind, {
+        openSearchResult: (...args) =>
+          registryHandle.current!.openSearchResult!(...args),
         destination: () => registryHandle.current!.destination(),
         ready: () => registryHandle.current!.ready!(),
         visible: () => registryHandle.current!.visible!(),
@@ -1278,8 +1682,18 @@ function Workspace({
     const current = store.current.current;
     if (!current || current.id !== board?.id || !editable || store.conflict)
       return;
-    const width = type === "triangle" || type === "diamond" ? 180 : 240;
-    const height = type === "triangle" || type === "diamond" ? 180 : 160;
+    const width =
+      type === "line"
+        ? 260
+        : type === "triangle" || type === "diamond"
+          ? 180
+          : 240;
+    const height =
+      type === "line"
+        ? 40
+        : type === "triangle" || type === "diamond"
+          ? 180
+          : 160;
     const bounds = canvasRef.current?.getBoundingClientRect();
     const center = slideId
       ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
@@ -1917,6 +2331,9 @@ function Workspace({
         board ? nodeWork(agentLocks, board.id, id) : undefined,
       resizeStart,
       resize,
+      shapeTransformStart,
+      shapeTransform,
+      shapeTransformEnd,
       update,
       remove,
       refresh: refreshNode,
@@ -1933,6 +2350,9 @@ function Workspace({
       slide?.background,
       resizeStart,
       resize,
+      shapeTransformStart,
+      shapeTransform,
+      shapeTransformEnd,
       update,
       remove,
       refreshNode,
@@ -2105,28 +2525,27 @@ function Workspace({
       className={`board-workspace${presentation ? " presentation-workspace" : ""}${hasSelection ? " board-has-selection" : ""}${copyDragging ? " board-copy-dragging" : ""}`}
       aria-label={presentation ? "Презентация" : "Аналитическая доска"}
     >
-      <div className="board-header">
+      <div
+        className={`board-header${store.list.length ? "" : " board-header-empty"}`}
+      >
         <span className="board-heading">{canvasName}</span>
         <AgentWorkIndicator
           work={board ? boardWork(agentLocks, board.id) : undefined}
           compact
         />
-        <Select
-          aria-label={presentation ? "Выбрать презентацию" : "Выбрать доску"}
-          value={board?.id ?? ""}
-          placeholder={presentation ? "Выберите презентацию" : "Выберите доску"}
-          onValueChange={(selectedId) => {
-            void store.save().then(() => store.select(selectedId));
-          }}
-          options={store.list.map((b) => ({ value: b.id, label: b.name }))}
-        />
-        <span
-          className={`board-save-state${store.conflict ? " board-warning" : ""}`}
-          role="status"
-          title={editable ? store.state : "Только просмотр"}
-        >
-          {editable ? store.state : "Только просмотр"}
-        </span>
+        {store.list.length > 0 && (
+          <Select
+            aria-label={presentation ? "Выбрать презентацию" : "Выбрать доску"}
+            value={board?.id ?? ""}
+            placeholder={
+              presentation ? "Выберите презентацию" : "Выберите доску"
+            }
+            onValueChange={(selectedId) => {
+              void store.save().then(() => store.select(selectedId));
+            }}
+            options={store.list.map((b) => ({ value: b.id, label: b.name }))}
+          />
+        )}
         {slide && (
           <button
             className="board-header-icon presentation-show-button"
@@ -2138,7 +2557,7 @@ function Workspace({
             <ProjectorScreen size={18} aria-hidden="true" />
           </button>
         )}
-        {editable && (
+        {editable && store.list.length > 0 && (
           <>
             <button
               onClick={() => openDialog("new")}
@@ -2209,6 +2628,15 @@ function Workspace({
               </DropdownMenu.Root>
             )}
           </>
+        )}
+        {board && (
+          <span
+            className={`board-save-state${store.conflict ? " board-warning" : ""}`}
+            role="status"
+            title={editable ? store.state : "Только просмотр"}
+          >
+            {editable ? store.state : "Только просмотр"}
+          </span>
         )}
       </div>
       {store.parkedDrafts.length > 0 && (
@@ -2757,27 +3185,69 @@ function Workspace({
               </BoardFlow>
             </BoardActions.Provider>
           ) : (
-            <div className="board-canvas-empty">
-              <strong>
-                {store.loading
-                  ? presentation
-                    ? "Загрузка презентаций…"
-                    : "Загрузка досок…"
-                  : presentation
-                    ? "Презентации"
-                    : "Аналитическая доска"}
-              </strong>
-              <span>
-                {presentation
-                  ? "Создайте презентацию и добавьте блоки с доски или результаты SQL."
-                  : editable
-                    ? "Создайте доску и добавьте результат SQL-запроса."
-                    : "В рабочем пространстве пока нет досок."}
-              </span>
-              {editable && !store.loading && (
-                <button onClick={() => openDialog("new")}>
-                  {presentation ? "Создать презентацию" : "Создать доску"}
-                </button>
+            <div className="board-canvas-empty board-collection-empty">
+              {store.loading ? (
+                <strong role="status">
+                  {presentation ? "Загрузка презентаций…" : "Загрузка досок…"}
+                </strong>
+              ) : emptyCollection ? (
+                <>
+                  {presentation ? (
+                    <ProjectorScreen
+                      size={36}
+                      weight="light"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <PresentationChart
+                      size={36}
+                      weight="light"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <h2>
+                    {editable
+                      ? presentation
+                        ? "Создайте первую презентацию"
+                        : "Создайте первую доску"
+                      : presentation
+                        ? "Пока нет презентаций"
+                        : "Пока нет досок"}
+                  </h2>
+                  <p>
+                    {editable
+                      ? presentation
+                        ? "Соберите графики и заметки на слайдах, чтобы показать результаты анализа."
+                        : "Соберите графики, таблицы и заметки в одном месте."
+                      : "Здесь появятся материалы рабочего пространства."}
+                  </p>
+                  {editable && (
+                    <button
+                      className="board-empty-create"
+                      onClick={() => openDialog("new")}
+                    >
+                      <Plus size={16} aria-hidden="true" />
+                      {presentation ? "Создать презентацию" : "Создать доску"}
+                    </button>
+                  )}
+                </>
+              ) : store.list.length > 0 &&
+                store.state !== "Не удалось загрузить" ? (
+                <>
+                  <strong>
+                    {presentation ? "Выберите презентацию" : "Выберите доску"}
+                  </strong>
+                  <p>Откройте нужный документ из списка вверху.</p>
+                </>
+              ) : (
+                <>
+                  <strong role="alert">
+                    {presentation
+                      ? "Не удалось загрузить презентации"
+                      : "Не удалось загрузить доски"}
+                  </strong>
+                  <p>Обновите страницу и попробуйте снова.</p>
+                </>
               )}
             </div>
           )}

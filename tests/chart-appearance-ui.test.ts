@@ -140,6 +140,55 @@ describe("chart appearance controls", () => {
     await change("Положение подписей", "inside");
     expect(current.labelPosition).toBe("inside");
   });
+  it.each(["vertical", "horizontal"] as const)(
+    "defaults %s stacked bar totals on independently of segment labels",
+    async (orientation) => {
+      await render({ ...initial, orientation, stacked: true, series: "group" });
+      expect(control<HTMLInputElement>("Итоги столбцов").checked).toBe(true);
+      expect(control<HTMLInputElement>("Подписи значений").checked).toBe(false);
+      await click("Итоги столбцов");
+      expect(current.showTotals).toBe(false);
+      await click("Подписи значений");
+      expect(current.showLabels).toBe(true);
+      expect(control<HTMLInputElement>("Итоги столбцов").checked).toBe(false);
+      await click("Итоги столбцов");
+      expect(current.showTotals).toBe(true);
+      expect(current.showLabels).toBe(true);
+    },
+  );
+  it.each([
+    { kind: "bar", stacked: false, series: "group" },
+    { kind: "bar", stacked: true },
+    { kind: "line", stacked: true, series: "group" },
+    { kind: "area", stacked: true, series: "group" },
+    { kind: "scatter", stacked: true, series: "group" },
+  ] as const)("omits totals when they do not apply: %j", async (patch) => {
+    await render({ ...initial, ...patch, showTotals: false });
+    expect(host.textContent).not.toContain("Итоги столбцов");
+    expect(current.showTotals).toBe(false);
+  });
+  it("retains the totals preference when stacking or breakdown is toggled", async () => {
+    await render({ ...initial, stacked: true, series: "group" });
+    await click("Итоги столбцов");
+    await click("С накоплением");
+    expect(host.textContent).not.toContain("Итоги столбцов");
+    await click("С накоплением");
+    expect(control<HTMLInputElement>("Итоги столбцов").checked).toBe(false);
+    await change("Разбивка", "");
+    expect(host.textContent).not.toContain("Итоги столбцов");
+    await change("Разбивка", "group");
+    expect(control<HTMLInputElement>("Итоги столбцов").checked).toBe(false);
+    expect(current.showTotals).toBe(false);
+  });
+  it("keeps totals read-only with the rest of the chart appearance", async () => {
+    await render({ ...initial, stacked: true, series: "group" }, true);
+    const totals = control<HTMLInputElement>("Итоги столбцов");
+    expect(totals.checked).toBe(true);
+    expect(totals.matches(":disabled")).toBe(true);
+    await act(async () => totals.click());
+    expect(current.showTotals).toBeUndefined();
+    expect(totals.checked).toBe(true);
+  });
   it("changes palette and a metric color without fetching or running SQL", async () => {
     await render();
     await change("Палитра", "warm");

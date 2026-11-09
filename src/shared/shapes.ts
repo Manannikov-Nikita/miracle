@@ -8,6 +8,7 @@ export const SHAPE_OPTIONS = [
   { type: "diamond", label: "Ромб" },
   { type: "hexagon", label: "Шестиугольник" },
   { type: "arrow", label: "Стрелка" },
+  { type: "line", label: "Линия" },
 ] as const;
 
 export type ShapeKind = (typeof SHAPE_OPTIONS)[number]["type"];
@@ -16,10 +17,16 @@ const color = z.string().regex(/^#[0-9a-f]{6}$/i);
 export const shapeSpecSchema = z
   .object({
     type: z.enum(SHAPE_OPTIONS.map(({ type }) => type)),
+    rotation: z.number().finite().min(0).max(360).optional(),
     fill: z.union([color, z.literal("transparent")]).optional(),
     stroke: color.optional(),
     strokeWidth: z.number().finite().min(0).max(12).optional(),
     strokeStyle: z.enum(["solid", "dashed", "dotted"]).optional(),
+    lineDirection: z
+      .enum(["horizontal", "vertical", "diagonal-down", "diagonal-up"])
+      .optional(),
+    lineStart: z.enum(["none", "arrow"]).optional(),
+    lineEnd: z.enum(["none", "arrow"]).optional(),
     opacity: z.number().finite().min(0).max(1).optional(),
     cornerRadius: z.number().finite().min(0).max(50).optional(),
     textColor: color.optional(),
@@ -39,10 +46,14 @@ export function resolveShape(spec?: ShapeSpec): Required<ShapeSpec> {
   const type = spec?.type ?? "rectangle";
   return {
     type,
-    fill: spec?.fill ?? "#dbeafe",
+    rotation: spec?.rotation ?? 0,
+    fill: spec?.fill ?? (type === "line" ? "transparent" : "#dbeafe"),
     stroke: spec?.stroke ?? "#3b82f6",
     strokeWidth: spec?.strokeWidth ?? 2,
     strokeStyle: spec?.strokeStyle ?? "solid",
+    lineDirection: spec?.lineDirection ?? "horizontal",
+    lineStart: spec?.lineStart ?? "none",
+    lineEnd: spec?.lineEnd ?? "none",
     opacity: spec?.opacity ?? 1,
     cornerRadius: spec?.cornerRadius ?? (type === "rounded-rectangle" ? 16 : 0),
     textColor: spec?.textColor ?? "#172033",

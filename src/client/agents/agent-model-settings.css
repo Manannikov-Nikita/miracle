@@ -1,0 +1,25 @@
+.agent-composer-toolbar .agent-model-button {
+  max-width: 130px;
+}
+.agent-menu.agent-model-menu {
+  width: 280px;
+  max-height: min(600px, var(--radix-dropdown-menu-content-available-height));
+}
+.agent-menu.agent-model-menu [role="menuitemradio"] > span:first-child {
+  margin-left: 0;
+}
+.agent-menu.agent-model-menu [role="menuitemradio"] > span + span:last-child {
+  margin-left: auto;
+}
+.agent-model-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-model-menu .agent-menu-hint {
+  max-width: none;
+  line-height: 1.5;
+}
+.agent-model-menu .agent-model-scope {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}

@@ -2,6 +2,11 @@ import { buildAgentCommand } from "./command.js";
 import { startCodexTurn } from "./codex.js";
 import { startClaudeTurn } from "./claude.js";
 import { agentError, checkAgentCommand } from "./transport.js";
+import {
+  discoverCodexModels,
+  resolveCodexModelSettings,
+} from "./codex-models.js";
+import type { AgentModelSettings } from "../../shared/agents.js";
 import type { AgentProviderImage } from "./images.js";
 import type {
   AgentQuestion,
@@ -28,6 +33,9 @@ export interface AgentAdapterOptions {
   prompt: string;
   images?: AgentProviderImage[];
   resumeSessionId?: string;
+  modelSettings?: AgentModelSettings;
+  model?: string;
+  reasoningEffort?: string;
   mcp: { url: string; token: string };
   onEvent: (event: AdapterEvent) => void;
 }
@@ -71,10 +79,40 @@ export function startAgentTurn(options: AgentAdapterOptions): AgentProcess {
     );
     if (controller.signal.aborted)
       throw agentError("Agent turn stopped", "AGENT_CANCELLED");
+    let resolved: AgentModelSettings = {};
+    if (options.modelSettings !== undefined) {
+      if (options.provider === "codex")
+        resolved = resolveCodexModelSettings(
+          await discoverCodexModels(
+            options.command,
+            options.cwd,
+            controller.signal,
+          ),
+          options.modelSettings,
+        );
+      else if (
+        options.modelSettings.model !== undefined ||
+        options.modelSettings.reasoningEffort !== undefined
+      ) {
+        const { discoverClaudeModels, resolveClaudeModelSettings } =
+          await import("./claude-models.js");
+        resolved = resolveClaudeModelSettings(
+          await discoverClaudeModels(
+            options.command,
+            options.cwd,
+            controller.signal,
+          ),
+          options.modelSettings,
+        );
+      }
+    }
+    if (controller.signal.aborted)
+      throw agentError("Agent turn stopped", "AGENT_CANCELLED");
+    const configured = { ...options, ...resolved };
     active =
       options.provider === "codex"
-        ? startCodexTurn(options)
-        : startClaudeTurn(options);
+        ? startCodexTurn(configured)
+        : startClaudeTurn(configured);
     return await active.completion;
   })();
   return {

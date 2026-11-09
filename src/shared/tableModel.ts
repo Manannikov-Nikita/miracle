@@ -10,7 +10,8 @@ import type {
   TableViewColumn,
   TableViewData,
 } from "./tableTypes.js";
-import { isNumericColumn } from "./column-types.js";
+import { isDateColumn, isNumericColumn } from "./column-types.js";
+import { compareDateValues } from "./date-values.js";
 
 // SQL values can exceed IEEE-754 precision. Only bar widths become Number.
 const D = Decimal.clone({
@@ -120,6 +121,7 @@ function validOptions(options: TableColumnOptions): void {
     "hidden",
     "width",
     "align",
+    "dataType",
     "format",
     "decimals",
     "currency",
@@ -152,6 +154,11 @@ function validOptions(options: TableColumnOptions): void {
     fail("недопустимое выравнивание.");
   if (options.format !== undefined && !formats.includes(options.format))
     fail("неизвестный формат.");
+  if (
+    options.dataType !== undefined &&
+    !["auto", "date"].includes(options.dataType)
+  )
+    fail("неизвестный тип данных.");
   if (
     options.decimals !== undefined &&
     (!Number.isInteger(options.decimals) ||
@@ -726,6 +733,11 @@ export function buildTable(
               : left === null
                 ? 1
                 : -1;
+          if (isDateColumn(column, column.options.dataType))
+            return (
+              compareDateValues(left, right, direction) ||
+              a.original - b.original
+            );
           let comparison: number;
           if (isNumericColumn(column))
             comparison = (

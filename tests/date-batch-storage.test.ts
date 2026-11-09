@@ -8,7 +8,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Database, migrate } from "../src/server/db.js";
+import {
+  Database,
+  migrate,
+  WORKSPACE_SCHEMA_VERSION,
+} from "../src/server/db.js";
 import {
   backupWorkspace,
   restoreWorkspace,
@@ -108,6 +112,15 @@ function legacyFive(path: string) {
   `);
   return db;
 }
+function legacySix(path: string) {
+  const db = legacyFive(path);
+  db.sqlite.exec(`
+    CREATE TABLE agent_query_runs(run_id TEXT PRIMARY KEY REFERENCES query_runs(id) ON DELETE CASCADE,chat_id TEXT NOT NULL REFERENCES agent_chats(id),turn_id TEXT NOT NULL REFERENCES agent_turns(id));
+    CREATE INDEX agent_query_runs_chat ON agent_query_runs(chat_id);
+    PRAGMA user_version=6;
+  `);
+  return db;
+}
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   for (const path of roots.splice(0))
@@ -143,7 +156,7 @@ describe("date batch storage migration", () => {
       const credential = db.query("SELECT password_encrypted FROM connections")
         .rows[0].password_encrypted;
       migrate(db);
-      expect(version(db)).toBe(6);
+      expect(version(db)).toBe(WORKSPACE_SCHEMA_VERSION);
       // Existing query history has no trustworthy agent attribution to infer.
       expect(db.query("SELECT * FROM agent_query_runs").rows).toEqual([]);
       expect(
@@ -180,7 +193,7 @@ describe("date batch storage migration", () => {
   it("initializes the new schema and encryption sentinel atomically", () => {
     const path = makeRoot();
     const db = fresh(path);
-    expect(version(db)).toBe(6);
+    expect(version(db)).toBe(WORKSPACE_SCHEMA_VERSION);
     expect(
       db.query("SELECT value FROM app_settings WHERE key='workspace_id'")
         .rows[0].value,
@@ -226,14 +239,14 @@ describe("date batch storage migration", () => {
   });
   it("refuses a future workspace without lowering its schema version", () => {
     const db = fresh(makeRoot());
-    db.sqlite.exec("PRAGMA user_version=7");
+    db.sqlite.exec(`PRAGMA user_version=${WORKSPACE_SCHEMA_VERSION + 1}`);
     expect(() => migrate(db)).toThrow(/newer/);
-    expect(version(db)).toBe(7);
+    expect(version(db)).toBe(WORKSPACE_SCHEMA_VERSION + 1);
   });
 });
 
 describe("versioned workspace backups", () => {
-  it.each([1, 2, 3, 4, 5, 6])(
+  it.each([1, 2, 3, 4, 5, 6, 7])(
     "preserves version %i on backup/restore, then permits upgrading old backups",
     async (schemaVersion) => {
       const root = makeRoot();
@@ -249,7 +262,9 @@ describe("versioned workspace backups", () => {
                 ? legacyFour(path)
                 : schemaVersion === 5
                   ? legacyFive(path)
-                  : fresh(path);
+                  : schemaVersion === 6
+                    ? legacySix(path)
+                    : fresh(path);
       if (schemaVersion >= 2)
         db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES('batch','interrupted','{}',?1)",
@@ -276,7 +291,7 @@ describe("versioned workspace backups", () => {
       ).toBe(identity);
       expect(readFileSync(join(restored, "encryption.key"))).toEqual(key);
       migrate(copy);
-      expect(version(copy)).toBe(6);
+      expect(version(copy)).toBe(WORKSPACE_SCHEMA_VERSION);
       expect(
         copy.query(
           "SELECT name FROM pragma_table_info('connections') WHERE name='trino_options_encrypted'",
@@ -319,13 +334,13 @@ describe("versioned workspace backups", () => {
     await backupWorkspace(path, backup);
     const manifestPath = join(backup, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.schemaVersion = 7;
+    manifest.schemaVersion = WORKSPACE_SCHEMA_VERSION + 1;
     writeFileSync(manifestPath, JSON.stringify(manifest));
     await expect(
       restoreWorkspace(backup, join(root, "restored")),
     ).rejects.toThrow(/Unsupported backup/);
     const future = open(path);
-    future.sqlite.exec("PRAGMA user_version=7");
+    future.sqlite.exec(`PRAGMA user_version=${WORKSPACE_SCHEMA_VERSION + 1}`);
     future.close();
     await expect(backupWorkspace(path, join(root, "future"))).rejects.toThrow(
       /Unsupported workspace/,

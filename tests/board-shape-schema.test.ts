@@ -185,10 +185,14 @@ describe("shape presentation defaults", () => {
   it("resolves a usable rectangle without changing the saved specification", () => {
     const defaults = {
       type: "rectangle",
+      rotation: 0,
       fill: "#dbeafe",
       stroke: "#3b82f6",
       strokeWidth: 2,
       strokeStyle: "solid",
+      lineDirection: "horizontal",
+      lineStart: "none",
+      lineEnd: "none",
       opacity: 1,
       cornerRadius: 0,
       textColor: "#172033",
@@ -223,7 +227,13 @@ describe("shape presentation defaults", () => {
       italic: false,
       underline: false,
     };
-    expect(resolveShape(settings)).toEqual(settings);
+    expect(resolveShape(settings)).toEqual({
+      ...settings,
+      rotation: 0,
+      lineDirection: "horizontal",
+      lineStart: "none",
+      lineEnd: "none",
+    });
   });
 });
 

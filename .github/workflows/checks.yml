@@ -44,12 +44,12 @@ jobs:
       - name: Installed bundled-runtime lifecycle, backup and restore
         shell: bash
         run: node tests/local-install-smoke.mjs ".local/releases/miracle-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')-${{ matrix.target }}.tar.gz"
-      - name: Update published 0.8.1 installation through miracle update
+      - name: Update published 0.9.0 installation through miracle update
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          previous="0.8.1"
+          previous="0.9.0"
           directory=".local/update-source/$previous"
           mkdir -p "$directory"
           base="https://github.com/Manannikov-Nikita/miracle/releases/download/v$previous"

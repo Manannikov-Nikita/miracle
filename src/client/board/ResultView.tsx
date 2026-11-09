@@ -14,6 +14,7 @@ import ChartColors from "./ChartColors";
 import LegendPositionPicker from "./LegendPositionPicker";
 import { normalizeChartSpec, tableChartSeries } from "./chartTableModel";
 import { useChartTableData } from "./useChartTableData";
+import { createTableSpec } from "./tableModel";
 
 function Chart({
   result,
@@ -42,6 +43,14 @@ function Chart({
     if (!data || !data.rows.length) return null;
     try {
       const series = tableChartSeries(data, spec);
+      const createOption = (selected: Record<string, boolean>) =>
+        chartOptions(
+          data.columns,
+          spec,
+          series,
+          presentationBackground,
+          selected,
+        );
       return {
         option: chartOptions(
           data.columns,
@@ -49,6 +58,10 @@ function Chart({
           series,
           presentationBackground,
         ),
+        createOption:
+          spec.kind === "bar" && spec.stacked && spec.series
+            ? createOption
+            : undefined,
       };
     } catch (e) {
       return { error: (e as Error).message };
@@ -97,6 +110,7 @@ function Chart({
   return (
     <ChartCanvas
       option={prepared.option}
+      createOption={prepared.createOption}
       label={`График: ${spec.kind}${spec.kind === "bar" && spec.orientation === "horizontal" ? ", горизонтальный" : ""}, ${data.rows.length} строк таблицы`}
     />
   );
@@ -107,6 +121,7 @@ type ChartSettingsProps = {
   table?: TableSpec;
   visibleColumns?: string[];
   onChange: (value: ChartSpec) => void;
+  onTableChange?: (value: TableSpec) => void;
   disabled?: boolean;
 };
 export function ChartSettings(props: ChartSettingsProps) {
@@ -156,6 +171,10 @@ export function ChartSettings(props: ChartSettingsProps) {
       }}
       spec={spec}
       preparedSeries={series}
+      table={
+        props.table ??
+        createTableSpec(props.result.columns, props.visibleColumns)
+      }
     />
   );
 }
@@ -163,6 +182,8 @@ function ChartSettingsFields({
   result,
   spec,
   onChange,
+  table,
+  onTableChange,
   disabled = false,
   preparedSeries,
 }: ChartSettingsProps & {
@@ -173,6 +194,8 @@ function ChartSettingsFields({
   const categoryAxis = horizontal ? "Ось Y" : "Ось X";
   const metricAxis = horizontal ? "Ось X" : "Ось Y";
   const sortLabel = horizontal ? "Порядок Y" : "Порядок X";
+  const categoryColumn = result.columns.find((column) => column.id === spec.x);
+  const typeLabel = horizontal ? "Тип данных Y" : "Тип данных X";
   return (
     <fieldset className="board-chart-settings" disabled={disabled}>
       <legend>Настройки графика · весь снимок</legend>
@@ -206,6 +229,32 @@ function ChartSettingsFields({
           options={result.columns.map((c) => ({ value: c.id, label: c.name }))}
         />
       </label>
+      {spec.kind !== "scatter" && categoryColumn && table && onTableChange && (
+        <label>
+          {typeLabel}
+          <Select
+            aria-label={typeLabel}
+            disabled={disabled}
+            value={table.columns?.[spec.x]?.dataType ?? "auto"}
+            options={[
+              { value: "auto", label: `Авто · ${categoryColumn.type}` },
+              { value: "date", label: "Дата" },
+            ]}
+            onValueChange={(dataType) =>
+              onTableChange({
+                ...table,
+                columns: {
+                  ...table.columns,
+                  [spec.x]: {
+                    ...table.columns?.[spec.x],
+                    dataType: dataType as "auto" | "date",
+                  },
+                },
+              })
+            }
+          />
+        </label>
+      )}
       <div className="board-y-fields">
         {metricAxis}
         {result.columns.filter(isNumericColumn).map((c) => (
@@ -300,6 +349,18 @@ function ChartSettingsFields({
               />
               Подписи значений
             </label>
+            {spec.kind === "bar" && spec.stacked && spec.series && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={spec.showTotals !== false}
+                  onChange={(event) =>
+                    set({ showTotals: event.target.checked })
+                  }
+                />
+                Итоги столбцов
+              </label>
+            )}
           </div>
           {spec.showLabels && spec.kind === "bar" && (
             <label>

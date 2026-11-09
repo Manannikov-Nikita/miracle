@@ -23,6 +23,11 @@ export const chartInputSchema = {
     "Complete standard chart settings. This replaces data.chart, so read_board first and merge intended changes into the existing chart object. Column bindings use result column IDs, not names. Read chart_guide for defaults, stable color keys and resizing.",
   properties: {
     ...generatedChartSchema.properties,
+    showTotals: {
+      ...propertySchema("showTotals"),
+      description:
+        "Stack totals, independent of segment labels. Defaults to true for bar charts with stacked:true and a series breakdown. Set false to hide; ignored for other chart types and non-stacked charts.",
+    },
     seriesColors: {
       ...propertySchema("seriesColors"),
       maxProperties: CHART_SERIES_COLOR_LIMIT,
@@ -86,6 +91,8 @@ export const chartGuide = {
       "Boolean, defaulttrue. Controls auxiliary grid lines on numeric axes; false hides them while leaving visible axes intact.",
     showLabels:
       "Boolean, defaultfalse. Values on bars or points; uses numberFormat, hides overlaps and omits nulls. Stacked labels show each segment's value, not cumulative totals.",
+    showTotals:
+      "Boolean, defaulttrue for bar with stacked:true and a series breakdown. Shows stack totals independently of showLabels. Set false to hide; ignored for other chart types and non-stacked charts. The preference is retained when switching chart types.",
     labelPosition:
       "auto (default), outside or inside for bars. Auto places stacked bar values inside and other bars outside. Line/area/scatter labels sit above points. Long labels may truncate in narrow blocks; tooltip retains full value.",
     legend:

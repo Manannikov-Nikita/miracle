@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import {
   DotsThree,
@@ -21,6 +21,7 @@ import type { DraftAgentImage } from "./useAgentImageDrafts";
 import { useAgentPortalContainer } from "./useAgentPortalContainer";
 import type { OpenEditorTab } from "./ProjectSync";
 import { waitingForAnswer } from "./AgentQuestion";
+import AgentModelSettings from "./AgentModelSettings";
 
 export interface ComposerProps {
   state: AgentChatState;
@@ -66,15 +67,23 @@ export default function AgentComposer({
   const [history, setHistory] = useState(false);
   const [dragging, setDragging] = useState(false);
   const imageInput = useRef<HTMLInputElement>(null);
-  const profileId = state.conversation?.chat.profileId || selectedProfile;
+  const profileId =
+    (state.conversation?.chat.id === state.selected
+      ? state.conversation.chat.profileId
+      : state.chats?.find((chat) => chat.id === state.selected)?.profileId) ||
+    selectedProfile;
   const profile = state.profiles.find((p) => p.id === profileId);
   const steering = Boolean(
     state.active && state.active.chatId === state.selected,
   );
+  useEffect(() => {
+    state.setModelProfile?.(profileId);
+  }, [profileId, state.setModelProfile]);
   const hasContent = Boolean(draft.trim() || images.length);
   const stopping = steering && !hasContent;
   const canSend =
     !state.busy &&
+    !state.modelSettingsBusy &&
     (!state.active || steering) &&
     !imagesLoading &&
     hasContent &&
@@ -296,6 +305,26 @@ export default function AgentComposer({
             </button>
           </div>
           <div className="agent-composer-model">
+            {state.setModelSettings && (
+              <AgentModelSettings
+                key={`${state.selected || "new"}:${profileId}`}
+                profileId={profileId}
+                trusted={Boolean(profile?.trusted)}
+                settings={state.modelSettings}
+                saving={state.modelSettingsBusy}
+                disabled={
+                  state.busy ||
+                  steering ||
+                  Boolean(
+                    state.selected &&
+                    state.conversation?.chat.id !== state.selected,
+                  )
+                }
+                onChange={(settings) =>
+                  state.setModelSettings(settings, profileId)
+                }
+              />
+            )}
             <Menu.Root modal={false}>
               <Menu.Trigger asChild>
                 <button

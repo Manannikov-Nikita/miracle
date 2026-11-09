@@ -7,6 +7,7 @@ import type {
   AgentTurn,
   AgentTargetContext,
   AgentImageInput,
+  AgentModelSettings,
   ProjectContext,
 } from "../../shared/agents";
 import { api, json } from "../api";
@@ -32,6 +33,20 @@ export function useAgentChat() {
   const [newAutoApprove, setNewAutoApprove] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [interactionBusy, setInteractionBusy] = useState(false);
+  const [modelSettingsBusy, setModelSettingsBusy] = useState(false);
+  const [newModelDraft, setNewModelDraft] = useState<{
+    profileId: string;
+    settings?: AgentModelSettings;
+  }>({ profileId: "" });
+  const modelDraftRef = useRef(newModelDraft);
+  const modelSaving = useRef<{ chatId: string; promise: Promise<void> } | null>(
+    null,
+  );
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
+  const chatEpoch = useRef(0);
   const approvalChanging = useRef(false);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -46,6 +61,19 @@ export function useAgentChat() {
     messageEpoch = useRef(0),
     refreshSequence = useRef(0);
   const terminalTurns = useRef(new Set<string>());
+  const setModelProfile = useCallback((profileId: string) => {
+    if (modelDraftRef.current.profileId === profileId) return;
+    modelDraftRef.current = { profileId };
+    setNewModelDraft(modelDraftRef.current);
+  }, []);
+  const selectChat = useCallback((id: string) => {
+    selectedRef.current = id;
+    setSelected(id);
+    if (!id) {
+      modelDraftRef.current = { profileId: modelDraftRef.current.profileId };
+      setNewModelDraft(modelDraftRef.current);
+    }
+  }, []);
   const sendRequests = useRef(
     new Map<
       string,
@@ -67,7 +95,13 @@ export function useAgentChat() {
     ]);
     if (!mounted.current || sequence !== refreshSequence.current) return;
     setProfiles(p);
+    chatEpoch.current++;
+    chatsRef.current = c;
     setChats(c);
+    setConversation((current) => {
+      const chat = c.find((item) => item.id === current?.chat.id);
+      return current && chat ? { ...current, chat } : current;
+    });
     if (epoch === turnEpoch.current)
       setActive(
         s.activeTurn && !terminalTurns.current.has(s.activeTurn.id)
@@ -87,7 +121,8 @@ export function useAgentChat() {
   }, []);
   const loadConversation = useCallback(async (id: string) => {
     const sequence = ++generation.current,
-      epoch = messageEpoch.current;
+      epoch = messageEpoch.current,
+      metadataEpoch = chatEpoch.current;
     if (!id) {
       setConversation(null);
       return;
@@ -97,20 +132,30 @@ export function useAgentChat() {
       mounted.current &&
       sequence === generation.current &&
       id === selectedRef.current
-    )
+    ) {
+      // A later chat.updated event wins over a conversation fetch begun before it.
+      const chat =
+        metadataEpoch === chatEpoch.current
+          ? value.chat
+          : (chatsRef.current.find((item) => item.id === id) ?? value.chat);
+      chatsRef.current = chatsRef.current.map((item) =>
+        item.id === id ? chat : item,
+      );
+      setChats(chatsRef.current);
       setConversation((current) => {
         if (
           epoch === messageEpoch.current ||
           current?.chat.id !== value.chat.id
         )
-          return value;
+          return { ...value, chat };
         const messages = new Map(
           value.messages.map((message) => [message.id, message]),
         );
         for (const message of current.messages)
           messages.set(message.id, message);
-        return { ...value, messages: [...messages.values()] };
+        return { ...value, chat, messages: [...messages.values()] };
       });
+    }
   }, []);
   useEffect(() => {
     mounted.current = true;
@@ -169,6 +214,19 @@ export function useAgentChat() {
               : current,
           );
       }
+      if (event.type === "chat.updated") {
+        chatEpoch.current++;
+        const chat = event.data as AgentChat;
+        if (chat?.id && chat.profileId) {
+          chatsRef.current = chatsRef.current.map((item) =>
+            item.id === chat.id ? chat : item,
+          );
+          setChats(chatsRef.current);
+          setConversation((current) =>
+            current?.chat.id === chat.id ? { ...current, chat } : current,
+          );
+        }
+      }
       if (event.type === "profiles.changed" || event.type === "chat.updated")
         void refresh().catch((e) => setError(e.message));
     });
@@ -180,6 +238,7 @@ export function useAgentChat() {
   const action = async (fn: () => Promise<void>, interaction = false) => {
     const setPending = interaction ? setInteractionBusy : setBusy;
     setPending(true);
+    if (!interaction) busyRef.current = true;
     setError("");
     try {
       await fn();
@@ -188,17 +247,66 @@ export function useAgentChat() {
       throw e;
     } finally {
       setPending(false);
+      if (!interaction) busyRef.current = false;
     }
   };
   const create = async (profileId: string) => {
+    const modelSettings =
+      modelDraftRef.current.profileId === profileId
+        ? modelDraftRef.current.settings
+        : undefined;
     const chat = await api<AgentChat>("/api/chats", {
       method: "POST",
-      body: json({ profileId, autoApprove: newAutoApprove }),
+      body: json({ profileId, autoApprove: newAutoApprove, modelSettings }),
     });
-    setChats((items) => [chat, ...items]);
-    setSelected(chat.id);
+    chatsRef.current = [
+      chat,
+      ...chatsRef.current.filter((item) => item.id !== chat.id),
+    ];
+    setChats(chatsRef.current);
+    selectChat(chat.id);
     setNewAutoApprove(false);
+    modelDraftRef.current = { profileId };
+    setNewModelDraft(modelDraftRef.current);
     return chat;
+  };
+  const setModelSettings = async (
+    settings: AgentModelSettings,
+    profileId: string,
+  ) => {
+    const id = selectedRef.current;
+    if (activeRef.current?.chatId === id && id)
+      throw new Error(
+        "Дождитесь завершения текущей задачи, чтобы изменить модель.",
+      );
+    if (busyRef.current)
+      throw new Error("Дождитесь завершения отправки сообщения.");
+    if (modelSaving.current) return modelSaving.current.promise;
+    if (!id) {
+      modelDraftRef.current = { profileId, settings: { ...settings } };
+      setNewModelDraft(modelDraftRef.current);
+      return;
+    }
+    setModelSettingsBusy(true);
+    setError("");
+    const promise = (async () => {
+      try {
+        await api<AgentChat>(`/api/chats/${id}`, {
+          method: "PATCH",
+          body: json({ modelSettings: settings }),
+        });
+        // Read current metadata: another tab may have saved after this PATCH.
+        await refresh();
+      } catch (error) {
+        if (mounted.current) setError((error as Error).message);
+        throw error;
+      } finally {
+        modelSaving.current = null;
+        if (mounted.current) setModelSettingsBusy(false);
+      }
+    })();
+    modelSaving.current = { chatId: id, promise };
+    return promise;
   };
   const send = async (
     content: string,
@@ -210,6 +318,8 @@ export function useAgentChat() {
   ) =>
     action(async () => {
       const selectedChat = selectedRef.current;
+      const settingsWrite = modelSaving.current;
+      if (settingsWrite?.chatId === selectedChat) await settingsWrite.promise;
       const retry = sendRequests.current.get(clientRequestId);
       // Capture the destination before flushing editor/board writes. A turn
       // ending while prepare() awaits must not turn this input into a new task.
@@ -247,6 +357,15 @@ export function useAgentChat() {
     });
   return {
     profiles,
+    modelSettings: selected
+      ? (
+          chats.find((chat) => chat.id === selected) ??
+          (conversation?.chat.id === selected ? conversation.chat : undefined)
+        )?.modelSettings
+      : newModelDraft.settings,
+    modelSettingsBusy,
+    setModelSettings,
+    setModelProfile,
     autoApprove: selected
       ? Boolean(
           chats.find((chat) => chat.id === selected)?.autoApprove ??
@@ -285,7 +404,7 @@ export function useAgentChat() {
     chats,
     projectRoot,
     selected,
-    setSelected,
+    setSelected: selectChat,
     conversation,
     active,
     error,

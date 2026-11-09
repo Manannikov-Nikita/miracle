@@ -499,6 +499,18 @@ function ColumnSettings({
           />
         </div>
         <Choice
+          label="Тип данных"
+          value={options.dataType ?? "auto"}
+          options={[
+            { value: "auto", label: `Авто · ${column.type}` },
+            { value: "date", label: "Дата" },
+          ]}
+          disabled={disabled}
+          change={(dataType) =>
+            change({ dataType: dataType as TableColumnOptions["dataType"] })
+          }
+        />
+        <Choice
           label="Формат"
           value={options.format ?? "auto"}
           options={formats}

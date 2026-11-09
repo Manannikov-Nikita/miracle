@@ -2,6 +2,7 @@ import type { ChartSpec, Column } from "../../shared/types";
 import type { chartSeries } from "./model";
 import { chartPalette, chartSeriesColor } from "../../shared/chart-appearance";
 import { presentationColors } from "./presentation-colors";
+import { chartStackTotals, type StackTotal } from "./chart-stack-totals";
 
 function insideLabelColor(color: string) {
   const channels = [1, 3, 5].map((start) => {
@@ -53,6 +54,7 @@ export function chartOptions(
   spec: ChartSpec,
   series: ReturnType<typeof chartSeries>,
   presentationBackground?: string,
+  selected?: Record<string, boolean>,
 ) {
   const ink = presentationBackground
     ? presentationColors(presentationBackground)
@@ -104,13 +106,23 @@ export function chartOptions(
   while (series.some((item) => item.name.startsWith(seriesNamePrefix)))
     seriesNamePrefix += ":";
   const seriesNames = series.map((item, index) =>
-    item.displayData && nameCounts.get(item.name)! > 1
+    nameCounts.get(item.name)! > 1
       ? `${seriesNamePrefix}${item.colorKey ?? index}`
       : item.name,
   );
   const legendDisplayNames = new Map(
     seriesNames.map((name, index) => [name, series[index].name]),
   );
+  const legendSelection = Object.fromEntries(
+    seriesNames.flatMap((name) =>
+      typeof selected?.[name] === "boolean" ? [[name, selected[name]]] : [],
+    ),
+  );
+  const totals =
+    spec.kind === "bar" && stacked && spec.showTotals !== false
+      ? chartStackTotals(series, seriesNames, legendSelection)
+      : new Map<number, StackTotal[]>();
+  const outsideTotals = totals.size > 0;
   const tableTooltip = series.some((item) => item.displayData)
     ? (parameters: unknown): string => {
         const params = (
@@ -139,7 +151,8 @@ export function chartOptions(
   // ECharts contains axis decorations, but not labels at the ends of bars or
   // above points. Reserve room even when axes (and their gutters) are hidden.
   const outsideLabels = spec.showLabels && !insideLabels;
-  const labelWidth = outsideLabels
+  const outsideLabelSpace = outsideLabels || outsideTotals;
+  const segmentLabelWidth = outsideLabels
     ? series.reduce(
         (width, item) =>
           item.data.reduce(
@@ -158,21 +171,32 @@ export function chartOptions(
         0,
       )
     : 0;
+  const labelWidth = Math.max(
+    segmentLabelWidth,
+    ...[...totals.values()].flatMap((items) =>
+      items.map((item) => formatter(item.value).length * 7 + 10),
+    ),
+  );
   const resolvedLabelWidth = (limit: number) =>
     Math.min(Math.max(0, labelWidth - 10), limit);
-  const topLabelSpace = outsideLabels && !horizontalBar ? 20 : 0;
+  const topLabelSpace = outsideLabelSpace && !horizontalBar ? 20 : 0;
   const bottomLabelSpace =
-    outsideLabels && spec.kind === "bar" && !horizontalBar ? 20 : 0;
+    outsideLabelSpace && spec.kind === "bar" && !horizontalBar ? 20 : 0;
   // Reserve a strip for the legend, outside the bounds containing BOTH axes,
   // their tick labels and names. ECharts 6 moves a middle axis name past ticks.
   const layout = (sideWidth: number, textWidth: number, labelLimit = 160) => {
     const width = resolvedLabelWidth(labelLimit);
-    const gutter = outsideLabels ? width + 10 : 0;
+    const gutter = outsideLabelSpace ? width + 10 : 0;
     const sideLabelSpace = horizontalBar ? gutter : gutter / 2;
     return {
       // Long values truncate only on the canvas; tooltips retain the full value.
-      ...(outsideLabels
-        ? { series: series.map(() => ({ label: { width } })) }
+      ...(outsideLabelSpace
+        ? {
+            series: series.map((_, index) => ({
+              ...(outsideLabels ? { label: { width } } : {}),
+              ...(totals.has(index) ? { markPoint: { label: { width } } } : {}),
+            })),
+          }
         : {}),
       legend: {
         left: vertical
@@ -255,6 +279,8 @@ export function chartOptions(
     legend: {
       ...normalLayout.legend,
       show: spec.legend,
+      data: seriesNames,
+      selected: legendSelection,
       type: "scroll",
       orient: vertical ? "vertical" : "horizontal",
       padding: 0,
@@ -287,7 +313,7 @@ export function chartOptions(
     },
     xAxis: {
       type: horizontalBar || spec.kind === "scatter" ? "value" : "category",
-      data: !horizontalBar && stacked ? series[0]?.xCategories : undefined,
+      data: !horizontalBar ? series[0]?.xCategories : undefined,
       // axis.show also disables split lines in ECharts. Hide decorations
       // individually so axes and the grid can be controlled independently.
       name: showX ? (horizontalBar ? valueName : categoryName) : "",
@@ -323,7 +349,7 @@ export function chartOptions(
     },
     yAxis: {
       type: horizontalBar ? "category" : "value",
-      data: horizontalBar && stacked ? series[0]?.xCategories : undefined,
+      data: horizontalBar ? series[0]?.xCategories : undefined,
       inverse: horizontalBar,
       name: showY ? (horizontalBar ? categoryName : valueName) : "",
       nameLocation: "middle",
@@ -411,6 +437,46 @@ export function chartOptions(
             overflow: "truncate",
           },
           labelLayout: { hideOverlap: true },
+          ...(totals.has(index)
+            ? {
+                // A bar's marker positioning includes its actual grouped stack
+                // offset. No extra series can change widths, legends or tooltips.
+                markPoint: {
+                  symbol: "circle",
+                  symbolSize: 0,
+                  silent: true,
+                  animation: false,
+                  tooltip: { show: false },
+                  emphasis: { disabled: true },
+                  label: {
+                    show: true,
+                    color: ink.text,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    distance: 5,
+                    width: resolvedLabelWidth(160),
+                    overflow: "truncate",
+                    formatter: ({ value }: { value?: unknown }) =>
+                      typeof value === "number" ? formatter(value) : "",
+                  },
+                  data: totals.get(index)!.map((total) => ({
+                    coord: horizontalBar
+                      ? [total.extent, total.category]
+                      : [total.category, total.extent],
+                    value: total.value,
+                    label: {
+                      position: horizontalBar
+                        ? total.value < 0
+                          ? "left"
+                          : "right"
+                        : total.value < 0
+                          ? "bottom"
+                          : "top",
+                    },
+                  })),
+                },
+              }
+            : {}),
           showAllSymbol: spec.showLabels ? true : undefined,
           symbolSize: spec.kind === "scatter" ? 7 : 4,
           connectNulls: false,

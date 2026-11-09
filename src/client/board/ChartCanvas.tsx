@@ -8,13 +8,18 @@ type ChartOption = ReturnType<typeof chartOptions>;
 export default function ChartCanvas({
   option,
   label,
+  createOption,
 }: {
   option: ChartOption;
   label: string;
+  createOption?: (selected: Record<string, boolean>) => ChartOption;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const latestOption = useRef(option);
   latestOption.current = option;
+  const latestCreateOption = useRef(createOption);
+  latestCreateOption.current = createOption;
+  const selectedSeries = useRef<Record<string, boolean>>({});
   const session = useRef<{ update: (next: ChartOption) => void } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const failed = error !== null;
@@ -28,6 +33,8 @@ export default function ChartCanvas({
     let stopped = false;
     let disposed = false;
     let applied: ChartOption | undefined;
+    let appliedBuilder: typeof createOption;
+    let listening = false;
     let attempted = latestOption.current;
     const dispose = () => {
       observer?.disconnect();
@@ -35,6 +42,10 @@ export default function ChartCanvas({
       if (disposed) return;
       disposed = true;
       try {
+        if (chart && listening) {
+          chart.off("legendselectchanged", legendChanged);
+          listening = false;
+        }
         // init can register an instance before throwing. It still needs cleanup.
         (chart ?? echarts.getInstanceByDom(element))?.dispose();
       } catch (error) {
@@ -50,7 +61,21 @@ export default function ChartCanvas({
         error instanceof Error ? error.message || error.name : String(error),
       );
     };
-    const update = (next: ChartOption) => {
+    function legendChanged(event: unknown) {
+      if (
+        stopped ||
+        !latestCreateOption.current ||
+        !event ||
+        typeof event !== "object"
+      )
+        return;
+      const selected = (event as { selected?: Record<string, boolean> })
+        .selected;
+      if (!selected) return;
+      selectedSeries.current = { ...selected };
+      update(latestOption.current, true);
+    }
+    const update = (next: ChartOption, force = false) => {
       if (stopped) {
         // A new setting can recover a failed renderer without fetching rows again.
         if (next !== attempted) {
@@ -60,11 +85,43 @@ export default function ChartCanvas({
         }
         return;
       }
-      if (!chart || applied === next) return;
+      const builder = latestCreateOption.current;
+      if (!chart || (!force && applied === next && appliedBuilder === builder))
+        return;
       attempted = next;
       try {
-        chart.setOption(next, { notMerge: true });
+        if (builder && !listening) {
+          chart.on("legendselectchanged", legendChanged);
+          listening = true;
+        } else if (!builder && listening) {
+          chart.off("legendselectchanged", legendChanged);
+          listening = false;
+          selectedSeries.current = {};
+        }
+        const names = new Set(next.series.map((series) => series.name));
+        selectedSeries.current = Object.fromEntries(
+          Object.entries(selectedSeries.current).filter(([name]) =>
+            names.has(name),
+          ),
+        );
+        const resolved = builder ? builder(selectedSeries.current) : next;
+        // Recalculating totals must not jump away from the legend page clicked.
+        const legend = force ? chart.getOption().legend : undefined;
+        const scrollDataIndex = Array.isArray(legend)
+          ? (legend[0] as { scrollDataIndex?: number } | undefined)
+              ?.scrollDataIndex
+          : undefined;
+        chart.setOption(
+          scrollDataIndex === undefined
+            ? resolved
+            : {
+                ...resolved,
+                legend: { ...resolved.legend, scrollDataIndex },
+              },
+          { notMerge: true },
+        );
         applied = next;
+        appliedBuilder = builder;
       } catch (error) {
         fail("setOption", error);
       }
@@ -96,7 +153,7 @@ export default function ChartCanvas({
 
   useEffect(() => {
     session.current?.update(option);
-  }, [option]);
+  }, [option, createOption]);
 
   return (
     <div className="board-chart">

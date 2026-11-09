@@ -156,6 +156,7 @@ export interface ChartSpec {
   showYAxis?: boolean;
   showGrid?: boolean;
   showLabels?: boolean;
+  showTotals?: boolean;
   labelPosition?: "auto" | "outside" | "inside";
   palette?: "default" | "cool" | "warm" | "vivid";
   /** Colors by stable metric / breakdown identity, independent of row order. */

@@ -99,12 +99,9 @@ export default function AgentAssistant({
     const filePaths = [...(files[draftKey] || [])];
     const editorTarget = editorTargets[draftKey];
     const references = {
-      ...(editorTarget
-        ? {
-            editorDocumentId: editorTarget.path ? undefined : editorTarget.id,
-            selection: undefined,
-          }
-        : {}),
+      // Explicitly override editor focus captured by ProjectSync.prepare().
+      editorDocumentId: editorTarget?.path ? undefined : editorTarget?.id,
+      selection: undefined,
       filePaths,
       boardId: current.boardId,
       slideId: current.slideId,
