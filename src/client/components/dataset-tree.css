@@ -1,0 +1,42 @@
+.dataset-tree-row {
+  display: flex;
+  align-items: center;
+  padding-right: 8px;
+}
+.dataset-tree-row .schema-tree-item {
+  flex: 1;
+  min-width: 0;
+}
+.dataset-tree-expanded {
+  transform: rotate(90deg);
+}
+.dataset-refresh-status:not(:empty) {
+  padding: 0 12px 8px;
+}
+.dataset-refresh-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+.dataset-source-controls {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dataset-source-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.dataset-source-bar code {
+  color: var(--text);
+}
+.dataset-source-note {
+  margin: 0 12px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}

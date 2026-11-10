@@ -24,7 +24,9 @@ import type {
 } from "../../shared/project-files";
 import type { ProjectFileMover } from "../project-file-drafts";
 import { api } from "../api";
-import { IconButton } from "./UI";
+import type { QuerySource } from "../../shared/types";
+import { projectFileQuery, projectFileReader } from "../dataset-sql";
+import { IconButton, Modal } from "./UI";
 import { useAgentWorkLocks } from "../agents/useAgentWork";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import "./project-files.css";
@@ -42,6 +44,7 @@ export default function ProjectFileTree({
   filter,
   revision,
   onOpenFile,
+  onQueryFile,
   onMoveFile,
   onNotify,
   onClearFilter,
@@ -51,6 +54,7 @@ export default function ProjectFileTree({
   filter: string;
   revision: number;
   onOpenFile: (file: ProjectTextFile) => void;
+  onQueryFile?: (query: QuerySource, name: string) => void;
   onMoveFile?: ProjectFileMover;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
   onClearFilter?: () => void;
@@ -77,6 +81,8 @@ export default function ProjectFileTree({
   >({});
   const [selected, setSelected] = useState("");
   const [selectedDirectory, setSelectedDirectory] = useState("");
+  const [workbook, setWorkbook] = useState("");
+  const [sheet, setSheet] = useState("");
   const [creatingIn, setCreatingIn] = useState<string | null>(null);
   const [createKind, setCreateKind] = useState<"file" | "directory">("file");
   const [newName, setNewName] = useState("");
@@ -375,6 +381,11 @@ export default function ProjectFileTree({
   }
 
   async function open(path: string) {
+    if (onQueryFile && /\.(parquet|xlsx)$/i.test(path)) {
+      select(path, false);
+      queryFile(path);
+      return;
+    }
     selectionRevision.current++;
     openRequest.current?.abort();
     const controller = new AbortController();
@@ -394,6 +405,18 @@ export default function ProjectFileTree({
     } finally {
       if (!controller.signal.aborted) setOpening("");
     }
+  }
+
+  function queryFile(path: string, requestedSheet?: string) {
+    if (!onQueryFile) return;
+    if (/\.xlsx$/i.test(path) && requestedSheet === undefined) {
+      setSheet("");
+      setWorkbook(path);
+      return;
+    }
+    const source = projectFileQuery(path, requestedSheet);
+    const name = path.split("/").at(-1)!.slice(0, 196);
+    if (source) onQueryFile(source, `${name}.sql`);
   }
 
   function navigate(event: KeyboardEvent<HTMLDivElement>) {
@@ -675,6 +698,20 @@ export default function ProjectFileTree({
 
   const actions = (
     <>
+      {onQueryFile && (
+        <IconButton
+          label="Запросить через DuckDB"
+          disabled={
+            creating ||
+            !!moving ||
+            selected === selectedDirectory ||
+            !projectFileReader(selected)
+          }
+          onClick={() => queryFile(selected)}
+        >
+          <Code size={14} />
+        </IconButton>
+      )}
       <IconButton
         label="Создать файл"
         title={`Создать файл: ${selectedDirectory || "корень проекта"}`}
@@ -696,6 +733,46 @@ export default function ProjectFileTree({
 
   return (
     <>
+      {workbook && (
+        <Modal
+          open
+          title="Запрос к файлу Excel"
+          description={workbook}
+          onOpenChange={(open) => {
+            if (!open) setWorkbook("");
+          }}
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              queryFile(workbook, sheet);
+              setWorkbook("");
+            }}
+          >
+            <label>
+              Имя листа
+              <input
+                autoFocus
+                value={sheet}
+                placeholder="Первый лист"
+                onChange={(event) => setSheet(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button"
+                onClick={() => setWorkbook("")}
+              >
+                Отмена
+              </button>
+              <button type="submit" className="button primary">
+                Открыть запрос
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {actionsTarget
         ? createPortal(actions, actionsTarget)
         : actionsTarget === undefined && (

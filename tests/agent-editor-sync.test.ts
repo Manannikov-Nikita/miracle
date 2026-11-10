@@ -3,6 +3,7 @@ import {
   EditorSync,
   documentToTab,
   acknowledgeEditor,
+  tabFields,
 } from "../src/client/agents/editor-sync";
 import type { EditorDocument } from "../src/shared/agents";
 const doc = (revision = 1, sql = "select 1"): EditorDocument => ({
@@ -12,6 +13,35 @@ const doc = (revision = 1, sql = "select 1"): EditorDocument => ({
   connectionId: "connection",
   revision,
   updatedAt: "now",
+});
+it("restores the local SQL source and persists it without a connection ID", () => {
+  const local = {
+    id: "local",
+    name: "project.sql",
+    kind: "local" as const,
+    sql: 'SELECT * FROM "sales"',
+    revision: 3,
+    updatedAt: "now",
+  };
+  const tab = documentToTab(local);
+  expect(tab.connectionId).toBe("__local__");
+  expect(tabFields(tab)).toMatchObject({
+    kind: "local",
+    sql: 'SELECT * FROM "sales"',
+    connectionId: undefined,
+  });
+});
+it("restores a dataset SQL draft with the revision the user started editing", () => {
+  const tab = documentToTab({
+    ...doc(7, "select 10"),
+    datasetId: "dataset",
+    datasetRevision: 4,
+  });
+  expect(tabFields({ ...tab, sql: "select 20" })).toMatchObject({
+    sql: "select 20",
+    datasetId: "dataset",
+    datasetRevision: 4,
+  });
 });
 describe("agent work fencing", () => {
   it("retains a successful run acknowledgement while preserving newer source and name changes", () => {

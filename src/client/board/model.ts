@@ -21,6 +21,7 @@ export function createResultNode(
   result: ResultSet,
   position = { x: 80, y: 80 },
   existingNodes: readonly BoardNode[] = [],
+  dataset?: { name?: string },
 ): BoardNode {
   const titles = new Set(existingNodes.map((node) => node.data.title));
   let number = 1;
@@ -38,6 +39,7 @@ export function createResultNode(
       source: { ...result.source },
       sourceRevision: 1,
       view: "table",
+      ...(dataset ? { publishDataset: true, datasetName: dataset.name } : {}),
     },
   };
 }
@@ -56,6 +58,10 @@ export function rebindResult(node: BoardNode, result: ResultSet): BoardNode {
       resultSetId: result.id,
       source: { ...result.source },
       sourceRevision: (node.data.sourceRevision ?? 0) + 1,
+      datasetId: undefined,
+      datasetName: undefined,
+      datasetRevision: undefined,
+      publishDataset: undefined,
       chart: undefined,
       visibleColumns: undefined,
       table: undefined,

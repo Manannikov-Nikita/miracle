@@ -1,0 +1,18 @@
+{
+  "nodeApiVersion": "2.0.0-r.1",
+  "engineVersion": "v2.0.0",
+  "targets": {
+    "darwin-arm64": {
+      "platform": "osx_arm64",
+      "excelSha256": "a9e38c4bf55bd482073f2d40c3a0c1334fadfa819ca1b7a0eb599a38936c4fd1"
+    },
+    "linux-arm64": {
+      "platform": "linux_arm64",
+      "excelSha256": "c404d79e9ad928681db6ccf9dd73723922b02fc1c41a0c4c770baeef8f29911f"
+    },
+    "linux-x64": {
+      "platform": "linux_amd64",
+      "excelSha256": "40a170558c7110eed04b631551f9ac13f854747a293986612e9922b6044b3821"
+    }
+  }
+}

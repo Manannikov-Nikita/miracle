@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, expect, it, vi } from "vitest";
 import { buildApp } from "../src/server/app";
 import { backupWorkspace, restoreWorkspace } from "../src/server/maintenance";
+import { removeDatasetSchema } from "./helpers/legacy-workspace";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6mQAAAAASUVORK5CYII=";
@@ -161,6 +162,7 @@ it("migrates an existing version 7 workspace without altering its boards", async
     "INSERT INTO boards(id,name,document) VALUES('old','Before',?1)",
     [{ schemaVersion: 1, nodes: [], edges: [] }],
   );
+  removeDatasetSchema(app.miracle.db);
   app.miracle.db.sqlite.exec(
     "DROP TABLE IF EXISTS board_images; PRAGMA user_version=7;",
   );

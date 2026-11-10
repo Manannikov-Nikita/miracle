@@ -42,6 +42,12 @@ export interface AgentToolServices {
   connections: () => unknown[];
   schema: (id: string, input?: unknown) => Promise<unknown>;
   run: (source: QuerySource, mutationId: string) => Promise<QueryRun>;
+  refreshDataset?: (id: string, input: unknown) => Promise<QueryRun>;
+  refreshNode?: (
+    boardId: string,
+    nodeId: string,
+    input: unknown,
+  ) => Promise<QueryRun>;
   status: (id: string) => QueryRun;
   cancel: (id: string) => QueryRun;
   result: (id: string) => Promise<ResultSet>;

@@ -1,6 +1,7 @@
 import type { EditorDocument } from "../../shared/agents";
 import type { DateRangeOptions } from "../../shared/types";
 import { ApiRequestError } from "../api";
+import { LOCAL_SOURCE_ID, sourceConnectionId } from "../local-source";
 export interface EditorTab {
   id: string;
   name: string;
@@ -16,6 +17,8 @@ export interface EditorTab {
   resultSetId?: string;
   runId?: string;
   dateRange?: DateRangeOptions;
+  datasetId?: string;
+  datasetRevision?: number;
   cursor?: { lineNumber: number; column: number };
   scrollTop?: number;
 }
@@ -35,35 +38,41 @@ export function acknowledgeEditor(
   return Object.keys(accepted).length ? { ...current, ...accepted } : current;
 }
 export function documentToTab(doc: EditorDocument): EditorTab {
-  const { revision, queryRevision, updatedAt: _, ...fields } = doc;
+  const { revision, queryRevision, updatedAt: _, kind: _kind, ...fields } = doc;
   return {
     ...fields,
+    connectionId: sourceConnectionId(doc),
     revision: queryRevision,
     documentRevision: revision,
     externalSqlRevision: revision,
   };
 }
 export function tabFields(tab: EditorTab) {
+  const local = tab.connectionId === LOCAL_SOURCE_ID;
   return {
     name: tab.name,
     sql: tab.sql,
-    connectionId: tab.connectionId,
-    database: tab.database,
-    catalog: tab.catalog,
-    schema: tab.schema,
+    kind: local ? ("local" as const) : ("remote" as const),
+    connectionId: local ? undefined : tab.connectionId,
+    database: local ? undefined : tab.database,
+    catalog: local ? undefined : tab.catalog,
+    schema: local ? undefined : tab.schema,
     queryId: tab.queryId,
     queryRevision: tab.revision,
     resultSetId: tab.resultSetId,
     runId: tab.runId,
-    dateRange: tab.dateRange
-      ? {
-          startDate: tab.dateRange.startDate,
-          endDate: tab.dateRange.endDate,
-          granularity: tab.dateRange.granularity,
-          weekStartsOn: tab.dateRange.weekStartsOn,
-          retries: tab.dateRange.retries,
-        }
-      : undefined,
+    datasetId: tab.datasetId,
+    datasetRevision: tab.datasetRevision,
+    dateRange:
+      !local && tab.dateRange
+        ? {
+            startDate: tab.dateRange.startDate,
+            endDate: tab.dateRange.endDate,
+            granularity: tab.dateRange.granularity,
+            weekStartsOn: tab.dateRange.weekStartsOn,
+            retries: tab.dateRange.retries,
+          }
+        : undefined,
   };
 }
 const fingerprint = (tab: EditorTab) => JSON.stringify(tabFields(tab));
@@ -80,13 +89,22 @@ function mergeRemote(
   // to a connection/database that the user changed concurrently.
   const source = ({
     sql,
+    kind,
     connectionId,
     database,
     catalog,
     schema,
     dateRange,
   }: typeof mine) =>
-    JSON.stringify({ sql, connectionId, database, catalog, schema, dateRange });
+    JSON.stringify({
+      sql,
+      kind,
+      connectionId,
+      database,
+      catalog,
+      schema,
+      dateRange,
+    });
   if (
     source(mine) !== source(before) &&
     source(theirs) !== source(before) &&
@@ -104,10 +122,11 @@ function mergeRemote(
       return null;
     Object.assign(merged, { [key]: mine[key] });
   }
-  const { queryRevision, ...fields } = merged;
+  const { queryRevision, kind: _kind, ...fields } = merged;
   return {
     ...documentToTab(remote),
     ...fields,
+    connectionId: sourceConnectionId(merged),
     revision: queryRevision,
     cursor: local.cursor,
     scrollTop: local.scrollTop,

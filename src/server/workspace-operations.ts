@@ -5,6 +5,7 @@ import {
   boardEdgeAppearanceSchema,
   boardEdgePointSchema,
   boardKindSchema,
+  extendSourceSchema,
   presentationSlideSchema,
   sourceSchema,
 } from "./validation.js";
@@ -27,6 +28,11 @@ import {
 import { customChartSchema } from "./custom-chart-schema.js";
 import { CustomChartStatusStore } from "./custom-chart-status.js";
 import {
+  DatasetStore,
+  datasetNameSchema,
+  datasetRevisionSchema,
+} from "./datasets.js";
+import {
   checkCustomChartMetadata,
   checkTableSourceMetadata,
 } from "./custom-chart-data.js";
@@ -34,10 +40,12 @@ import type {
   Board,
   BoardDocument,
   BoardKind,
+  BoardNodeData,
   BoardSummary,
   QueryDocument,
   QuerySource,
 } from "../shared/types.js";
+import { datasetSnapshot, type Dataset } from "../shared/datasets.js";
 
 const name = z.string().trim().min(1).max(200);
 const slideId = presentationSlideSchema.shape.id;
@@ -76,12 +84,106 @@ function checkBoardSize(document: BoardDocument) {
     );
 }
 
+function bindDataset(data: BoardNodeData, dataset: Dataset): BoardNodeData {
+  const bindingChanged =
+    data.datasetId !== dataset.id || data.datasetRevision !== dataset.revision;
+  return datasetSnapshot(data, {
+    ...data,
+    datasetId: dataset.id,
+    datasetRevision: dataset.revision,
+    datasetName: dataset.name,
+    resultSetId: dataset.resultSetId,
+    source: dataset.source,
+    sourceRevision: Math.max(
+      (data.sourceRevision ?? 0) + Number(bindingChanged),
+      dataset.revision,
+    ),
+  });
+}
+
+function detachDataset(data: BoardNodeData): BoardNodeData {
+  const {
+    datasetId,
+    datasetName,
+    datasetRevision,
+    publishDataset,
+    ...snapshot
+  } = data;
+  return datasetId
+    ? { ...snapshot, sourceRevision: (snapshot.sourceRevision ?? 0) + 1 }
+    : snapshot;
+}
+
+function samePresentationLimit(
+  before: BoardNodeData | undefined,
+  after: BoardNodeData,
+) {
+  return (
+    before?.resultSetId === after.resultSetId &&
+    before?.view === after.view &&
+    Boolean(before?.customChart) === Boolean(after.customChart) &&
+    Boolean(before?.table || before?.visibleColumns) ===
+      Boolean(after.table || after.visibleColumns)
+  );
+}
+
+type BoardSnapshotChanges = {
+  refreshedDatasetId?: string;
+  restoredNodeIds?: ReadonlySet<string>;
+};
+
+function alignDatasetEdits(
+  base: BoardDocument,
+  draft: BoardDocument,
+  current: BoardDocument,
+) {
+  const before = new Map(base.nodes.map((node) => [node.id, node.data]));
+  const wanted = new Map(draft.nodes.map((node) => [node.id, node.data]));
+  const snapshots = new Map<string, BoardNodeData>();
+  for (const node of current.nodes) {
+    const old = before.get(node.id);
+    const edit = wanted.get(node.id);
+    if (
+      old?.kind !== "result" ||
+      node.data.kind !== "result" ||
+      (!old.datasetId && !node.data.datasetId)
+    )
+      continue;
+    if (
+      edit?.datasetId &&
+      edit.datasetId !== old.datasetId &&
+      edit.datasetId !== node.data.datasetId
+    )
+      throw problem(
+        409,
+        "Связь блока с набором данных изменена",
+        "REVISION_CONFLICT",
+      );
+    snapshots.set(node.id, node.data);
+  }
+  // Dataset changes own the snapshot fields. Merge independent layout and
+  // presentation edits against the current snapshot while keeping history intact.
+  const align = (document: BoardDocument): BoardDocument => ({
+    ...document,
+    nodes: document.nodes.map((node) => {
+      const snapshot = snapshots.get(node.id);
+      return snapshot && node.data.kind === "result"
+        ? { ...node, data: datasetSnapshot(node.data, snapshot) }
+        : node;
+    }),
+  });
+  return { base: align(base), draft: align(draft) };
+}
+
 export class WorkspaceOperations {
   private readonly chartStatuses = new CustomChartStatusStore();
+  private readonly datasets: DatasetStore;
   constructor(
     readonly store: ProjectStore,
     private checkConnection: (id: string) => Promise<unknown>,
-  ) {}
+  ) {
+    this.datasets = new DatasetStore(store.db);
+  }
   private get db() {
     return this.store.db;
   }
@@ -97,14 +199,12 @@ export class WorkspaceOperations {
     return queryDto(row);
   }
   async saveQuery(input: unknown, id?: string) {
-    const b = sourceSchema
-      .extend({
-        name,
-        baseRevision: z.number().int().nonnegative().optional(),
-        mutationId: z.uuid().optional(),
-      })
-      .parse(input);
-    await this.checkConnection(b.connectionId);
+    const b = extendSourceSchema({
+      name,
+      baseRevision: z.number().int().nonnegative().optional(),
+      mutationId: z.uuid().optional(),
+    }).parse(input);
+    if (b.kind !== "local") await this.checkConnection(b.connectionId);
     return this.store.once(
       `query:${id || "new"}`,
       b.mutationId || randomUUID(),
@@ -141,20 +241,27 @@ export class WorkspaceOperations {
     );
   }
   private syncQueryEditors(previous: QueryDocument, next: QueryDocument) {
-    const connection = this.db.query(
-      "SELECT database_name,catalog,schema_name FROM connections WHERE id=?1",
-      [previous.connectionId],
-    ).rows[0];
+    const connection =
+      previous.kind === "local"
+        ? undefined
+        : this.db.query(
+            "SELECT database_name,catalog,schema_name FROM connections WHERE id=?1",
+            [previous.connectionId],
+          ).rows[0];
     // Saving a query materializes inherited connection defaults. Compare the
     // effective context so an otherwise clean editor still follows that query.
     const sourceKey = (source: QuerySource) =>
       JSON.stringify(
-        sourceSchema.parse({
-          ...source,
-          database: source.database ?? (connection?.database_name || undefined),
-          catalog: source.catalog ?? (connection?.catalog || undefined),
-          schema: source.schema ?? (connection?.schema_name || undefined),
-        }),
+        source.kind === "local"
+          ? sourceSchema.parse(source)
+          : sourceSchema.parse({
+              ...source,
+              kind: undefined,
+              database:
+                source.database ?? (connection?.database_name || undefined),
+              catalog: source.catalog ?? (connection?.catalog || undefined),
+              schema: source.schema ?? (connection?.schema_name || undefined),
+            }),
       );
     const before = sourceKey(previous);
     const source = sourceSchema.parse(next);
@@ -171,6 +278,8 @@ export class WorkspaceOperations {
       // drafts keep both their contents and the query revision they were based on.
       this.store.updateEditor(editor.id, {
         ...source,
+        kind: source.kind ?? "remote",
+        connectionId: source.connectionId ?? null,
         database: source.database ?? null,
         catalog: source.catalog ?? null,
         schema: source.schema ?? null,
@@ -206,6 +315,239 @@ export class WorkspaceOperations {
       this.store.publish("queries.changed", id, { id });
       return { ok: true };
     });
+  }
+  listDatasets(): Dataset[] {
+    return this.datasets.list();
+  }
+  dataset(id: string): Dataset {
+    return this.datasets.get(id);
+  }
+  pinDatasets(): { datasets: Dataset[]; release: () => void } {
+    const datasets = this.datasets.list();
+    return {
+      datasets,
+      release: this.db.pinResults(
+        datasets.map((dataset) => dataset.resultSetId),
+      ),
+    };
+  }
+  private publishDataset(dataset: Dataset) {
+    this.store.publish("datasets.changed", dataset.id, dataset);
+  }
+  private registerSnapshot(resultSetId: string, name?: string, title?: string) {
+    const { dataset, created } = this.datasets.register(
+      resultSetId,
+      name,
+      title,
+    );
+    if (created) this.publishDataset(dataset);
+    return dataset;
+  }
+  registerDataset(input: unknown): Dataset {
+    const b = datasetRevisionSchema
+      .partial()
+      .extend({
+        resultSetId: z.uuid(),
+        name: datasetNameSchema.optional(),
+        boardId: z.uuid().optional(),
+        nodeId: z.string().min(1).max(200).optional(),
+      })
+      .parse(input);
+    if (
+      Boolean(b.boardId) !== Boolean(b.nodeId) ||
+      (b.boardId && b.baseRevision === undefined)
+    )
+      throw problem(400, "Укажите доску, блок и версию доски");
+    return this.store.once(
+      "dataset:new",
+      b.mutationId ?? randomUUID(),
+      b,
+      () => {
+        if (!b.boardId) return this.registerSnapshot(b.resultSetId, b.name);
+        const board = this.board(b.boardId);
+        if (board.revision !== b.baseRevision)
+          throw problem(409, "Доска изменена", "REVISION_CONFLICT");
+        const node = board.document.nodes.find((item) => item.id === b.nodeId);
+        if (!node) throw problem(404, "Блок не найден");
+        if (
+          node.data.kind !== "result" ||
+          node.data.resultSetId !== b.resultSetId
+        )
+          throw problem(409, "Результат блока изменён", "REVISION_CONFLICT");
+        if (node.data.datasetId) return this.dataset(node.data.datasetId);
+        this.store.work.write([
+          { kind: "board-node", boardId: board.id, id: node.id },
+        ]);
+        const dataset = this.registerSnapshot(
+          b.resultSetId,
+          b.name,
+          node.data.title,
+        );
+        this.saveBoardDocument(board, {
+          ...board.document,
+          nodes: board.document.nodes.map((item) =>
+            item === node
+              ? { ...item, data: bindDataset(item.data, dataset) }
+              : item,
+          ),
+        });
+        return dataset;
+      },
+    );
+  }
+  renameDataset(id: string, input: unknown): Dataset {
+    const b = datasetRevisionSchema
+      .extend({ name: datasetNameSchema })
+      .parse(input);
+    return this.store.once(
+      `dataset-rename:${id}`,
+      b.mutationId ?? randomUUID(),
+      b,
+      () => {
+        const current = this.datasets.atRevision(id, b.baseRevision);
+        const renamed = this.datasets.rename(current, b.name);
+        if (renamed !== current) {
+          this.rewriteDatasetBoards(current, renamed);
+          this.publishDataset(renamed);
+        }
+        return renamed;
+      },
+    );
+  }
+  deleteDataset(id: string, input: unknown): { ok: true } {
+    const b = datasetRevisionSchema.parse(input);
+    return this.store.once(
+      `dataset-delete:${id}`,
+      b.mutationId ?? randomUUID(),
+      b,
+      () => {
+        const current = this.datasets.atRevision(id, b.baseRevision);
+        this.rewriteDatasetBoards(current);
+        this.datasets.delete(id);
+        this.store.publish("datasets.changed", id, { id });
+        return { ok: true as const };
+      },
+    );
+  }
+  commitDatasetRefresh(id: string, input: unknown): Dataset {
+    const b = datasetRevisionSchema
+      .extend({ resultSetId: z.uuid() })
+      .parse(input);
+    return this.store.once(
+      `dataset-refresh:${id}`,
+      b.mutationId ?? randomUUID(),
+      b,
+      () => {
+        const current = this.datasets.atRevision(id, b.baseRevision);
+        const refreshed = this.datasets.refresh(current, b.resultSetId);
+        if (refreshed !== current) {
+          this.rewriteDatasetBoards(current, refreshed);
+          this.publishDataset(refreshed);
+        }
+        return refreshed;
+      },
+    );
+  }
+  private rewriteDatasetBoards(previous: Dataset, next?: Dataset) {
+    const rows = this.db.query(
+      "SELECT b.* FROM board_result_refs r JOIN boards b ON b.id=r.board_id WHERE r.result_set_id=?1",
+      [previous.resultSetId],
+    ).rows;
+    for (const row of rows) {
+      const board = boardDto(row);
+      const linked = board.document.nodes.filter(
+        (node) => node.data.datasetId === previous.id,
+      );
+      if (!linked.length) continue;
+      this.store.work.write(
+        linked.map((node) => ({
+          kind: "board-node",
+          boardId: board.id,
+          id: node.id,
+        })),
+      );
+      this.saveBoardDocument(
+        board,
+        {
+          ...board.document,
+          nodes: board.document.nodes.map((node) => {
+            if (node.data.datasetId !== previous.id) return node;
+            return {
+              ...node,
+              data: next
+                ? bindDataset(node.data, next)
+                : detachDataset(node.data),
+            };
+          }),
+        },
+        board.name,
+        { refreshedDatasetId: previous.id },
+      );
+    }
+  }
+  private historicalDatasetSnapshot(
+    boardId: string,
+    nodeId: string,
+    datasetId: string,
+    resultSetId: string,
+  ): BoardNodeData | undefined {
+    return this.db.query(
+      `SELECT json_extract(node.value,'$.data') AS document
+       FROM project_events AS event, json_each(event.payload,'$.document.nodes') AS node
+       WHERE event.type='board.updated' AND event.entity_id=?1
+         AND json_extract(node.value,'$.id')=?2
+         AND json_extract(node.value,'$.data.kind')='result'
+         AND json_extract(node.value,'$.data.datasetId')=?3
+         AND json_extract(node.value,'$.data.resultSetId')=?4
+         AND EXISTS (
+           SELECT 1 FROM board_dataset_history_refs WHERE board_id=?1 AND result_set_id=?4
+         )
+       ORDER BY event.id DESC LIMIT 1`,
+      [boardId, nodeId, datasetId, resultSetId],
+    ).rows[0]?.document;
+  }
+  private normalizeDatasets(document: BoardDocument, boardId?: string) {
+    const cached = new Map<string, Dataset>();
+    const restoredNodeIds = new Set<string>();
+    const nodes = document.nodes.map((node) => {
+      const { data } = node;
+      if (data.kind !== "result") return { ...node, data: detachDataset(data) };
+      if (data.datasetId) {
+        const dataset =
+          cached.get(data.datasetId) ?? this.datasets.find(data.datasetId);
+        if (dataset) {
+          cached.set(dataset.id, dataset);
+          return { ...node, data: bindDataset(data, dataset) };
+        }
+        const snapshot =
+          boardId &&
+          this.historicalDatasetSnapshot(
+            boardId,
+            node.id,
+            data.datasetId,
+            data.resultSetId!,
+          );
+        if (!snapshot)
+          throw problem(404, "Набор данных не найден", "DATASET_NOT_FOUND");
+        if (samePresentationLimit(snapshot, data)) restoredNodeIds.add(node.id);
+        return {
+          ...node,
+          data: detachDataset(datasetSnapshot(data, snapshot)),
+        };
+      }
+      if (data.publishDataset) {
+        const dataset = this.registerSnapshot(
+          data.resultSetId!,
+          data.datasetName === undefined
+            ? undefined
+            : datasetNameSchema.parse(data.datasetName),
+          data.title,
+        );
+        return { ...node, data: bindDataset(data, dataset) };
+      }
+      return node;
+    });
+    return { document: { ...document, nodes }, restoredNodeIds };
   }
   boards(kind?: BoardKind): BoardSummary[] {
     return this.db
@@ -276,7 +618,14 @@ export class WorkspaceOperations {
     );
     return { ok: true as const };
   }
-  private refs(id: string, document: BoardDocument) {
+  private refs(
+    id: string,
+    document: BoardDocument,
+    previous?: BoardDocument,
+    changes: BoardSnapshotChanges = {},
+  ) {
+    const before = new Map(previous?.nodes.map((node) => [node.id, node.data]));
+    const snapshots = new Map<string, BoardDocument["nodes"]>();
     for (const node of document.nodes) {
       if (
         node.data.image &&
@@ -285,16 +634,15 @@ export class WorkspaceOperations {
         ]).rowCount
       )
         throw problem(400, "Изображение блока не найдено");
+      const resultId = node.data.resultSetId;
+      if (resultId) {
+        const group = snapshots.get(resultId);
+        if (group) group.push(node);
+        else snapshots.set(resultId, [node]);
+      }
     }
     this.db.query("DELETE FROM board_result_refs WHERE board_id=?1", [id]);
-    const ids = [
-      ...new Set(
-        document.nodes.flatMap((n) =>
-          n.data.resultSetId ? [n.data.resultSetId] : [],
-        ),
-      ),
-    ];
-    for (const resultId of ids) {
+    for (const [resultId, nodes] of snapshots) {
       const r = this.db.query(
         "SELECT id,row_count,columns,byte_count FROM result_sets WHERE id=?1",
         [resultId],
@@ -310,29 +658,80 @@ export class WorkspaceOperations {
           409,
           "Дождитесь завершения или остановите пакет перед добавлением результата на доску",
         );
-      for (const node of document.nodes.filter(
-        (node) =>
-          node.data.resultSetId === resultId && node.data.view === "chart",
-      )) {
-        if (node.data.table || node.data.visibleColumns)
+      for (const node of nodes) {
+        const { data } = node;
+        // A refresh may outgrow a particular view. Keep its settings and let
+        // that view report the incompatibility while the snapshot stays usable.
+        if (
+          (changes.refreshedDatasetId &&
+            data.datasetId === changes.refreshedDatasetId) ||
+          changes.restoredNodeIds?.has(node.id) ||
+          samePresentationLimit(before.get(node.id), data)
+        )
+          continue;
+        if (
+          (data.view === "chart" || data.customChart) &&
+          (data.table || data.visibleColumns)
+        )
           checkTableSourceMetadata(r.row_count, r.columns.length, r.byte_count);
-        else if (r.row_count > 5000)
-          throw problem(422, "График превышает лимит 5000 точек");
-      }
-      for (const node of document.nodes.filter(
-        (node) =>
-          node.data.resultSetId === resultId &&
-          node.data.customChart !== undefined,
-      )) {
-        if (node.data.table || node.data.visibleColumns)
-          checkTableSourceMetadata(r.row_count, r.columns.length, r.byte_count);
-        else checkCustomChartMetadata(r.row_count, r.columns.length);
+        else {
+          if (data.view === "chart" && r.row_count > 5000)
+            throw problem(422, "График превышает лимит 5000 точек");
+          if (data.customChart)
+            checkCustomChartMetadata(r.row_count, r.columns.length);
+        }
       }
       this.db.query(
         "INSERT INTO board_result_refs(board_id,result_set_id) VALUES(?1,?2)",
         [id, resultId],
       );
+      if (nodes.some((node) => node.data.datasetId))
+        this.db.query(
+          "INSERT OR IGNORE INTO board_dataset_history_refs(board_id,result_set_id) VALUES(?1,?2)",
+          [id, resultId],
+        );
     }
+  }
+  private saveBoardDocument(
+    current: Board,
+    next: BoardDocument,
+    nextName = current.name,
+    changes: BoardSnapshotChanges = {},
+  ): Board {
+    const before = new Map(
+      current.document.nodes.map((node) => [node.id, node]),
+    );
+    const document = boardDocumentSchema.parse({
+      ...next,
+      nodes: next.nodes.map((node) => {
+        const old = before.get(node.id);
+        return old &&
+          (!boardValuesEqual(old.data.source, node.data.source) ||
+            old.data.datasetId !== node.data.datasetId ||
+            (old.data.kind !== "result" && node.data.kind === "result"))
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                sourceRevision: Math.max(
+                  (old.data.sourceRevision ?? 0) + 1,
+                  node.data.sourceRevision ?? 0,
+                ),
+              },
+            }
+          : node;
+      }),
+    });
+    checkBoardSize(document);
+    const row = this.db.query(
+      "UPDATE boards SET name=?2,document=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
+      [current.id, nextName, document, current.revision],
+    ).rows[0];
+    if (!row) throw problem(409, "Доска изменена", "REVISION_CONFLICT");
+    this.refs(current.id, document, current.document, changes);
+    const board = boardDto(row);
+    this.store.publish("board.updated", current.id, board);
+    return board;
   }
   createBoard(input: unknown): Board {
     const b = z
@@ -364,13 +763,14 @@ export class WorkspaceOperations {
       b.mutationId || randomUUID(),
       request,
       () => {
-        const document = request.document ?? emptyPresentationDocument();
-        if (b.kind !== undefined && b.kind !== boardKind(document))
+        const incoming = request.document ?? emptyPresentationDocument();
+        if (b.kind !== undefined && b.kind !== boardKind(incoming))
           throw problem(
             400,
             "Вид документа не соответствует запросу",
             "INVALID_BOARD_KIND",
           );
+        const { document } = this.normalizeDatasets(incoming);
         checkBoardSize(document);
         const id = randomUUID();
         this.store.work.write([
@@ -418,13 +818,14 @@ export class WorkspaceOperations {
             "Вид документа нельзя изменить",
             "INVALID_BOARD_KIND",
           );
-        const base = this.boardAtRevision(id, b.baseRevision);
-        const changed = boardChangedEntities(base.document, b.document);
-        const merged = mergeBoardDocuments(
-          base.document,
+        const historic = this.boardAtRevision(id, b.baseRevision);
+        const { base, draft } = alignDatasetEdits(
+          historic.document,
           b.document,
           current.document,
         );
+        const changed = boardChangedEntities(base, draft);
+        const merged = mergeBoardDocuments(base, draft, current.document);
         const targets: AgentWorkTarget[] = [
           ...changed.nodeIds.map((nodeId) => ({
             kind: "board-node" as const,
@@ -442,17 +843,13 @@ export class WorkspaceOperations {
             id: slideId,
           })),
           ...(changed.slidesStructureChanged ||
-          (b.name !== undefined && b.name !== base.name)
+          (b.name !== undefined && b.name !== historic.name)
             ? [{ kind: "board" as const, id }]
             : []),
         ];
         const dependencies: AgentWorkTarget[] = [];
         for (const edgeId of changed.edgeIds)
-          for (const document of [
-            base.document,
-            b.document,
-            current.document,
-          ]) {
+          for (const document of [base, draft, current.document]) {
             const edge = document.edges.find((edge) => edge.id === edgeId);
             for (const nodeId of [edge?.source, edge?.target])
               if (nodeId)
@@ -466,8 +863,8 @@ export class WorkspaceOperations {
         if (
           merged.conflicts.length ||
           (b.name !== undefined &&
-            b.name !== base.name &&
-            current.name !== base.name &&
+            b.name !== historic.name &&
+            current.name !== historic.name &&
             current.name !== b.name)
         )
           throw problem(
@@ -475,36 +872,17 @@ export class WorkspaceOperations {
             "Затронутый объект доски изменён. Прочитайте его заново",
             "REVISION_CONFLICT",
           );
-        const document = boardDocumentSchema.parse({
-          ...merged.document,
-          nodes: merged.document.nodes.map((node) => {
-            const old = current.document.nodes.find((n) => n.id === node.id);
-            return old && !boardValuesEqual(old.data.source, node.data.source)
-              ? {
-                  ...node,
-                  data: {
-                    ...node.data,
-                    sourceRevision: Math.max(
-                      (old.data.sourceRevision ?? 0) + 1,
-                      node.data.sourceRevision ?? 0,
-                    ),
-                  },
-                }
-              : node;
-          }),
-        });
-        checkBoardSize(document);
         const nextName =
-          b.name !== undefined && b.name !== base.name ? b.name : current.name;
-        const row = this.db.query(
-          "UPDATE boards SET name=?2,document=?3,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?4 RETURNING *",
-          [id, nextName, document, current.revision],
-        ).rows[0];
-        if (!row) throw problem(409, "Доска изменена", "REVISION_CONFLICT");
-        this.refs(id, document);
-        const board = boardDto(row);
-        this.store.publish("board.updated", id, board);
-        return board;
+          b.name !== undefined && b.name !== historic.name
+            ? b.name
+            : current.name;
+        const { document, restoredNodeIds } = this.normalizeDatasets(
+          merged.document,
+          id,
+        );
+        return this.saveBoardDocument(current, document, nextName, {
+          restoredNodeIds,
+        });
       },
     );
   }

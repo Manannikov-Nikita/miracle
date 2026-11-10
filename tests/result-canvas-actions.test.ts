@@ -16,7 +16,7 @@ describe("SQL result destinations", () => {
     await cleanup();
     vi.unstubAllGlobals();
   });
-  it("offers both canvases and inserts only into the chosen destination", async () => {
+  it("inserts only into the chosen canvas and saves the edited SQL name with the board result", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const host = document.createElement("div");
     document.body.append(host);
@@ -26,6 +26,7 @@ describe("SQL result destinations", () => {
       host.remove();
     };
     const inserted: CanvasDestination[] = [];
+    const datasetNames: (string | undefined)[] = [];
     function Content() {
       const registry = useCanvasWorkspace()!;
       for (const kind of ["board", "presentation"] as const)
@@ -35,8 +36,9 @@ describe("SQL result destinations", () => {
             boardId: `${kind}-doc`,
             ...(kind === "presentation" ? { slideId: "slide" } : {}),
           }),
-          insertResult: async (_result, target) => {
+          insertResult: async (_result, target, _actionId, datasetName) => {
             inserted.push(target!);
+            datasetNames.push(datasetName);
           },
           insertFragment: async () => {},
           containsPoint: () => false,
@@ -44,6 +46,7 @@ describe("SQL result destinations", () => {
         });
       return createElement(ResultCanvasActions, {
         result: { id: "r" } as ResultSet,
+        queryName: "monthly_sales.sql",
         disabled: false,
         onBoardFallback: () => {},
         onNotify: () => {},
@@ -77,6 +80,21 @@ describe("SQL result destinations", () => {
         )!
         .click(),
     );
+    expect(inserted).toHaveLength(1);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const input = dialog.querySelector("input")!;
+    expect(input.value).toBe("monthly_sales");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(input, "regional_sales");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () =>
+      dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(),
+    );
     expect(inserted[1]).toEqual({ kind: "board", boardId: "board-doc" });
+    expect(datasetNames).toEqual([undefined, "regional_sales"]);
   });
 });

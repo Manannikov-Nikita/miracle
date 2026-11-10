@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildApp } from "../src/server/app.js";
+import { removeDatasetSchema } from "./helpers/legacy-workspace.js";
 
 const dirs: string[] = [];
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
@@ -352,8 +353,9 @@ it("migrates existing chats with manual approvals and preserves the preference o
       db.sqlite.exec(`ALTER TABLE agent_chats DROP COLUMN ${name}`);
   // Recreate the actual version-four shape, including removal of later SQL
   // ownership storage and per-chat model settings.
+  removeDatasetSchema(db);
   db.sqlite.exec(
-    "DROP TABLE IF EXISTS agent_query_runs; DROP TABLE IF EXISTS agent_images; PRAGMA user_version=4",
+    "DROP TABLE IF EXISTS agent_query_runs; DROP TABLE IF EXISTS agent_images; DROP TABLE board_images; PRAGMA user_version=4",
   );
   await s.app.close();
   const migrated = await open(s.root);

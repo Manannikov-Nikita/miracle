@@ -34,10 +34,10 @@ if (
   !checksums[target]
 )
   throw new Error(`Unsupported release target: ${target}`);
-if (
-  JSON.parse(await readFile(join(root, "package.json"), "utf8")).version !==
-  version
-)
+const packageManifest = JSON.parse(
+  await readFile(join(root, "package.json"), "utf8"),
+);
+if (packageManifest.version !== version)
   throw new Error("Release version must match package.json.");
 const output = resolve(outputArgument || join(root, ".local/releases"));
 const name = `miracle-${version}-${target}`;
@@ -94,6 +94,7 @@ try {
   await cp(join(root, "docs/local-installation.md"), join(stage, "README.md"));
   await cp(join(root, "release/install.mjs"), join(stage, "install.mjs"));
   await cp(join(root, "release/setup-path.mjs"), join(stage, "setup-path.mjs"));
+  const [os, cpu] = target.split("-");
   execFileSync(
     "npm",
     [
@@ -103,9 +104,22 @@ try {
       "--bin-links=false",
       "--no-audit",
       "--no-fund",
+      `--os=${os}`,
+      `--cpu=${cpu}`,
+      ...(os === "linux" ? ["--libc=glibc"] : []),
     ],
     { cwd: stage, stdio: "inherit" },
   );
+  if (packageManifest.dependencies?.["@duckdb/node-api"]) {
+    const { stageDuckDBAssets, verifyBundledDuckDB } =
+      await import("./duckdb-assets.mjs");
+    const extension = await stageDuckDBAssets(
+      root,
+      target,
+      join(stage, "dist/server/native/duckdb"),
+    );
+    await verifyBundledDuckDB(root, stage, target, extension);
+  }
   const archive = join(output, `${name}.tar.gz`);
   await rm(archive, { force: true });
   await createTar(

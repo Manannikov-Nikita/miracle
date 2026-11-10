@@ -1,3 +1,5 @@
+import type { Engine } from "../shared/types";
+
 export type SqlCompletionClause =
   | "select"
   | "from"
@@ -26,7 +28,6 @@ export interface SqlCompletionContext {
   orderBy: string[];
 }
 
-type Engine = "clickhouse" | "trino";
 type Token = {
   kind: "word" | "quoted" | "string" | "number" | "symbol";
   text: string;
@@ -349,20 +350,30 @@ function listItems(
 }
 
 /** Explicit projection aliases, grouped by SELECT, with original SQL offsets. */
-export function sqlSelectAliasOffsets(sql: string, engine?: Engine): number[][] {
+export function sqlSelectAliasOffsets(
+  sql: string,
+  engine?: Engine,
+): number[][] {
   const { tokens } = tokenize(sql, engine);
   return queryScopes(tokens, sql.length).map((scope) => {
     const end = clausesFor(tokens, scope)[1]?.start ?? scope.end;
-    return listItems(tokens, tokens[scope.index].end, end, scope.depth, true)
-      .flatMap((item) => {
-        const alias = item.at(-1);
-        const as = item.at(-2);
-        return item.length >= 3 &&
-          isName(alias) && alias?.depth === scope.depth &&
-          isWord(as, "AS") && as?.depth === scope.depth
-          ? [as.start]
-          : [];
-      });
+    return listItems(
+      tokens,
+      tokens[scope.index].end,
+      end,
+      scope.depth,
+      true,
+    ).flatMap((item) => {
+      const alias = item.at(-1);
+      const as = item.at(-2);
+      return item.length >= 3 &&
+        isName(alias) &&
+        alias?.depth === scope.depth &&
+        isWord(as, "AS") &&
+        as?.depth === scope.depth
+        ? [as.start]
+        : [];
+    });
   });
 }
 

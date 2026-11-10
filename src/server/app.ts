@@ -36,6 +36,7 @@ import { ProjectStore } from "./project-store.js";
 import { registerProjectRoutes } from "./project-routes.js";
 import { registerProjectGitRoutes } from "./project-git-routes.js";
 import { WorkspaceOperations } from "./workspace-operations.js";
+import { executeLocalQuery } from "./local-query.js";
 import { registerWorkspaceSearchRoutes } from "./workspace-search.js";
 import {
   mergeClickHouseOptions,
@@ -76,6 +77,7 @@ import type {
   ResultSet,
   BoardDocument,
   SqlFunctionCatalog,
+  Cell,
 } from "../shared/types.js";
 import type {
   AgentSqlActivity,
@@ -815,40 +817,100 @@ export async function buildApp(
       need(req);
       return operations.deleteQuery(uuid(req), req.body);
     });
+    type DatasetRefreshIntent = {
+      datasetId: string;
+      baseRevision: number;
+      mutationId: string;
+    };
     async function startRun(
       source: QuerySource,
       mutationId: string = randomUUID(),
+      refresh?: DatasetRefreshIntent,
+      refreshInput?: unknown,
     ) {
-      const engine = await connection(source.connectionId);
-      let batch;
+      const scope = refresh
+        ? `dataset-refresh-run:${refresh.datasetId}`
+        : "query-run";
+      const operationInput = refresh ? refreshInput : source;
+      if (
+        db.query("SELECT id FROM project_mutations WHERE scope=?1 AND id=?2", [
+          scope,
+          mutationId,
+        ]).rowCount
+      ) {
+        const created = projectStore.once(
+          scope,
+          mutationId,
+          operationInput,
+          () => {
+            throw err(409, "Операция недоступна");
+          },
+        ) as any;
+        const current = db.query("SELECT * FROM query_runs WHERE id=?1", [
+          created.id,
+        ]).rows[0];
+        return runDto(current || created);
+      }
+      const engine =
+        source.kind === "local"
+          ? undefined
+          : await connection(source.connectionId);
+      let batch: ReturnType<typeof prepareDateBatch>;
       try {
-        batch = prepareDateBatch(source, engine);
+        if (engine) batch = prepareDateBatch(source, engine);
       } catch (e: any) {
         throw err(400, e.message);
       }
       const id = randomUUID();
       let fresh = false;
-      const created = projectStore.once("query-run", mutationId, source, () => {
-        const r = db.query(
-          "SELECT id FROM query_runs WHERE status IN ('running','cancelling')",
-        );
-        if (r.rows.length >= limits.maxGlobalRuns)
-          throw err(429, "Достигнут лимит одновременных запросов");
-        fresh = true;
-        const created = db.query(
-          "INSERT INTO query_runs(id,status,source,batch) VALUES(?1,'running',?2,?3) RETURNING *",
-          [id, source, batch],
-        ).rows[0];
-        // The actor comes from the authenticated MCP call's async context.
-        // Attribution commits with creation and is never changed on replay.
-        const actor = projectStore.work.assertActor();
-        if (actor)
-          db.query(
-            "INSERT INTO agent_query_runs(run_id,chat_id,turn_id) VALUES(?1,?2,?3)",
-            [id, actor.chatId, actor.turnId],
+      const created = projectStore.once(
+        scope,
+        mutationId,
+        operationInput,
+        () => {
+          if (
+            refresh &&
+            operations.dataset(refresh.datasetId).revision !==
+              refresh.baseRevision
+          )
+            throw err(
+              409,
+              "Датасет изменён. Загрузите актуальную версию",
+              "REVISION_CONFLICT",
+            );
+          if (
+            refresh &&
+            db.query(
+              "SELECT id FROM query_runs WHERE status IN ('running','cancelling','paused') AND json_extract(dataset_refresh,'$.datasetId')=?1 LIMIT 1",
+              [refresh.datasetId],
+            ).rowCount
+          )
+            throw err(
+              409,
+              "Обновление датасета уже выполняется. Дождитесь завершения или остановите его",
+              "DATASET_REFRESH_ACTIVE",
+            );
+          const r = db.query(
+            "SELECT id FROM query_runs WHERE status IN ('running','cancelling')",
           );
-        return created;
-      });
+          if (r.rows.length >= limits.maxGlobalRuns)
+            throw err(429, "Достигнут лимит одновременных запросов");
+          fresh = true;
+          const created = db.query(
+            "INSERT INTO query_runs(id,status,source,batch,dataset_refresh) VALUES(?1,'running',?2,?3,?4) RETURNING *",
+            [id, source, batch, refresh],
+          ).rows[0];
+          // The actor comes from the authenticated MCP call's async context.
+          // Attribution commits with creation and is never changed on replay.
+          const actor = projectStore.work.assertActor();
+          if (actor)
+            db.query(
+              "INSERT INTO agent_query_runs(run_id,chat_id,turn_id) VALUES(?1,?2,?3)",
+              [id, actor.chatId, actor.turnId],
+            );
+          return created;
+        },
+      );
       if (!fresh) {
         const current = db.query("SELECT * FROM query_runs WHERE id=?1", [
           created.id,
@@ -861,23 +923,28 @@ export async function buildApp(
         promise?: Promise<void>;
       } = { controller: new AbortController() };
       live.set(id, state);
-      state.promise = batch
-        ? performDateBatch({ db, id, engine, source, state, batch, limits })
-            .catch((error) => app.log.error(error))
-            .finally(() => {
-              if (live.get(id) === state) live.delete(id);
-            })
-        : performRun(id, engine, source, state);
+      publishDatasetRefresh(id);
+      state.promise =
+        batch && engine
+          ? performDateBatch({ db, id, engine, source, state, batch, limits })
+              .then(() => finishDatasetBatch(id))
+              .catch((error) => app.log.error(error))
+              .finally(() => {
+                if (live.get(id) === state) live.delete(id);
+                publishDatasetRefresh(id);
+              })
+          : performRun(id, engine, source, state, refresh);
       return runDto(created);
     }
     async function performRun(
       id: string,
-      engine: EngineConnection,
+      engine: EngineConnection | undefined,
       source: QuerySource,
       state: {
         controller: AbortController;
         cancel?: () => Promise<void>;
       },
+      refresh?: DatasetRefreshIntent,
     ) {
       const started = Date.now();
       let timedOut = false;
@@ -886,17 +953,44 @@ export async function buildApp(
         state.controller.abort();
         void state.cancel?.().catch(() => {});
       }, limits.timeoutMs);
+      let pins: ReturnType<WorkspaceOperations["pinDatasets"]> | undefined;
       try {
-        const output = await executeEngine(
-          engine,
-          source,
-          id,
-          limits,
-          state.controller.signal,
-          (fn) => {
-            state.cancel = fn;
-          },
-        );
+        if (source.kind === "local") pins = operations.pinDatasets();
+        const output =
+          source.kind === "local"
+            ? await executeLocalQuery({
+                sql: source.sql,
+                project: { projectRoot, dataDir },
+                datasets: pins!.datasets.map((dataset) => ({
+                  name: dataset.name,
+                  columns: dataset.columns,
+                  chunks: function* () {
+                    for (let index = 0; ; index++) {
+                      const chunk = db.query(
+                        "SELECT rows FROM result_chunks WHERE result_set_id=?1 AND chunk_index=?2",
+                        [dataset.resultSetId, index],
+                      ).rows[0];
+                      if (!chunk) break;
+                      yield chunk.rows as Cell[][];
+                    }
+                  },
+                })),
+                limits,
+                signal: state.controller.signal,
+                onCancel: (fn) => {
+                  state.cancel = fn;
+                },
+              })
+            : await executeEngine(
+                engine!,
+                source,
+                id,
+                limits,
+                state.controller.signal,
+                (fn) => {
+                  state.cancel = fn;
+                },
+              );
         if (state.controller.signal.aborted) throw new Error("Запрос отменён");
         const resultId = randomUUID();
         const c = db;
@@ -937,6 +1031,12 @@ export async function buildApp(
             "UPDATE query_runs SET status='completed',result_set_id=?2,row_count=?3,elapsed_ms=?4,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
             [id, resultId, output.rows.length, Date.now() - started],
           );
+          if (refresh)
+            operations.commitDatasetRefresh(refresh.datasetId, {
+              resultSetId: resultId,
+              baseRevision: refresh.baseRevision,
+              mutationId: refresh.mutationId,
+            });
           c.query("COMMIT");
         } catch (e) {
           c.query("ROLLBACK");
@@ -949,7 +1049,9 @@ export async function buildApp(
           ? "Превышено время выполнения запроса"
           : cancelled
             ? "Запрос отменён"
-            : queryErrorText(e, engine);
+            : engine
+              ? queryErrorText(e, engine)
+              : e.message || "Не удалось выполнить локальный запрос";
         db.query(
           "UPDATE query_runs SET status=?2,error=?3,elapsed_ms=?4,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1",
           [
@@ -960,10 +1062,150 @@ export async function buildApp(
           ],
         );
       } finally {
+        pins?.release();
         clearTimeout(timer);
         live.delete(id);
+        publishDatasetRefresh(id);
       }
     }
+    function publishDatasetRefresh(id: string) {
+      const row = db.query(
+        "SELECT dataset_refresh FROM query_runs WHERE id=?1",
+        [id],
+      ).rows[0];
+      const datasetId = row?.dataset_refresh?.datasetId;
+      if (datasetId)
+        projectStore.publish("datasets.refreshes", datasetId, { runId: id });
+    }
+    function finishDatasetBatch(id: string) {
+      const run = db.query("SELECT * FROM query_runs WHERE id=?1", [id])
+        .rows[0];
+      const refresh = run?.dataset_refresh as DatasetRefreshIntent | undefined;
+      if (!refresh || run.status !== "completed" || !run.result_set_id) return;
+      try {
+        operations.commitDatasetRefresh(refresh.datasetId, {
+          resultSetId: run.result_set_id,
+          baseRevision: refresh.baseRevision,
+          mutationId: refresh.mutationId,
+        });
+      } catch (error) {
+        db.query("UPDATE query_runs SET status='failed',error=?2 WHERE id=?1", [
+          id,
+          (error as Error).message,
+        ]);
+      }
+    }
+    async function refreshDataset(id: string, input: unknown) {
+      const b = z
+        .object({
+          baseRevision: z.number().int().positive(),
+          source: sourceSchema.optional(),
+          mutationId: z.uuid().optional(),
+        })
+        .parse(input);
+      const mutationId = b.mutationId || randomUUID();
+      const previous = db.query(
+        "SELECT response FROM project_mutations WHERE scope=?1 AND id=?2",
+        [`dataset-refresh-run:${id}`, mutationId],
+      ).rows[0];
+      const source = previous
+        ? (JSON.parse(previous.response).source as QuerySource)
+        : b.source || operations.dataset(id).source;
+      return startRun(
+        source,
+        mutationId,
+        { datasetId: id, baseRevision: b.baseRevision, mutationId },
+        b,
+      );
+    }
+    async function refreshNode(
+      boardId: string,
+      nodeId: string,
+      input: unknown,
+    ) {
+      const b = z
+        .object({
+          sourceRevision: z.number().int().nonnegative(),
+          mutationId: z.uuid().optional(),
+        })
+        .parse(input);
+      const mutationId = b.mutationId || randomUUID();
+      const node = operations
+        .board(boardId)
+        .document.nodes.find((n) => n.id === nodeId);
+      if (!node?.data.source) throw err(400, "У блока нет источника SQL");
+      if (node.data.datasetId) {
+        const operationInput = { boardId, nodeId, ...b };
+        const previous = db.query(
+          "SELECT response FROM project_mutations WHERE scope=?1 AND id=?2",
+          [`dataset-refresh-run:${node.data.datasetId}`, mutationId],
+        ).rows[0];
+        if (previous) {
+          const original = JSON.parse(previous.response);
+          return startRun(
+            original.source,
+            mutationId,
+            original.dataset_refresh,
+            operationInput,
+          );
+        }
+        if ((node.data.sourceRevision ?? 0) !== b.sourceRevision)
+          throw err(409, "Источник блока изменён", "REVISION_CONFLICT");
+        return startRun(
+          node.data.source,
+          mutationId,
+          {
+            datasetId: node.data.datasetId,
+            baseRevision: node.data.datasetRevision!,
+            mutationId,
+          },
+          operationInput,
+        );
+      }
+      if ((node.data.sourceRevision ?? 0) !== b.sourceRevision)
+        throw err(409, "Источник блока изменён", "REVISION_CONFLICT");
+      return startRun(node.data.source, mutationId);
+    }
+    app.get("/api/datasets", async (req) => {
+      need(req);
+      return operations.listDatasets();
+    });
+    app.get("/api/datasets/refreshes", async (req) => {
+      need(req);
+      const current = new Map<string, { datasetId: string; run: QueryRun }>();
+      for (const row of db.query(
+        "SELECT q.* FROM query_runs q JOIN datasets d ON d.id=json_extract(q.dataset_refresh,'$.datasetId') WHERE q.status IN ('running','cancelling','paused') ORDER BY q.started_at DESC, q.rowid DESC",
+      ).rows) {
+        const datasetId = row.dataset_refresh.datasetId as string;
+        if (!current.has(datasetId))
+          current.set(datasetId, { datasetId, run: runDto(row) });
+      }
+      return [...current.values()];
+    });
+    app.get("/api/datasets/:id", async (req) => {
+      need(req);
+      return operations.dataset(uuid(req));
+    });
+    app.post("/api/datasets", async (req, reply) => {
+      need(req);
+      const dataset = operations.registerDataset(req.body);
+      reply.code(201);
+      return dataset;
+    });
+    app.patch("/api/datasets/:id", async (req) => {
+      need(req);
+      return operations.renameDataset(uuid(req), req.body);
+    });
+    app.delete("/api/datasets/:id", async (req) => {
+      need(req);
+      return operations.deleteDataset(uuid(req), req.body);
+    });
+    app.post("/api/datasets/:id/refresh", async (req, reply) => {
+      need(req);
+      const run = await refreshDataset(uuid(req), req.body);
+      reply.code(202);
+      return run;
+    });
     app.post("/api/query-runs", async (req, reply) => {
       need(req);
       const r = await startRun(
@@ -1044,6 +1286,7 @@ export async function buildApp(
             [id, run.batch],
           );
         });
+        publishDatasetRefresh(id);
         return queryStatus(id);
       }
       const state = live.get(id);
@@ -1054,6 +1297,7 @@ export async function buildApp(
         );
         state.controller.abort();
         void state.cancel?.().catch(() => {});
+        publishDatasetRefresh(id);
       }
       return queryStatus(id);
     }
@@ -1141,6 +1385,7 @@ export async function buildApp(
         promise?: Promise<void>;
       } = { controller: new AbortController() };
       live.set(id, state);
+      publishDatasetRefresh(id);
       state.promise = performDateBatch({
         db,
         id,
@@ -1151,9 +1396,11 @@ export async function buildApp(
         limits,
         elapsedMs: resumed.elapsedMs,
       })
+        .then(() => finishDatasetBatch(id))
         .catch((error) => app.log.error(error))
         .finally(() => {
           if (live.get(id) === state) live.delete(id);
+          publishDatasetRefresh(id);
         });
       reply.code(202);
       return resumed;
@@ -1331,23 +1578,7 @@ export async function buildApp(
         .string()
         .max(200)
         .parse((req.params as any).nodeId);
-      const b = z
-        .object({ sourceRevision: z.number().int().nonnegative() })
-        .parse(req.body);
-      const board = db.query("SELECT document FROM boards WHERE id=?1", [id])
-        .rows[0];
-      if (!board) throw err(404, "Доска не найдена");
-      const node = (board.document as BoardDocument).nodes.find(
-        (n) => n.id === nodeId,
-      );
-      if (!node?.data.source) throw err(400, "У блока нет источника SQL");
-      if ((node.data.sourceRevision ?? 0) !== b.sourceRevision)
-        throw err(
-          409,
-          "Источник изменён. Перезагрузите доску",
-          "REVISION_CONFLICT",
-        );
-      const r = await startRun(node.data.source);
+      const r = await refreshNode(id, nodeId, req.body);
       reply.code(202);
       return r;
     });
@@ -1389,6 +1620,8 @@ export async function buildApp(
           );
         },
         run: startRun,
+        refreshDataset,
+        refreshNode,
         status: queryStatus,
         cancel: cancelRun,
         result: getResult,

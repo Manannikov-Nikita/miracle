@@ -8,10 +8,12 @@ import {
   rm,
   readdir,
   realpath,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { createServer as createHttpsServer } from "node:https";
+import { setTimeout as delay } from "node:timers/promises";
 import { createNativeFetch } from "./helpers/native-fetch.mjs";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
@@ -95,6 +97,47 @@ try {
   assert(Number.isInteger(port) && port > 0);
   assert.equal(state.projectRoot, root);
   assert.equal(state.dataDir, data);
+  console.log(
+    "Reading XLSX with the installed DuckDB runtime and Excel extension",
+  );
+  await command(
+    node,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    import assert from "node:assert/strict";
+    import { createRequire } from "node:module";
+    import { join } from "node:path";
+    import { pathToFileURL } from "node:url";
+    const [code, projectRoot, dataDir] = process.argv.slice(1);
+    const require = createRequire(join(code, "package.json"));
+    const { DuckDBInstance } = require("@duckdb/node-api");
+    const { executeLocalQuery } = await import(pathToFileURL(join(code, "dist/server/server/local-query.js")));
+    const quote = (path) => "'" + path.replaceAll("'", "''") + "'";
+    const instance = await DuckDBInstance.create(":memory:", {
+      autoinstall_known_extensions: "false", autoload_known_extensions: "false",
+    });
+    const connection = await instance.connect();
+    await connection.run("LOAD " + quote(join(code, "dist/server/native/duckdb/excel.duckdb_extension")));
+    await connection.run("COPY (SELECT 42 AS total) TO " + quote(join(projectRoot, "отчёт.xlsx")) + " (FORMAT XLSX, HEADER TRUE, SHEET 'Totals')");
+    connection.closeSync();
+    instance.closeSync();
+    const result = await executeLocalQuery({
+      project: { projectRoot, dataDir },
+      sql: "SELECT * FROM read_xlsx('отчёт.xlsx', sheet = 'Totals')",
+      limits: { timeoutMs: 10000, maxRows: 10, maxBytes: 1000 },
+      signal: new AbortController().signal,
+    });
+    assert.equal(result.columns[0].name, "total");
+    assert.deepEqual(result.rows, [[42]]);
+  `,
+      code,
+      root,
+      data,
+    ],
+    { customEnv: { ...env, PATH: safePath } },
+  );
   await run("start");
   assert.equal(
     JSON.parse((await run("status", "--json")).stdout).pid,
@@ -165,21 +208,23 @@ try {
     username: "fixture-reader",
     url: `https://127.0.0.1:${trinoServer.address().port}`,
   };
-  async function post(path, payload) {
+  async function request(path, payload) {
     return await fetch(`http://127.0.0.1:${port}${path}`, {
-      method: "POST",
+      method: payload === undefined ? "GET" : "POST",
       headers: {
         cookie: browser.cookie,
         "x-csrf-token": browser.body.csrfToken,
-        "content-type": "application/json",
+        ...(payload === undefined
+          ? {}
+          : { "content-type": "application/json" }),
       },
       body: JSON.stringify(payload),
     });
   }
-  const untrusted = await post("/api/connections/test", trinoInput);
+  const untrusted = await request("/api/connections/test", trinoInput);
   assert.equal(untrusted.status, 400);
   assert.match((await untrusted.json()).error, /CA|сертификат/i);
-  const trusted = await post("/api/connections", {
+  const trusted = await request("/api/connections", {
     ...trinoInput,
     trino: { tls: { caCert } },
   });
@@ -188,7 +233,7 @@ try {
   assert.equal(trinoConnection.trino.tls.hasCaCert, true);
   assert(!JSON.stringify(trinoConnection).includes("BEGIN CERTIFICATE"));
   async function verifySavedTrino() {
-    const response = await post(
+    const response = await request(
       `/api/connections/${trinoConnection.id}/test`,
       {},
     );
@@ -196,20 +241,107 @@ try {
     assert.equal((await response.json()).version, "native-trino-tls");
   }
   await verifySavedTrino();
-  const response = await fetch(`http://127.0.0.1:${port}/api/boards`, {
-    method: "POST",
-    headers: {
-      cookie: browser.cookie,
-      "x-csrf-token": browser.body.csrfToken,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      name: "Persistent native smoke",
-      document: { schemaVersion: 1, nodes: [], edges: [] },
-    }),
+
+  async function json(path, expectedStatus = 200, payload) {
+    const response = await request(path, payload);
+    assert.equal(
+      response.status,
+      expectedStatus,
+      await response.clone().text(),
+    );
+    return await response.json();
+  }
+  async function query(source) {
+    const started = await json("/api/query-runs", 202, source);
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const run = await json(`/api/query-runs/${started.id}`);
+      if (run.status === "running" || run.status === "cancelling") {
+        await delay(40);
+        continue;
+      }
+      assert.equal(run.status, "completed", run.error);
+      assert(run.resultSetId);
+      return run;
+    }
+    throw Error(`Timed out waiting for query ${started.id}`);
+  }
+  async function resultRows(id) {
+    return (await json(`/api/result-sets/${id}/rows`)).rows;
+  }
+
+  console.log("Saving a Trino result as a dataset and joining a project CSV");
+  const remoteRun = await query({
+    connectionId: trinoConnection.id,
+    sql: "SELECT version() AS version",
   });
-  assert.equal(response.status, 201);
-  const board = await response.json();
+  const board = await json("/api/boards", 201, {
+    name: "Persistent native smoke",
+    document: {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "remote-result",
+          type: "artifact",
+          position: { x: 0, y: 0 },
+          data: {
+            title: "Installed Trino result",
+            kind: "result",
+            view: "table",
+            source: remoteRun.source,
+            resultSetId: remoteRun.resultSetId,
+            publishDataset: true,
+            datasetName: "remote_versions",
+          },
+        },
+      ],
+      edges: [],
+    },
+  });
+  const remoteDatasetId = board.document.nodes[0].data.datasetId;
+  assert(remoteDatasetId);
+  assert.equal(board.document.nodes[0].data.datasetName, "remote_versions");
+  await writeFile(
+    join(root, "dataset-fixture.csv"),
+    "version,label\nnative-trino-tls,joined-from-file\n",
+  );
+  const joinedRun = await query({
+    kind: "local",
+    sql: "SELECT r.version, f.label FROM remote_versions AS r JOIN read_csv('dataset-fixture.csv', header = true) AS f ON r.version = f.version",
+  });
+  const joinedDataset = await json("/api/datasets", 201, {
+    name: "enriched_versions",
+    resultSetId: joinedRun.resultSetId,
+  });
+  async function verifyDatasets() {
+    const datasets = await json("/api/datasets");
+    assert.deepEqual(
+      datasets.map(({ id, name, resultSetId }) => ({ id, name, resultSetId })),
+      [
+        {
+          id: joinedDataset.id,
+          name: "enriched_versions",
+          resultSetId: joinedRun.resultSetId,
+        },
+        {
+          id: remoteDatasetId,
+          name: "remote_versions",
+          resultSetId: remoteRun.resultSetId,
+        },
+      ],
+    );
+    const persisted = await json(`/api/boards/${board.id}`);
+    const linked = persisted.document.nodes[0].data;
+    assert.equal(linked.datasetId, remoteDatasetId);
+    assert.equal(linked.resultSetId, remoteRun.resultSetId);
+    assert.deepEqual(await resultRows(remoteRun.resultSetId), [
+      ["native-trino-tls"],
+    ]);
+    assert.deepEqual(await resultRows(joinedRun.resultSetId), [
+      ["native-trino-tls", "joined-from-file"],
+    ]);
+  }
+  await verifyDatasets();
   const key = await readFile(join(data, "encryption.key"));
   await mkdir(secondProject);
   await run("start", "--project-dir", secondProject);
@@ -238,14 +370,7 @@ try {
   browser = await session();
   assert.equal(browser.body.workspaceId, workspaceId);
   await verifySavedTrino();
-  assert.equal(
-    (
-      await fetch(`http://127.0.0.1:${port}/api/boards/${board.id}`, {
-        headers: { cookie: browser.cookie },
-      })
-    ).status,
-    200,
-  );
+  await verifyDatasets();
   await run("stop");
   // A former global installation data directory remains explicitly accessible.
   const restored = legacyData;
@@ -272,13 +397,21 @@ try {
   browser = await session();
   assert.equal(browser.body.workspaceId, workspaceId);
   await verifySavedTrino();
+  await verifyDatasets();
+  const restoredJoin = await query({
+    kind: "local",
+    sql: "SELECT e.label FROM enriched_versions AS e JOIN remote_versions AS r ON r.version = e.version",
+  });
+  assert.deepEqual(await resultRows(restoredJoin.resultSetId), [
+    ["joined-from-file"],
+  ]);
   await run("stop", "--data-dir", restored);
   const prodPackages = await readdir(join(code, "node_modules"));
   assert(!prodPackages.includes("pg"));
   assert(!prodPackages.includes("react"));
   assert(!prodPackages.includes("@node-rs"));
   console.log(
-    `PASS: ${process.platform}-${process.arch}, project .miracle and ephemeral ports, live multi-project reinstall, explicit legacy storage, authenticated lifecycle, Trino HTTPS CA persistence and backup/restore, private state, no system runtime`,
+    `PASS: ${process.platform}-${process.arch}, project .miracle and ephemeral ports, live multi-project reinstall, explicit legacy storage, authenticated lifecycle, Trino HTTPS CA and joined dataset backup/restore, private state, no system runtime`,
   );
 } finally {
   await transport.destroy();

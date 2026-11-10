@@ -39,7 +39,10 @@ export const agentModelSettingsSchema = z
 export const editorFields = z.object({
   name: z.string().trim().min(1).max(200),
   sql: z.string().max(1000000),
-  connectionId: z.union([z.uuid(), z.literal("")]),
+  kind: z.enum(["remote", "local"]).optional(),
+  connectionId: z.union([z.uuid(), z.literal("")]).optional(),
+  datasetId: z.uuid().optional(),
+  datasetRevision: z.number().int().positive().optional(),
   database: z.string().max(200).optional(),
   catalog: z.string().max(200).optional(),
   schema: z.string().max(200).optional(),
@@ -205,6 +208,12 @@ export class ProjectStore {
       .extend({
         baseRevision: z.number().int().positive(),
         mutationId: z.uuid(),
+        connectionId: z
+          .union([z.uuid(), z.literal("")])
+          .nullable()
+          .optional(),
+        datasetId: z.uuid().nullable().optional(),
+        datasetRevision: z.number().int().positive().nullable().optional(),
         database: z.string().max(200).nullable().optional(),
         catalog: z.string().max(200).nullable().optional(),
         schema: z.string().max(200).nullable().optional(),

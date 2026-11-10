@@ -10,13 +10,42 @@ import {
   agentModelSettingsMigration,
 } from "./project-schema.js";
 const timestamp = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
-export const WORKSPACE_SCHEMA_VERSION = 8;
-const jsonFields = new Set(["source", "document", "columns", "rows", "batch"]);
+export const WORKSPACE_SCHEMA_VERSION = 9;
+const datasetSchema = `
+ ALTER TABLE query_runs ADD COLUMN dataset_refresh TEXT
+   CHECK(dataset_refresh IS NULL OR json_valid(dataset_refresh));
+ CREATE TABLE datasets(
+   id TEXT PRIMARY KEY,
+   name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+   revision INTEGER NOT NULL DEFAULT 1,
+   result_set_id TEXT NOT NULL UNIQUE REFERENCES result_sets(id) ON DELETE RESTRICT,
+   source TEXT NOT NULL CHECK(json_valid(source)),
+   columns TEXT NOT NULL CHECK(json_valid(columns)),
+   created_at TEXT NOT NULL DEFAULT ${timestamp},
+   updated_at TEXT NOT NULL DEFAULT ${timestamp}
+ );
+ CREATE TABLE board_dataset_history_refs(
+   board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+   result_set_id TEXT NOT NULL REFERENCES result_sets(id) ON DELETE RESTRICT,
+   PRIMARY KEY(board_id,result_set_id)
+ );
+ CREATE INDEX board_dataset_history_result ON board_dataset_history_refs(result_set_id);
+ PRAGMA user_version=9;
+`;
+const jsonFields = new Set([
+  "source",
+  "document",
+  "columns",
+  "rows",
+  "batch",
+  "dataset_refresh",
+]);
 /** One prepared-statement connection owns the workspace until close. */
 export class Database {
   readonly sqlite: DatabaseSync;
   readonly path: string;
   private closed = false;
+  private readonly resultPins = new Map<string, number>();
   constructor(readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.path = join(dataDir, "miracle.sqlite");
@@ -82,6 +111,23 @@ export class Database {
       throw error;
     }
   }
+  pinResults(ids: string[]): () => void {
+    for (const id of ids)
+      this.resultPins.set(id, (this.resultPins.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const id of ids) {
+        const count = this.resultPins.get(id)!;
+        if (count === 1) this.resultPins.delete(id);
+        else this.resultPins.set(id, count - 1);
+      }
+    };
+  }
+  pinnedResultIds(): string[] {
+    return [...this.resultPins.keys()];
+  }
   close() {
     if (!this.closed) {
       this.closed = true;
@@ -96,7 +142,7 @@ export function migrate(db: Database, initialize?: () => void) {
   if (version > WORKSPACE_SCHEMA_VERSION)
     throw new Error("Workspace schema is newer than this version of Miracle");
   if (version === WORKSPACE_SCHEMA_VERSION) return;
-  if (version >= 4 && version <= 7) {
+  if (version >= 4 && version <= 8) {
     db.transaction(() => {
       if (version === 4)
         db.sqlite.exec(`
@@ -105,7 +151,8 @@ export function migrate(db: Database, initialize?: () => void) {
       `);
       if (version < 6) db.sqlite.exec(agentQueryRunsSchema);
       if (version < 7) db.sqlite.exec(agentModelSettingsMigration);
-      db.sqlite.exec(`${boardImagesSchema} PRAGMA user_version=8;`);
+      if (version < 8) db.sqlite.exec(boardImagesSchema);
+      db.sqlite.exec(datasetSchema);
     });
     return;
   }
@@ -120,6 +167,7 @@ export function migrate(db: Database, initialize?: () => void) {
           "ALTER TABLE connections ADD COLUMN trino_options_encrypted TEXT;",
         );
       db.sqlite.exec(projectSchema);
+      db.sqlite.exec(datasetSchema);
     });
     return;
   }
@@ -139,6 +187,7 @@ export function migrate(db: Database, initialize?: () => void) {
  PRAGMA user_version=3;
  `);
     db.sqlite.exec(projectSchema);
+    db.sqlite.exec(datasetSchema);
     db.query("INSERT INTO app_settings(key,value) VALUES('workspace_id',?1)", [
       randomUUID(),
     ]);
@@ -148,7 +197,14 @@ export function migrate(db: Database, initialize?: () => void) {
 export function retention(db: Database) {
   db.transaction(() => {
     db.query(
-      "DELETE FROM result_sets WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') AND NOT EXISTS (SELECT 1 FROM board_result_refs b WHERE b.result_set_id=result_sets.id) AND NOT EXISTS (SELECT 1 FROM query_runs q WHERE q.result_set_id=result_sets.id AND q.status IN ('running','cancelling','paused'))",
+      `DELETE FROM result_sets
+       WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')
+         AND NOT EXISTS (SELECT 1 FROM board_result_refs b WHERE b.result_set_id=result_sets.id)
+         AND NOT EXISTS (SELECT 1 FROM board_dataset_history_refs b WHERE b.result_set_id=result_sets.id)
+         AND NOT EXISTS (SELECT 1 FROM datasets d WHERE d.result_set_id=result_sets.id)
+         AND NOT EXISTS (SELECT 1 FROM query_runs q WHERE q.result_set_id=result_sets.id AND q.status IN ('running','cancelling','paused'))
+         AND id NOT IN (SELECT value FROM json_each(?1))`,
+      [db.pinnedResultIds()],
     );
     db.query(
       "DELETE FROM query_runs WHERE started_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') AND status NOT IN ('running','cancelling','paused')",

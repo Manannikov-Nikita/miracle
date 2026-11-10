@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import type { BoardNode, ResultSet } from "../../shared/types";
-import { ArrowsClockwise, Code, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Code, Table, X } from "@phosphor-icons/react";
 import { ChartSettings } from "./ResultView";
 import { defaultChart } from "./model";
 import TableSettings from "./TableSettings";
@@ -9,6 +9,7 @@ import CustomChartDetails from "./CustomChartDetails";
 import MarkdownEditor from "./MarkdownEditor";
 import ShapeSettings from "./ShapeSettings";
 import TextBlockSettings from "./TextBlockSettings";
+import DatasetRefreshStatus from "../components/DatasetRefreshStatus";
 export default function Inspector({
   boardId,
   node,
@@ -20,6 +21,8 @@ export default function Inspector({
   presentation = false,
   autoFocus = true,
   refresh,
+  createDataset,
+  existingDatasetName,
   refreshing = false,
 }: {
   boardId?: string;
@@ -32,6 +35,8 @@ export default function Inspector({
   presentation?: boolean;
   autoFocus?: boolean;
   refresh?: () => void;
+  createDataset?: () => void;
+  existingDatasetName?: string;
   refreshing?: boolean;
 }) {
   const firstField = useRef<HTMLInputElement>(null);
@@ -183,15 +188,44 @@ export default function Inspector({
         )}
         {node.data.kind === "result" && (
           <>
-            {presentation && node.data.source && refresh && (
+            {node.data.datasetId && (
+              <>
+                <p className="board-source-note" title={node.data.datasetName}>
+                  Датасет <code>{node.data.datasetName}</code>
+                </p>
+                <DatasetRefreshStatus id={node.data.datasetId} />
+              </>
+            )}
+            {(presentation || node.data.datasetId) &&
+              node.data.source &&
+              refresh && (
+                <button
+                  className="board-open-source"
+                  aria-label={
+                    node.data.datasetId ? "Обновить датасет" : "Обновить снимок"
+                  }
+                  disabled={!editable || refreshing}
+                  onClick={refresh}
+                >
+                  <ArrowsClockwise size={16} aria-hidden="true" />
+                  {refreshing
+                    ? "Обновление…"
+                    : node.data.datasetId
+                      ? "Обновить датасет"
+                      : "Обновить снимок"}
+                </button>
+              )}
+            {createDataset && !node.data.datasetId && node.data.resultSetId && (
               <button
+                type="button"
                 className="board-open-source"
-                aria-label="Обновить снимок"
                 disabled={!editable || refreshing}
-                onClick={refresh}
+                onClick={createDataset}
               >
-                <ArrowsClockwise size={16} aria-hidden="true" />
-                {refreshing ? "Обновление…" : "Обновить снимок"}
+                <Table size={16} aria-hidden="true" />
+                {existingDatasetName
+                  ? `Связать с датасетом ${existingDatasetName}`
+                  : "Создать датасет"}
               </button>
             )}
             <div className="board-view-tabs">

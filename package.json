@@ -1,12 +1,15 @@
 {
   "name": "miracle",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=24.22.2"
   },
   "scripts": {
+    "predev": "npm run duckdb:assets",
+    "predev:api": "npm run duckdb:assets",
+    "duckdb:assets": "node scripts/duckdb-assets.mjs",
     "dev": "concurrently -k -n api,web \"tsx watch src/server/index.ts\" \"vite --host 127.0.0.1 --port 5178\"",
     "dev:api": "tsx watch src/server/index.ts",
     "dev:web": "vite --host 127.0.0.1 --port 5178",
@@ -20,6 +23,8 @@
     "test:install": "node tests/local-install-smoke.mjs"
   },
   "dependencies": {
+    "@duckdb/node-api": "2.0.0-r.1",
+    "@duckdb/node-bindings": "2.0.0-r.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^10.1.7",
     "decimal.js": "^10.6.0",

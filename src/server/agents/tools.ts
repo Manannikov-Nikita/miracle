@@ -184,6 +184,7 @@ function compactResult(result: unknown, name: string) {
 const documentFields = {
   name: string,
   sql: string,
+  kind: { type: "string", enum: ["remote", "local"] },
   connectionId: string,
   database: string,
   catalog: string,
@@ -258,7 +259,7 @@ export const miracleTools = [
     "create_editor",
     "Open a SQL document, also available when browser reconnects. Required id UUID identifies this creation and deduplicates retries. Large mutations return a compact id/revision receipt; use read_editor for SQL.",
     { id, ...documentFields },
-    ["id", "name", "sql", "connectionId"],
+    ["id", "name", "sql"],
     false,
   ),
   tool(
@@ -282,17 +283,55 @@ export const miracleTools = [
     "save_query",
     "Create/update a saved query. For update provide id and baseRevision. mutationId deduplicates retries.",
     { id, ...mutation, ...documentFields },
-    ["name", "sql", "connectionId", "mutationId"],
+    ["name", "sql", "mutationId"],
     false,
   ),
   tool(
     "run_query",
-    "Start one read-only SQL query or date batch under normal limits. Poll query_status, then read_result. Retrying the same mutationId never executes again.",
+    "Start read-only SQL under normal limits. Remote sources require connectionId. Use kind:'local' without connectionId for DuckDB over named datasets and project CSV/TSV, Parquet, JSON/JSONL or XLSX files. File readers require literal relative paths (no globs/URLs). Example: SELECT * FROM sales JOIN read_csv('data/plan.csv') USING (month). Poll query_status then read_result. Retrying mutationId never executes again.",
     { ...documentFields, mutationId: id },
-    ["sql", "connectionId", "mutationId"],
+    ["sql", "mutationId"],
     false,
   ),
   tool("query_status", "Read query status and resultSetId.", { id }, ["id"]),
+  tool(
+    "list_datasets",
+    "List named local datasets and their SQL columns. Names are project-wide; SQL reads raw stored results, not board transformations.",
+  ),
+  tool(
+    "read_dataset",
+    "Read dataset source, revision and SQL schema. Local SQL addresses its name directly.",
+    { id },
+    ["id"],
+  ),
+  tool(
+    "register_dataset",
+    "Register a stored result as a named DuckDB dataset. Optionally bind an existing board node using boardId/nodeId/baseRevision. Existing result registration is reused. Dataset survives board deletion.",
+    { resultSetId: id, name: string, boardId: id, nodeId: string, ...mutation },
+    ["resultSetId", "mutationId"],
+    false,
+  ),
+  tool(
+    "rename_dataset",
+    "Rename a dataset at its current revision. Existing saved SQL is not rewritten; update dependent SQL explicitly.",
+    { id, name: string, ...mutation },
+    ["id", "name", "baseRevision", "mutationId"],
+    false,
+  ),
+  tool(
+    "delete_dataset",
+    "Delete a dataset SQL name, keeping existing board snapshots. Queries using this name will no longer resolve.",
+    { id, ...mutation },
+    ["id", "baseRevision", "mutationId"],
+    false,
+  ),
+  tool(
+    "refresh_dataset",
+    "Run the dataset source again, optionally with a new source. On successful completion atomically update all linked current tables. Failure/cancellation preserves old data. Dependent datasets do not refresh automatically. Poll query_status.",
+    { id, source: object, ...mutation },
+    ["id", "baseRevision", "mutationId"],
+    false,
+  ),
   tool(
     "cancel_query",
     "Cancel a query in this project.",
@@ -478,6 +517,7 @@ async function executeMiracleTool(
         id: d.id,
         name: d.name,
         revision: d.revision,
+        kind: d.kind,
         connectionId: d.connectionId,
       }));
       break;
@@ -519,6 +559,38 @@ async function executeMiracleTool(
     case "query_status":
       result = services.status(key());
       break;
+    case "list_datasets":
+      result = ops
+        .listDatasets()
+        .map(({ source, ...dataset }) => ({
+          ...dataset,
+          source: { ...source, sql: undefined, sqlLength: source.sql.length },
+        }));
+      break;
+    case "read_dataset":
+      result = ops.dataset(key());
+      break;
+    case "register_dataset":
+      z.uuid().parse(args.mutationId);
+      result = ops.registerDataset(args);
+      break;
+    case "rename_dataset":
+      z.uuid().parse(args.mutationId);
+      result = ops.renameDataset(key(), args);
+      break;
+    case "delete_dataset":
+      z.uuid().parse(args.mutationId);
+      result = ops.deleteDataset(key(), args);
+      break;
+    case "refresh_dataset": {
+      if (!services.refreshDataset)
+        throw problem(503, "Обновление датасетов недоступно");
+      z.uuid().parse(args.mutationId);
+      const run = await services.refreshDataset(key(), args);
+      active.runIds.add(run.id);
+      result = run;
+      break;
+    }
     case "cancel_query":
       result = services.cancel(key());
       break;
@@ -619,6 +691,17 @@ async function executeMiracleTool(
       break;
     }
     case "refresh_node": {
+      if (services.refreshNode) {
+        z.uuid().parse(args.mutationId);
+        const run = await services.refreshNode(
+          key(),
+          z.string().parse(args.nodeId),
+          args,
+        );
+        active.runIds.add(run.id);
+        result = run;
+        break;
+      }
       const board = ops.board(key()),
         node = board.document.nodes.find(
           (n) => n.id === z.string().parse(args.nodeId),
@@ -629,10 +712,8 @@ async function executeMiracleTool(
         z.number().int().nonnegative().parse(args.sourceRevision)
       )
         throw problem(409, "Источник блока изменён", "REVISION_CONFLICT");
-      const run = await services.run(
-        node.data.source,
-        z.uuid().parse(args.mutationId),
-      );
+      const mutationId = z.uuid().parse(args.mutationId);
+      const run = await services.run(node.data.source, mutationId);
       active.runIds.add(run.id);
       result = run;
       break;

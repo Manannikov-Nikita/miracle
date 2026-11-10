@@ -17,6 +17,8 @@ import type {
 } from "../shared/types";
 import type { ProjectTextFile } from "../shared/project-files";
 import type { ProjectFileMover } from "./project-file-drafts";
+import { LOCAL_SOURCE_ID, localSourceConnection } from "./local-source";
+import { ProjectDataProvider } from "./dataset-catalog";
 import { api, openLocalSession } from "./api";
 import { createMetadataStore } from "./metadata-store";
 import { Brand, ErrorBox, Modal, Spinner, Toasts } from "./components/UI";
@@ -27,7 +29,7 @@ import Explorer, {
 } from "./components/Explorer";
 import SqlWorkspace, { type SqlSourceRequest } from "./components/SqlWorkspace";
 import BoardWorkspace from "./board/BoardWorkspace";
-import { ProjectSyncProvider, useProjectSync } from "./agents/ProjectSync";
+import { useProjectSync } from "./agents/ProjectSync";
 import AgentAssistant from "./agents/AgentAssistant";
 import WorkspaceRail from "./components/WorkspaceRail";
 import WorkspaceSearch, {
@@ -68,6 +70,10 @@ export default function App() {
   const [loadError, setLoadError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
+  const sqlSources = useMemo(
+    () => [...connections, localSourceConnection],
+    [connections],
+  );
   const [connectionId, setConnectionId] = useState("");
   const metadata = useMemo(() => createMetadataStore(api), [workspaceId]);
   const sourceViews = useMemo(
@@ -110,7 +116,10 @@ export default function App() {
     () => setFileRevision((value) => value + 1),
     [],
   );
-  const [incomingResult, setIncomingResult] = useState<ResultSet | null>(null);
+  const [incomingResult, setIncomingResult] = useState<{
+    result: ResultSet;
+    datasetName: string;
+  } | null>(null);
   const [narrow, setNarrow] = useState(() => window.innerWidth < 1024);
   const [paneView, setPaneView] = useState<PaneView>({
     mode: "split",
@@ -204,17 +213,15 @@ export default function App() {
     try {
       const c = await api<Connection[]>("/api/connections");
       setConnections(c);
+      const saved = localStorage.getItem(`miracle:connection:${workspaceId}`);
+      const available = (id: string | null) =>
+        id === LOCAL_SOURCE_ID || c.some((connection) => connection.id === id);
       setConnectionId((id) =>
-        c.some((x) => x.id === id)
+        available(id)
           ? id
-          : localStorage.getItem(`miracle:connection:${workspaceId}`) &&
-              c.some(
-                (x) =>
-                  x.id ===
-                  localStorage.getItem(`miracle:connection:${workspaceId}`),
-              )
-            ? localStorage.getItem(`miracle:connection:${workspaceId}`)!
-            : c[0]?.id || "",
+          : saved && available(saved)
+            ? saved
+            : (c[0]?.id ?? LOCAL_SOURCE_ID),
       );
     } catch (e) {
       notify((e as Error).message, "error");
@@ -313,7 +320,7 @@ export default function App() {
       </div>
     );
   return (
-    <ProjectSyncProvider workspaceId={workspaceId}>
+    <ProjectDataProvider workspaceId={workspaceId} onNotify={notify}>
       <QueryEvents onChanged={() => setQueryRevision((r) => r + 1)} />
       <div className="app-shell">
         {workspaceError && <ErrorBox>{workspaceError}</ErrorBox>}
@@ -395,9 +402,9 @@ export default function App() {
                 }}
                 fileRevision={fileRevision}
                 onMoveFile={moveProjectFile}
-                onOpenSource={(q, run) => {
+                onOpenSource={(q, run, name, dataset) => {
                   setExplorerDrawer(false);
-                  setSourceToOpen({ source: q, run });
+                  setSourceToOpen({ source: q, run, name, dataset });
                   showSql();
                 }}
                 queryRevision={queryRevision}
@@ -491,7 +498,7 @@ export default function App() {
                               <SqlWorkspace
                                 workspaceId={workspaceId}
                                 key={workspaceId}
-                                connections={connections}
+                                connections={sqlSources}
                                 activeConnectionId={connectionId}
                                 onConnectionChange={setConnectionId}
                                 metadata={metadata}
@@ -515,8 +522,8 @@ export default function App() {
                                 onQueriesChanged={() =>
                                   setQueryRevision((r) => r + 1)
                                 }
-                                onResult={(r) => {
-                                  setIncomingResult(r);
+                                onResult={(result, datasetName) => {
+                                  setIncomingResult({ result, datasetName });
                                   openCanvas("board");
                                 }}
                                 onNotify={notify}
@@ -542,13 +549,18 @@ export default function App() {
                                 active={visible && activeCanvas === pane}
                                 onActivate={() => focusPane(pane)}
                                 incomingResult={
-                                  pane === "board" ? incomingResult : null
+                                  pane === "board"
+                                    ? incomingResult?.result
+                                    : null
+                                }
+                                incomingDatasetName={
+                                  incomingResult?.datasetName
                                 }
                                 onIncomingConsumed={() =>
                                   setIncomingResult(null)
                                 }
-                                onOpenSource={(source, name) => {
-                                  setSourceToOpen({ source, name });
+                                onOpenSource={(source, name, dataset) => {
+                                  setSourceToOpen({ source, name, dataset });
                                   showSql();
                                 }}
                                 onNotify={notify}
@@ -643,7 +655,7 @@ export default function App() {
           }}
         />
       </div>
-    </ProjectSyncProvider>
+    </ProjectDataProvider>
   );
 }
 

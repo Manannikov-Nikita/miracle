@@ -15,6 +15,7 @@ import { startAgentTurn } from "../src/server/agents/adapter";
 import Fastify from "fastify";
 import { registerProjectRoutes } from "../src/server/project-routes";
 import { discoverCodexModels } from "../src/server/agents/codex-models";
+import { removeDatasetSchema } from "./helpers/legacy-workspace";
 
 vi.mock("../src/server/agents/adapter", () => ({ startAgentTurn: vi.fn() }));
 vi.mock("../src/server/agents/codex-models", () => ({
@@ -193,8 +194,9 @@ it("keeps the legacy Codex launch path when no override was ever chosen", async 
 it("migrates v6 chats without changing their history or defaults", () => {
   const first = chat();
   store.message(first.id, undefined, "user", "Preserved");
+  removeDatasetSchema(db);
   db.sqlite.exec(
-    "ALTER TABLE agent_chats DROP COLUMN model_settings_json; ALTER TABLE agent_chats DROP COLUMN native_session_reset; PRAGMA user_version=6;",
+    "ALTER TABLE agent_chats DROP COLUMN model_settings_json; ALTER TABLE agent_chats DROP COLUMN native_session_reset; DROP TABLE board_images; PRAGMA user_version=6;",
   );
   migrate(db);
   migrate(db);

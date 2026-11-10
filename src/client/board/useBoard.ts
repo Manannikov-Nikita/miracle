@@ -12,10 +12,8 @@ import type {
 import { api } from "../api";
 import { useProjectSync } from "../agents/ProjectSync";
 import { emptyDocument } from "./model";
-import {
-  boardValuesEqual,
-  mergeBoardDocuments,
-} from "../../shared/board-merge";
+import { boardValuesEqual } from "../../shared/board-merge";
+import { mergeDatasetBoardDocuments } from "./dataset-merge";
 import {
   boardWork,
   containsBoardChanges,
@@ -244,7 +242,11 @@ export function useBoard(
     let rebased = value;
     const remote = latestRemote.current;
     if (remote?.id === value.id && remote.revision >= value.revision) {
-      const merged = mergeBoardDocuments(base, document, remote.document);
+      const merged = mergeDatasetBoardDocuments(
+        base,
+        document,
+        remote.document,
+      );
       if (!merged.conflicts.length) {
         document = { ...merged.document, viewport: value.document.viewport };
         rebased = remote;
@@ -514,7 +516,11 @@ export function useBoard(
         local.document,
         locks(),
       );
-      const merged = mergeBoardDocuments(base, localDocument, value.document);
+      const merged = mergeDatasetBoardDocuments(
+        base,
+        localDocument,
+        value.document,
+      );
       if (merged.conflicts.length || conflictRef.current) {
         flushDraft();
         persistDraft(draftKey(workspaceId, value.id), {
@@ -1081,7 +1087,7 @@ export function useBoard(
     const entry = source.current.at(-1);
     const value = current.current;
     if (!entry || !value) return;
-    const merged = mergeBoardDocuments(
+    const merged = mergeDatasetBoardDocuments(
       backwards ? entry.after : entry.before,
       backwards ? entry.before : entry.after,
       value.document,
@@ -1107,7 +1113,7 @@ export function useBoard(
     const adjacent = source.current.at(-1);
     if (adjacent) {
       const boundary = backwards ? "after" : "before";
-      const normalized = mergeBoardDocuments(
+      const normalized = mergeDatasetBoardDocuments(
         merged.document,
         after,
         adjacent[boundary],

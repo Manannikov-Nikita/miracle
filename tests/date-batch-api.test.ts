@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,6 +154,86 @@ async function setup(
   }
   return { app, request, start, wait, calls, kills, source, dataDir };
 }
+
+it("refreshes a dataset only after a paused date batch successfully resumes", async () => {
+  let fail = false;
+  const fixture = await setup(async (date) =>
+    fail && date === "2026-01-02" ? { error: "temporary failure" } : {},
+  );
+  const initial = await fixture.wait((await fixture.start()).id);
+  expect(initial.status).toBe("completed");
+  const registered = await fixture.request("POST", "/api/datasets", {
+    resultSetId: initial.resultSetId,
+    name: "batch_days",
+  });
+  expect(registered.statusCode, registered.body).toBe(201);
+  const dataset = registered.json();
+  fail = true;
+  const refreshInput = {
+    baseRevision: dataset.revision,
+    mutationId: randomUUID(),
+  };
+  const refresh = await fixture.request(
+    "POST",
+    `/api/datasets/${dataset.id}/refresh`,
+    refreshInput,
+  );
+  expect(refresh.statusCode, refresh.body).toBe(202);
+  expect(
+    (await fixture.request("GET", "/api/datasets/refreshes")).json(),
+  ).toEqual([
+    expect.objectContaining({
+      datasetId: dataset.id,
+      run: expect.objectContaining({ id: refresh.json().id }),
+    }),
+  ]);
+  const paused = await fixture.wait(refresh.json().id);
+  expect(paused.status).toBe("paused");
+  expect(
+    (await fixture.request("GET", "/api/datasets/refreshes")).json(),
+  ).toEqual([
+    expect.objectContaining({
+      datasetId: dataset.id,
+      run: expect.objectContaining({ id: paused.id, status: "paused" }),
+    }),
+  ]);
+  const duplicate = await fixture.request(
+    "POST",
+    `/api/datasets/${dataset.id}/refresh`,
+    {
+      baseRevision: dataset.revision,
+    },
+  );
+  expect(duplicate.statusCode, duplicate.body).toBe(409);
+  expect(duplicate.json().code).toBe("DATASET_REFRESH_ACTIVE");
+  const replay = await fixture.request(
+    "POST",
+    `/api/datasets/${dataset.id}/refresh`,
+    refreshInput,
+  );
+  expect(replay.statusCode, replay.body).toBe(202);
+  expect(replay.json().id).toBe(paused.id);
+  expect(
+    (await fixture.request("GET", `/api/datasets/${dataset.id}`)).json()
+      .resultSetId,
+  ).toBe(initial.resultSetId);
+  fail = false;
+  expect(
+    (await fixture.request("POST", `/api/query-runs/${paused.id}/resume`))
+      .statusCode,
+  ).toBe(202);
+  const completed = await fixture.wait(paused.id);
+  expect(completed.status).toBe("completed");
+  expect(
+    (await fixture.request("GET", "/api/datasets/refreshes")).json(),
+  ).toEqual([]);
+  expect(
+    (await fixture.request("GET", `/api/datasets/${dataset.id}`)).json(),
+  ).toMatchObject({
+    revision: dataset.revision + 1,
+    resultSetId: completed.resultSetId,
+  });
+});
 
 it("runs dates sequentially, publishes an accumulating result and rejects pinning it while active", async () => {
   const release = deferred();

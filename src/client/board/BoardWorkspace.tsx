@@ -60,7 +60,9 @@ import type {
   QuerySource,
   ResultSet,
 } from "../../shared/types";
-import { api, waitForRun } from "../api";
+import { api, json, waitForRun } from "../api";
+import { suggestDatasetName, type Dataset } from "../../shared/datasets";
+import { useDatasetCatalog, type DatasetRevision } from "../dataset-catalog";
 import {
   readCanvasSearchText,
   type CanvasSearchTarget,
@@ -88,6 +90,7 @@ import {
 import { Select } from "../components/Select";
 import { ErrorBox } from "../components/UI";
 import DateBatchProgress from "../components/DateBatchProgress";
+import DatasetNameDialog from "../components/DatasetNameDialog";
 import { normalizeRotation } from "./shape-rotation";
 import type { ShapeTransformPatch } from "./ShapeTransformControls";
 import ArtifactNode, {
@@ -158,11 +161,16 @@ export { createResultNode } from "./model";
 export interface BoardWorkspaceProps {
   workspaceId: string;
   incomingResult?: ResultSet | null;
+  incomingDatasetName?: string;
   onIncomingConsumed?: () => void;
   kind?: BoardKind;
   active?: boolean;
   onActivate?: () => void;
-  onOpenSource: (source: QuerySource, title: string) => void;
+  onOpenSource: (
+    source: QuerySource,
+    title: string,
+    dataset?: DatasetRevision,
+  ) => void;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
 }
 const nodeTypes = { artifact: ArtifactNode, "edge-anchor": () => null };
@@ -215,6 +223,7 @@ function readPendingRefreshes(
 function Workspace({
   workspaceId,
   incomingResult,
+  incomingDatasetName,
   onIncomingConsumed,
   onOpenSource,
   onNotify,
@@ -222,6 +231,20 @@ function Workspace({
   active = true,
   onActivate,
 }: BoardWorkspaceProps) {
+  const datasetCatalog = useDatasetCatalog();
+  const [registeringDataset, setRegisteringDataset] = useState<{
+    boardId: string;
+    nodeId: string;
+    title: string;
+  }>();
+  const datasetRegistrations = useRef(new Set<string>());
+  const [resultDrop, setResultDrop] = useState<{
+    result: ResultSet;
+    destination: CanvasDestination | null;
+    position: { x: number; y: number };
+    title: string;
+    actionIds: Map<string, string>;
+  }>();
   const notifyRef = useRef(onNotify);
   notifyRef.current = onNotify;
   const notify = useCallback(
@@ -1145,6 +1168,7 @@ function Workspace({
     destination: CanvasDestination | null,
     position?: { x: number; y: number },
     actionId?: string,
+    datasetName?: string,
   ) => {
     if (!editable || (destination && destination.kind !== kind))
       throw new Error("Выбранная панель недоступна для записи.");
@@ -1165,6 +1189,7 @@ function Workspace({
           result,
           position ?? centerPoint,
           target.document.nodes,
+          !presentation ? { name: datasetName } : undefined,
         );
         node.slideId = id;
         const document = {
@@ -1366,8 +1391,8 @@ function Workspace({
     },
     ready: () => store.ready,
     visible: () => !!visibleCanvasBounds(),
-    insertResult: (result, destination, actionId) =>
-      insertCanvasResult(result, destination, undefined, actionId),
+    insertResult: (result, destination, actionId, datasetName) =>
+      insertCanvasResult(result, destination, undefined, actionId, datasetName),
     insertFragment: insertCanvasFragment,
     containsPoint: ({ x, y }) => {
       const bounds = visibleCanvasBounds();
@@ -1400,31 +1425,29 @@ function Workspace({
     [registry, kind],
   );
   const addResult = useCallback(
-    async (result: ResultSet, position?: { x: number; y: number }) => {
+    async (result: ResultSet, datasetName?: string) => {
       if (!editable) return;
       if (presentation) {
-        await insertCanvasResult(
-          result,
-          registryHandle.current!.destination(),
-          position,
-        );
+        await insertCanvasResult(result, registryHandle.current!.destination());
         return;
       }
       setLatestResult(result);
       const existing = store.current.current;
       if (!existing) {
         const document = emptyDocument();
-        document.nodes.push(createResultNode(result));
+        document.nodes.push(
+          createResultNode(result, undefined, [], { name: datasetName }),
+        );
         await store.create("Новая доска", document);
         return;
       }
-      const point =
-        position ??
-        flow.screenToFlowPosition({
-          x: window.innerWidth * 0.68,
-          y: window.innerHeight * 0.35,
-        });
-      const node = createResultNode(result, point, existing.document.nodes);
+      const point = flow.screenToFlowPosition({
+        x: window.innerWidth * 0.68,
+        y: window.innerHeight * 0.35,
+      });
+      const node = createResultNode(result, point, existing.document.nodes, {
+        name: datasetName,
+      });
       change({
         ...existing.document,
         nodes: [...existing.document.nodes, node],
@@ -1443,13 +1466,13 @@ function Workspace({
       return;
     }
     processing.current = true;
-    void addResult(incomingResult)
+    void addResult(incomingResult, incomingDatasetName)
       .catch((e) => notify(e.message, "error"))
       .finally(() => {
         processing.current = false;
         onIncomingConsumed?.();
       });
-  }, [incomingResult, store.loading, editable]);
+  }, [incomingResult, incomingDatasetName, store.loading, editable]);
   const update = useCallback(
     (id: string, patch: Partial<BoardNodeData>) => {
       const current = store.current.current;
@@ -1655,6 +1678,13 @@ function Workspace({
         )
       )
         return;
+      if (node.data.datasetId && node.data.datasetRevision && datasetCatalog) {
+        await datasetCatalog.refresh({
+          id: node.data.datasetId,
+          revision: node.data.datasetRevision,
+        });
+        return;
+      }
       const sourceRevision = node.data.sourceRevision ?? 0;
       const boardId = current.id;
       const lock = `${boardId}:${id}`;
@@ -1696,8 +1726,50 @@ function Workspace({
         if (mounted.current) setBusy((value) => ({ ...value, [id]: false }));
       }
     },
-    [editable, busy, change, store.save, notify],
+    [editable, busy, change, store.save, notify, datasetCatalog],
   );
+  async function registerDataset(
+    name: string,
+    { boardId, nodeId }: { boardId: string; nodeId: string },
+  ) {
+    if (datasetRegistrations.current.has(nodeId)) return;
+    if (store.current.current?.id !== boardId || !store.canEditNode(nodeId))
+      throw new Error("Этот блок недоступен для редактирования.");
+    datasetRegistrations.current.add(nodeId);
+    setBusy((value) => ({ ...value, [nodeId]: true }));
+    try {
+      await store.flush();
+      const board = store.current.current;
+      const node = board?.document.nodes.find((item) => item.id === nodeId);
+      if (
+        board?.id !== boardId ||
+        !node?.data.resultSetId ||
+        !store.canEditNode(nodeId)
+      )
+        throw new Error("Снимок изменился. Откройте действие заново.");
+      if (node.data.datasetId) return;
+      const dataset = await api<Dataset>("/api/datasets", {
+        method: "POST",
+        body: json({
+          name,
+          boardId,
+          nodeId,
+          resultSetId: node.data.resultSetId,
+          baseRevision: board.revision,
+          mutationId: crypto.randomUUID(),
+        }),
+      });
+      // Server owns the binding and merges it with other linked board updates.
+      await api<Board>(`/api/boards/${encodeURIComponent(boardId)}`)
+        .then((next) => store.receive(next))
+        .catch(() => {});
+      void datasetCatalog?.reload();
+      notify(`Блок связан с датасетом «${dataset.name}».`, "success");
+    } finally {
+      datasetRegistrations.current.delete(nodeId);
+      if (mounted.current) setBusy((value) => ({ ...value, [nodeId]: false }));
+    }
+  }
   const addShape = (type: ShapeKind) => {
     const current = store.current.current;
     if (!current || current.id !== board?.id || !editable || store.conflict)
@@ -2256,6 +2328,11 @@ function Workspace({
     }
   };
   const selectedNode = visibleContent?.nodes.find((n) => n.id === selected);
+  const existingNodeDataset = selectedNode?.data.resultSetId
+    ? datasetCatalog?.items.find(
+        (item) => item.resultSetId === selectedNode.data.resultSetId,
+      )
+    : undefined;
   const canInspectSelected =
     !!selectedNode && (presentation || selectedNode.data.kind !== "note");
   const updateEdge = (
@@ -2385,7 +2462,15 @@ function Workspace({
       const node = store.current.current?.document.nodes.find(
         (n) => n.id === id,
       );
-      if (node?.data.source) onOpenSource(node.data.source, node.data.title);
+      if (!node?.data.source) return;
+      const { source, datasetId, datasetRevision, datasetName, title } =
+        node.data;
+      if (datasetId && datasetRevision)
+        onOpenSource(source, `${datasetName ?? title}_source.sql`, {
+          id: datasetId,
+          revision: datasetRevision,
+        });
+      else onOpenSource(source, title);
     },
     [store.current, onOpenSource],
   );
@@ -2419,6 +2504,15 @@ function Workspace({
     }),
     [busy, pendingRefreshes, board?.id],
   );
+  const datasetBusy = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(datasetCatalog?.refreshes ?? {})
+          .filter(([, refresh]) => refresh.busy || refresh.run)
+          .map(([id]) => [id, true]),
+      ),
+    [datasetCatalog?.refreshes],
+  );
   const actionContext = useMemo(
     () => ({
       boardId: board?.id ?? "",
@@ -2441,6 +2535,8 @@ function Workspace({
       inspect: inspectNode,
       metadata: recordMetadata,
       busy: nodeBusy,
+      datasetBusy,
+      datasetRecovering: datasetCatalog?.recovering,
     }),
     [
       board?.id,
@@ -2460,6 +2556,8 @@ function Workspace({
       inspectNode,
       recordMetadata,
       nodeBusy,
+      datasetBusy,
+      datasetCatalog?.recovering,
     ],
   );
   return (
@@ -3051,7 +3149,9 @@ function Workspace({
             if (!raw || !editable) return;
             e.preventDefault();
             try {
-              const result = JSON.parse(raw) as ResultSet;
+              const { datasetTitle, ...result } = JSON.parse(
+                raw,
+              ) as ResultSet & { datasetTitle?: string };
               if (
                 typeof result.id !== "string" ||
                 !Array.isArray(result.columns) ||
@@ -3064,14 +3164,29 @@ function Workspace({
               });
               if (registry && !store.ready)
                 throw new Error("Дождитесь загрузки документа.");
-              const insertion = registry
-                ? insertCanvasResult(
-                    result,
-                    registryHandle.current!.destination(),
-                    point,
-                  )
-                : addResult(result, point);
-              void insertion.catch((error) => notify(error.message, "error"));
+              const destination = registryHandle.current!.destination();
+              const dataset = datasetCatalog?.items.find(
+                (item) => item.resultSetId === result.id,
+              );
+              if (presentation || dataset)
+                void insertCanvasResult(
+                  result,
+                  destination,
+                  point,
+                  undefined,
+                  dataset?.name,
+                ).catch((error) => notify(error.message, "error"));
+              else
+                setResultDrop({
+                  result,
+                  destination,
+                  position: point,
+                  title:
+                    typeof datasetTitle === "string"
+                      ? datasetTitle.replace(/\.sql$/i, "")
+                      : "dataset",
+                  actionIds: new Map(),
+                });
             } catch (error) {
               notify((error as Error).message, "error");
             }
@@ -3419,7 +3534,25 @@ function Workspace({
               presentation={presentation}
               autoFocus={!presentation}
               refresh={() => actionContext.refresh(selectedNode.id)}
-              refreshing={Boolean(nodeBusy[selectedNode.id])}
+              createDataset={() => {
+                const target = {
+                  boardId: board.id,
+                  nodeId: selectedNode.id,
+                  title: selectedNode.data.title,
+                };
+                if (existingNodeDataset)
+                  void registerDataset(existingNodeDataset.name, target).catch(
+                    (error: Error) => notify(error.message, "error"),
+                  );
+                else setRegisteringDataset(target);
+              }}
+              existingDatasetName={existingNodeDataset?.name}
+              refreshing={Boolean(
+                nodeBusy[selectedNode.id] ||
+                (selectedNode.data.datasetId &&
+                  (datasetCatalog?.recovering ||
+                    datasetBusy[selectedNode.data.datasetId])),
+              )}
               result={
                 selectedNode.data.resultSetId
                   ? metadata[selectedNode.data.resultSetId]
@@ -3564,6 +3697,41 @@ function Workspace({
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+      {registeringDataset && (
+        <DatasetNameDialog
+          title="Создать датасет из снимка"
+          initialName={suggestDatasetName(
+            registeringDataset.title,
+            datasetCatalog?.items.map(({ name }) => name) ?? [],
+          )}
+          confirmLabel="Создать датасет"
+          onConfirm={(name) => registerDataset(name, registeringDataset)}
+          onClose={() => setRegisteringDataset(undefined)}
+        />
+      )}
+      {resultDrop && (
+        <DatasetNameDialog
+          title="Добавить результат на доску"
+          initialName={suggestDatasetName(
+            resultDrop.title,
+            datasetCatalog?.items.map(({ name }) => name) ?? [],
+          )}
+          confirmLabel="Добавить на доску"
+          onConfirm={async (name) => {
+            const actionId =
+              resultDrop.actionIds.get(name) ?? crypto.randomUUID();
+            resultDrop.actionIds.set(name, actionId);
+            await insertCanvasResult(
+              resultDrop.result,
+              resultDrop.destination,
+              resultDrop.position,
+              actionId,
+              name,
+            );
+          }}
+          onClose={() => setResultDrop(undefined)}
+        />
+      )}
       <Dialog.Root
         open={!!rebind}
         onOpenChange={(open) => {

@@ -35,6 +35,7 @@ export interface CanvasHandle {
     result: ResultSet,
     destination: CanvasDestination | null,
     actionId?: string,
+    datasetName?: string,
   ): Promise<void>;
   insertFragment(
     fragment: BoardFragment,
@@ -91,13 +92,16 @@ export class CanvasWorkspace {
     await handle.openSearchResult(structuredClone(target), { signal });
     signal.throwIfAborted();
   }
-  async addResult(kind: BoardKind, result: ResultSet) {
+  async addResult(kind: BoardKind, result: ResultSet, datasetName?: string) {
     const handle = this.requireCanvas(kind);
     const destination = structuredClone(handle.destination());
     this.open(kind);
     await this.attempt(
-      JSON.stringify(["result", kind, result.id, destination]),
-      (actionId) => handle.insertResult(result, destination, actionId),
+      JSON.stringify(["result", kind, result.id, destination, datasetName]),
+      (actionId) =>
+        datasetName === undefined
+          ? handle.insertResult(result, destination, actionId)
+          : handle.insertResult(result, destination, actionId, datasetName),
     );
   }
   transfer(fragment: BoardFragment) {

@@ -675,10 +675,12 @@ try {
     const after = await sqliteSnapshot(newNode);
     assert.equal(
       after.schema,
-      8,
-      "Update must migrate the workspace to schema 8",
+      9,
+      "Update must migrate the workspace to schema 9",
     );
     assert(after.tables.includes("board_images"));
+    assert(after.tables.includes("datasets"));
+    assert(after.tables.includes("board_dataset_history_refs"));
     for (const column of ["model_settings_json", "native_session_reset"])
       assert(
         after.chatColumns.includes(column),
@@ -747,7 +749,7 @@ try {
       await run("stop", "--project-dir", restored);
     }
     console.log(
-      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, schema 7 -> 8, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
+      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, schema ${before.schema} -> 9, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
     );
   }
   console.log(

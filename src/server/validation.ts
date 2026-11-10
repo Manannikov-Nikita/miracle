@@ -4,6 +4,7 @@ import { trinoOptionsSchema } from "./trinoOptions.js";
 export {
   dateRangeSchema,
   sourceSchema,
+  extendSourceSchema,
   boardEdgeAppearanceSchema,
   boardEdgePointSchema,
   boardDocumentSchema,

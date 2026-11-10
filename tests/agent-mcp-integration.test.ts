@@ -207,6 +207,62 @@ async function addEngine(
   return { connection, executedSql };
 }
 
+it("runs local SQL and manages retained datasets through MCP", async () => {
+  const s = await open();
+  const agent = await s.start();
+  const run = await agent.mcp("run_query", {
+    kind: "local",
+    sql: "SELECT 9007199254740993::BIGINT AS exact, 1 AS n",
+    mutationId: randomUUID(),
+  });
+  const done = await until(
+    () => agent.mcp("query_status", { id: run.id }),
+    (r) => r.status !== "running",
+  );
+  expect(done.status, done.error).toBe("completed");
+  const dataset = await agent.mcp("register_dataset", {
+    resultSetId: done.resultSetId,
+    name: "mcp_values",
+    mutationId: randomUUID(),
+  });
+  expect(await agent.mcp("list_datasets")).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: dataset.id, name: "mcp_values" }),
+    ]),
+  );
+  expect(
+    (await agent.mcp("read_dataset", { id: dataset.id })).columns.map(
+      (c: any) => c.name,
+    ),
+  ).toEqual(["exact", "n"]);
+  const second = await agent.mcp("run_query", {
+    kind: "local",
+    sql: "SELECT exact FROM mcp_values",
+    mutationId: randomUUID(),
+  });
+  const queried = await until(
+    () => agent.mcp("query_status", { id: second.id }),
+    (r) => r.status !== "running",
+  );
+  expect(queried.status, queried.error).toBe("completed");
+  expect(
+    (await agent.mcp("read_result", { id: queried.resultSetId })).rows,
+  ).toEqual([["9007199254740993"]]);
+  const renamed = await agent.mcp("rename_dataset", {
+    id: dataset.id,
+    name: "renamed_values",
+    baseRevision: dataset.revision,
+    mutationId: randomUUID(),
+  });
+  await agent.mcp("delete_dataset", {
+    id: dataset.id,
+    baseRevision: renamed.revision,
+    mutationId: randomUUID(),
+  });
+  expect(await agent.mcp("list_datasets")).toEqual([]);
+  s.release();
+}, 30000);
+
 it("exposes chart appearance and geometry controls through the actual MCP discovery and guide", async () => {
   const s = await open();
   const agent = await s.start();

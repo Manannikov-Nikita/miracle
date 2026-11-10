@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { stageDuckDBAssets } from "./duckdb-assets.mjs";
 const root = resolve(import.meta.dirname, "..");
 await rm(resolve(root, "dist/server"), { recursive: true, force: true });
 execFileSync(
@@ -11,4 +12,9 @@ execFileSync(
     "tsconfig.server.json",
   ],
   { cwd: root, stdio: "inherit" },
+);
+await stageDuckDBAssets(
+  root,
+  `${process.platform}-${process.arch}`,
+  resolve(root, "dist/server/native/duckdb"),
 );

@@ -32,11 +32,11 @@ import {
   CalendarBlank,
 } from "@phosphor-icons/react";
 import type {
-  Connection,
   DateRangeOptions,
   QueryDocument,
   QueryRun,
   QuerySource,
+  RemoteQuerySource,
   ResultSet,
   SchemaTable,
   SqlFunctionCatalog,
@@ -91,6 +91,15 @@ import { formatSql, sqlFileName } from "../sql-files";
 import { sqlStatementAt } from "../sql-statements";
 import { createSqlMetadataLoader, sqlSuggestions } from "../sql-completion";
 import type { MetadataStore } from "../metadata-store";
+import { useDatasetCatalog, type DatasetRevision } from "../dataset-catalog";
+import { datasetTables } from "../dataset-sql";
+import DatasetRefreshStatus from "./DatasetRefreshStatus";
+import {
+  LOCAL_SOURCE_ID,
+  querySourceForConnection,
+  sourceConnectionId,
+  type SqlSourceConnection,
+} from "../local-source";
 import {
   clickhouseSqlConfiguration,
   clickhouseSqlLanguage,
@@ -149,10 +158,11 @@ export interface SqlSourceRequest {
   source: QuerySource;
   name?: string;
   run?: QueryRun;
+  dataset?: DatasetRevision;
 }
 interface Props {
   workspaceId: string;
-  connections: Connection[];
+  connections: SqlSourceConnection[];
   activeConnectionId: string;
   onConnectionChange: (id: string) => void;
   metadata: MetadataStore;
@@ -168,7 +178,7 @@ interface Props {
   onSourceConsumed: () => void;
   onSavedConsumed: () => void;
   onQueriesChanged: () => void;
-  onResult: (r: ResultSet) => void;
+  onResult: (r: ResultSet, datasetName: string) => void;
   onNotify: (m: string, t?: "error" | "success" | "info") => void;
   onOpenConnections: () => void;
   onMaximize: () => void;
@@ -388,8 +398,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const [saveError, setSaveError] = useState("");
   const [batchRequest, setBatchRequest] = useState<{
     tabId: string;
-    source: QuerySource;
+    source: RemoteQuerySource;
     initial?: DateRangeOptions;
+    dataset?: DatasetRevision;
   } | null>(null);
   const [launchingTabs, setLaunchingTabs] = useState(new Set<string>());
   const launchingRef = useRef(new Set<string>());
@@ -458,6 +469,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     () => createSqlMetadataLoader(p.metadata),
     [p.metadata],
   );
+  const datasetCatalog = useDatasetCatalog();
+  const datasets = datasetCatalog?.items;
+  const localTables = useMemo(() => datasetTables(datasets ?? []), [datasets]);
   const pollers = useRef(new Map<string, AbortController>());
   const runAction = useRef<() => void>(() => {});
   const formatAction = useRef<() => void>(() => {});
@@ -495,6 +509,15 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const launching = launchingTabs.has(active.id);
   const connection = p.connections.find(
     (c) => c.id === (active.connectionId || p.activeConnectionId),
+  );
+  const editedDataset = active.datasetId
+    ? datasets?.find((item) => item.id === active.datasetId)
+    : undefined;
+  const editedDatasetRun = active.datasetId
+    ? datasetCatalog?.refreshes[active.datasetId]
+    : undefined;
+  const staleDataset = Boolean(
+    editedDataset && editedDataset.revision > (active.datasetRevision ?? 0),
   );
   const patch = useCallback(
     (id: string, values: Partial<Tab>) => {
@@ -776,17 +799,26 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     document?: QueryDocument,
     name?: string,
     run?: QueryRun,
+    dataset?: DatasetRevision,
   ) {
     const tabName = document?.name || name || "source.sql";
-    const existing = tabsRef.current.find((t) =>
-      run
-        ? t.runId === run.id
-        : document
-          ? t.queryId === document.id
-          : name !== undefined &&
-            t.name === tabName &&
-            !filesRef.current.some((file) => file.id === t.id),
-    );
+    const existing = tabsRef.current.find((tab) => {
+      if (run) return tab.runId === run.id;
+      if (document) return tab.queryId === document.id;
+      if (dataset)
+        return (
+          tab.datasetId === dataset.id &&
+          tab.datasetRevision === dataset.revision
+        );
+      return (
+        !tab.datasetId &&
+        name !== undefined &&
+        tab.name === tabName &&
+        (source.kind !== "local" ||
+          (tab.connectionId === LOCAL_SOURCE_ID && tab.sql === source.sql)) &&
+        !filesRef.current.some((file) => file.id === tab.id)
+      );
+    });
     if (existing) {
       setActiveId(existing.id);
       p.onConnectionChange(existing.connectionId);
@@ -795,10 +827,18 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     }
     const tab: Tab = {
       id: crypto.randomUUID(),
-      ...source,
+      sql: source.sql,
+      database: source.database,
+      catalog: source.catalog,
+      schema: source.schema,
+      dateRange: source.dateRange,
+      connectionId: sourceConnectionId(source),
       name: tabName,
       queryId: document?.id,
       revision: document?.revision,
+      ...(dataset
+        ? { datasetId: dataset.id, datasetRevision: dataset.revision }
+        : {}),
       ...(run ? { runId: run.id, resultSetId: run.resultSetId } : {}),
     };
     // A second open can arrive before React commits the first new tab.
@@ -814,6 +854,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         undefined,
         p.sourceToOpen.name,
         p.sourceToOpen.run,
+        p.sourceToOpen.dataset,
       );
       p.onSourceConsumed();
     }
@@ -1322,7 +1363,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     else void removeProjectFile(file.id);
   }
   useEffect(() => {
-    if (connection?.id)
+    if (connection?.id && connection.id !== LOCAL_SOURCE_ID)
       p.metadata.activate(connection.id, {
         database: active.database ?? connection.database,
         catalog: active.catalog ?? connection.catalog,
@@ -1348,6 +1389,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             return { suggestions: [] };
           const tab = activeRef.current;
           const connectionId = tab.connectionId || p.activeConnectionId;
+          const local = connectionId === LOCAL_SOURCE_ID;
           const selectedConnection = p.connections.find(
             (item) => item.id === connectionId,
           );
@@ -1367,11 +1409,13 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             startColumn: word.startColumn,
             endColumn: word.endColumn,
           };
-          let tables: SchemaTable[] = connectionId
-            ? p.metadata.getTables(connectionId)
-            : [];
+          let tables: SchemaTable[] = local
+            ? localTables
+            : connectionId
+              ? p.metadata.getTables(connectionId)
+              : [];
           let functions: SqlFunctionCatalog | undefined;
-          if (connectionId) {
+          if (connectionId && !local) {
             const requests = [
               completionMetadata
                 .tables(connectionId, sql, context, beforeCursor)
@@ -1413,10 +1457,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             return { suggestions: [] };
           // Requests that exceed the deadline still publish incremental cache
           // pages; retain those suggestions while the rest is loading.
-          if (connectionId) tables = p.metadata.getTables(connectionId);
-          const snapshot = connectionId
-            ? p.metadata.getSnapshot(connectionId)
-            : undefined;
+          if (connectionId && !local)
+            tables = p.metadata.getTables(connectionId);
+          const snapshot =
+            connectionId && !local
+              ? p.metadata.getSnapshot(connectionId)
+              : undefined;
           const suggestions = sqlSuggestions(
             sql,
             beforeCursor,
@@ -1424,7 +1470,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
             context,
             functions,
             {
-              schemas: snapshot?.schemas,
+              schemas: local ? [] : snapshot?.schemas,
               prefix: word.word,
               limit: 200,
             },
@@ -1456,6 +1502,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     p.connections,
     p.metadata,
     completionMetadata,
+    localTables,
   ]);
   function readExecutableSql() {
     const tab = activeRef.current;
@@ -1491,7 +1538,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   useEffect(() => {
     updateExecutableSql();
   }, [active.id, active.sql, connection?.engine]);
-  const dateMode = hasDatePlaceholder(executionSql, connection?.engine);
+  const dateMode =
+    connection?.id !== LOCAL_SOURCE_ID &&
+    hasDatePlaceholder(executionSql, connection?.engine);
   async function startRun(tabId: string, source: QuerySource) {
     if (workForId(tabId))
       throw new ApiRequestError(
@@ -1524,7 +1573,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         requested,
         {
           runId: started.id,
-          connectionId: source.connectionId,
+          connectionId: sourceConnectionId(source),
           ...(source.dateRange ? { dateRange: source.dateRange } : {}),
         },
         ["runId"],
@@ -1574,15 +1623,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       );
       return;
     }
-    const source: QuerySource = {
-      connectionId: conn.id,
-      sql,
-      database: tab.database ?? conn.database,
-      catalog: tab.catalog ?? conn.catalog,
-      schema: tab.schema ?? conn.schema,
-    };
+    const source = querySourceForConnection(conn, tab, sql);
     p.onConnectionChange(conn.id);
-    if (hasDatePlaceholder(sql, conn.engine)) {
+    if (source.kind !== "local" && hasDatePlaceholder(sql, conn.engine)) {
       setBatchRequest({ tabId: tab.id, source, initial: tab.dateRange });
       return;
     }
@@ -1591,6 +1634,60 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     } catch (error) {
       p.onNotify(describeError(error).details, "error");
     }
+  }
+  async function refreshEditedDataset(
+    tabId: string,
+    dataset: DatasetRevision,
+    source: QuerySource,
+  ) {
+    const requested = tabsRef.current.find((tab) => tab.id === tabId);
+    if (!requested || workForId(tabId)) return;
+    await datasetCatalog?.refresh(dataset, source, () => {
+      if (!mounted.current) return;
+      acknowledge(
+        tabId,
+        requested,
+        { datasetRevision: dataset.revision + 1, dateRange: source.dateRange },
+        ["datasetId", "datasetRevision"],
+      );
+    });
+  }
+  function applyDatasetSql() {
+    const tab = activeRef.current;
+    if (
+      !tab.datasetId ||
+      !tab.datasetRevision ||
+      !connection ||
+      workForId(tab.id) ||
+      staleDataset ||
+      datasetCatalog?.recovering ||
+      editedDatasetRun?.busy ||
+      editedDatasetRun?.run ||
+      batchRequest
+    )
+      return;
+    const model = editorRef.current?.getModel();
+    if (
+      model?.uri.toString() !== `miracle-query://${p.workspaceId}/${tab.id}.sql`
+    )
+      return;
+    const sql = model.getValue().trim();
+    if (!sql) {
+      p.onNotify("Введите SQL для обновления датасета.", "info");
+      return;
+    }
+    const dataset = { id: tab.datasetId, revision: tab.datasetRevision };
+    const source = querySourceForConnection(connection, tab, sql);
+    if (source.kind !== "local" && hasDatePlaceholder(sql, connection.engine)) {
+      setBatchRequest({
+        tabId: tab.id,
+        source,
+        initial: tab.dateRange,
+        dataset,
+      });
+      return;
+    }
+    void refreshEditedDataset(tab.id, dataset, source);
   }
   runAction.current = () => {
     if (!unfinished && !launching && !restoringRun) void run();
@@ -1773,18 +1870,17 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         (c) => c.id === (t.connectionId || p.activeConnectionId),
       );
       if (!c) throw new Error("Сначала выберите подключение");
+      const source = querySourceForConnection(c, t, t.sql);
       const saved = await api<QueryDocument>(
         `/api/queries${t.queryId ? "/" + t.queryId : ""}`,
         {
           method: t.queryId ? "PATCH" : "POST",
           body: json({
             name: sqlFileName(saveName),
-            connectionId: c.id,
-            sql: t.sql,
-            database: t.database ?? c.database,
-            catalog: t.catalog ?? c.catalog,
-            schema: t.schema ?? c.schema,
-            ...(hasDatePlaceholder(t.sql, c.engine) && t.dateRange
+            ...source,
+            ...(source.kind !== "local" &&
+            hasDatePlaceholder(t.sql, c.engine) &&
+            t.dateRange
               ? { dateRange: t.dateRange }
               : {}),
             ...(t.queryId ? { baseRevision: t.revision } : {}),
@@ -2061,6 +2157,9 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       database: c?.database,
                       catalog: c?.catalog,
                       schema: c?.schema,
+                      ...(value === LOCAL_SOURCE_ID
+                        ? { dateRange: undefined }
+                        : {}),
                     });
                     p.onConnectionChange(value);
                   }}
@@ -2121,7 +2220,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       <DownloadSimple size={16} /> Скачать .sql файл
                     </DropdownMenu.Item>
                     <DropdownMenu.Separator />
-                    {connection && (
+                    {connection && connection.id !== LOCAL_SOURCE_ID && (
                       <DropdownMenu.Item onSelect={() => setContextOpen(true)}>
                         <Database size={16} /> Контекст запроса
                       </DropdownMenu.Item>
@@ -2190,6 +2289,52 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
               )}
             </div>
           </div>
+          {active.datasetId && (
+            <div className="dataset-source-controls">
+              <div className="dataset-source-bar">
+                <span>
+                  Исходный SQL{" "}
+                  {editedDataset ? (
+                    <code>{editedDataset.name}</code>
+                  ) : (
+                    "датасета"
+                  )}
+                </span>
+                <button
+                  type="button"
+                  className="button small"
+                  disabled={Boolean(
+                    !editedDataset ||
+                    !connection ||
+                    staleDataset ||
+                    datasetCatalog?.recovering ||
+                    activeWork ||
+                    editedDatasetRun?.busy ||
+                    editedDatasetRun?.run ||
+                    unfinished ||
+                    launching,
+                  )}
+                  onClick={applyDatasetSql}
+                >
+                  Обновить датасет по этому SQL
+                </button>
+              </div>
+              {staleDataset && (
+                <p className="dataset-source-note" role="status">
+                  Датасет изменился. Откройте актуальный исходный SQL в
+                  источниках данных.
+                </p>
+              )}
+              {!editedDataset &&
+                !datasetCatalog?.loading &&
+                !datasetCatalog?.error && (
+                  <p className="dataset-source-note" role="status">
+                    Датасет удалён или недоступен.
+                  </p>
+                )}
+              <DatasetRefreshStatus id={active.datasetId} />
+            </div>
+          )}
           <Group
             orientation="vertical"
             groupRef={group}
@@ -2261,9 +2406,11 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                   <span>
                     {!connection
                       ? "SQL"
-                      : connection.engine === "trino"
-                        ? "Trino SQL"
-                        : "ClickHouse SQL"}
+                      : connection.engine === "duckdb"
+                        ? "DuckDB SQL"
+                        : connection.engine === "trino"
+                          ? "Trino SQL"
+                          : "ClickHouse SQL"}
                   </span>
                   <span>
                     Стр {cursor.lineNumber}, стлб {cursor.column}
@@ -2323,6 +2470,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                     {result && (
                       <ResultCanvasActions
                         result={result}
+                        queryName={active.name}
                         disabled={Boolean(activeRun?.batch && unfinished)}
                         onBoardFallback={p.onResult}
                         onNotify={p.onNotify}
@@ -2491,7 +2639,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         </div>
       </Modal>
       <Modal
-        open={contextOpen && Boolean(connection) && !activeTextFile}
+        open={
+          contextOpen &&
+          Boolean(connection) &&
+          connection?.id !== LOCAL_SOURCE_ID &&
+          !activeTextFile
+        }
         onOpenChange={setContextOpen}
         title="Контекст запроса"
         onCloseAutoFocus={(event) => {
@@ -2563,10 +2716,17 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         }}
         onSubmit={async (options) => {
           if (!batchRequest) return;
-          await startRun(batchRequest.tabId, {
+          const source = {
             ...batchRequest.source,
             dateRange: options,
-          });
+          };
+          if (batchRequest.dataset)
+            await refreshEditedDataset(
+              batchRequest.tabId,
+              batchRequest.dataset,
+              source,
+            );
+          else await startRun(batchRequest.tabId, source);
           setBatchRequest(null);
         }}
       />

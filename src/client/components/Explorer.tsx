@@ -28,6 +28,9 @@ import type { MetadataStore } from "../metadata-store";
 import SourceSchemaTree, { type ExplorerSourceView } from "./SourceSchemaTree";
 import SearchHighlight from "./SearchHighlight";
 import ProjectFileTree from "./ProjectFileTree";
+import DatasetTree from "./DatasetTree";
+import { useDatasetCatalog, type DatasetRevision } from "../dataset-catalog";
+import { LOCAL_SOURCE_ID, LOCAL_SOURCE_NAME } from "../local-source";
 import { useAgentWorkLocks } from "../agents/useAgentWork";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import type { ProjectTextFile } from "../../shared/project-files";
@@ -60,7 +63,12 @@ export default function Explorer({
   sourceViews?: Map<string, ExplorerSourceView>;
   onOpenConnections: () => void;
   onOpenQuery: (q: QueryDocument) => void;
-  onOpenSource: (q: QuerySource, run?: QueryRun) => void;
+  onOpenSource: (
+    q: QuerySource,
+    run?: QueryRun,
+    name?: string,
+    dataset?: DatasetRevision,
+  ) => void;
   queryRevision: number;
   onNotify: (m: string, t?: "error" | "success" | "info") => void;
   onClose?: () => void;
@@ -70,6 +78,7 @@ export default function Explorer({
   fileRevision?: number;
 }) {
   const workLocks = useAgentWorkLocks();
+  const datasets = useDatasetCatalog();
   const [filters, setFilters] = useState<Record<ExplorerKind, string>>({
     sources: "",
     queries: "",
@@ -100,9 +109,17 @@ export default function Explorer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const source = connections.find((c) => c.id === activeConnectionId);
+  const local = activeConnectionId === LOCAL_SOURCE_ID;
+  const refreshing =
+    kind === "sources"
+      ? local
+        ? datasets?.loading
+        : snapshot.status === "loading"
+      : loading;
   async function reload() {
     if (kind === "sources") {
-      if (activeConnectionId) metadata.refresh(activeConnectionId);
+      if (local) await datasets?.reload();
+      else if (activeConnectionId) metadata.refresh(activeConnectionId);
       return;
     }
     setLoading(true);
@@ -207,18 +224,9 @@ export default function Explorer({
           <IconButton
             label="Обновить список"
             onClick={reload}
-            disabled={
-              kind === "sources" ? snapshot.status === "loading" : loading
-            }
+            disabled={refreshing}
           >
-            <ArrowClockwise
-              size={14}
-              className={
-                (kind === "sources" ? snapshot.status === "loading" : loading)
-                  ? "spin"
-                  : ""
-              }
-            />
+            <ArrowClockwise size={14} className={refreshing ? "spin" : ""} />
           </IconButton>
           {onClose && (
             <IconButton label="Закрыть обозреватель" onClick={onClose}>
@@ -264,6 +272,19 @@ export default function Explorer({
                 {c.id === activeConnectionId && <span className="status-dot" />}
               </button>
             ))}
+            <button
+              type="button"
+              className={`connection-tree-item ${local ? "active" : ""}`}
+              aria-pressed={local}
+              title={`${LOCAL_SOURCE_NAME} · DuckDB`}
+              onClick={() => onConnectionChange(LOCAL_SOURCE_ID)}
+            >
+              <Database size={16} aria-hidden="true" />
+              <span className="connection-tree-name">
+                <SearchHighlight text={LOCAL_SOURCE_NAME} query={filter} />
+              </span>
+              {local && <span className="status-dot" />}
+            </button>
             {source && (
               <SourceSchemaTree
                 source={source}
@@ -274,17 +295,13 @@ export default function Explorer({
                 onOpenSource={onOpenSource}
               />
             )}
-            {!connections.length && (
-              <div className="explorer-placeholder">
-                <Database size={24} />
-                <p>
-                  Данные начинаются
-                  <br />с подключения
-                </p>
-                <button className="button small" onClick={onOpenConnections}>
-                  Добавить источник
-                </button>
-              </div>
+            {local && (
+              <DatasetTree
+                filter={filter}
+                onOpenSource={(query, name, dataset) =>
+                  onOpenSource(query, undefined, name, dataset)
+                }
+              />
             )}
           </>
         )}
@@ -296,6 +313,9 @@ export default function Explorer({
                 filter={filter}
                 revision={treeRevision + fileRevision}
                 onOpenFile={onOpenFile}
+                onQueryFile={(query, name) =>
+                  onOpenSource(query, undefined, name)
+                }
                 onMoveFile={onMoveFile}
                 onNotify={onNotify}
                 onClearFilter={() => setFilter("")}

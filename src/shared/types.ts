@@ -13,7 +13,8 @@ import type { TextStyleSpec } from "./text-style.js";
 export type { ShapeKind, ShapeSpec } from "./shapes.js";
 export type { TextStyleSpec } from "./text-style.js";
 export type { TableSpec, TableColumnOptions } from "./tableTypes.js";
-export type Engine = "clickhouse" | "trino";
+export type RemoteEngine = "clickhouse" | "trino";
+export type Engine = RemoteEngine | "duckdb";
 export interface ClickHouseOptions {
   requestTimeoutMs?: number;
   compression?: boolean;
@@ -47,7 +48,7 @@ export interface TrinoPublicOptions {
 export interface Connection {
   id: string;
   name: string;
-  engine: Engine;
+  engine: RemoteEngine;
   url: string;
   username: string;
   database?: string;
@@ -60,7 +61,7 @@ export interface Connection {
 }
 export interface ConnectionInput {
   name: string;
-  engine: Engine;
+  engine: RemoteEngine;
   url: string;
   username: string;
   password?: string;
@@ -86,7 +87,8 @@ export interface SqlFunctionCatalog {
   functions: SqlFunction[];
   aggregateCombinators: string[];
 }
-export interface QuerySource {
+export interface RemoteQuerySource {
+  kind?: "remote";
   dateRange?: DateRangeOptions;
   connectionId: string;
   sql: string;
@@ -94,12 +96,22 @@ export interface QuerySource {
   catalog?: string;
   schema?: string;
 }
-export interface QueryDocument extends QuerySource {
+export interface LocalQuerySource {
+  kind: "local";
+  sql: string;
+  connectionId?: never;
+  database?: never;
+  catalog?: never;
+  schema?: never;
+  dateRange?: never;
+}
+export type QuerySource = RemoteQuerySource | LocalQuerySource;
+export type QueryDocument = QuerySource & {
   id: string;
   name: string;
   revision: number;
   updatedAt: string;
-}
+};
 export interface Column {
   id: string;
   name: string;
@@ -176,6 +188,10 @@ export interface BoardNodeData {
   shape?: ShapeSpec;
   color?: string;
   resultSetId?: string;
+  datasetId?: string;
+  datasetRevision?: number;
+  datasetName?: string;
+  publishDataset?: boolean;
   source?: QuerySource;
   sourceRevision?: number;
   view?: "table" | "chart" | "custom";

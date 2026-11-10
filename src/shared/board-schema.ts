@@ -26,7 +26,8 @@ export const dateRangeSchema = z
       context.addIssue({ code: "custom", message: (error as Error).message });
     }
   });
-export const sourceSchema = z.object({
+export const remoteSourceSchema = z.object({
+  kind: z.literal("remote").optional(),
   dateRange: dateRangeSchema.optional(),
   connectionId: z.uuid(),
   sql: z.string().min(1).max(1000000),
@@ -34,6 +35,22 @@ export const sourceSchema = z.object({
   catalog: z.string().max(200).optional(),
   schema: z.string().max(200).optional(),
 });
+export const localSourceSchema = z.object({
+  kind: z.literal("local"),
+  sql: z.string().min(1).max(1000000),
+  connectionId: z.never().optional(),
+  database: z.never().optional(),
+  catalog: z.never().optional(),
+  schema: z.never().optional(),
+  dateRange: z.never().optional(),
+});
+export const sourceSchema = z.union([localSourceSchema, remoteSourceSchema]);
+export function extendSourceSchema<T extends z.ZodRawShape>(shape: T) {
+  return z.union([
+    localSourceSchema.extend(shape),
+    remoteSourceSchema.extend(shape),
+  ]);
+}
 const identifier = z.string().min(1).max(200);
 const finite = z.number().finite().min(-1000000).max(1000000);
 export const chartSpecSchema = z.object({
@@ -127,6 +144,10 @@ export const boardDocumentSchema = z
               shape: shapeSpecSchema.optional(),
               color: z.string().max(100).optional(),
               resultSetId: z.uuid().optional(),
+              datasetId: z.uuid().optional(),
+              datasetRevision: z.number().int().positive().optional(),
+              datasetName: z.string().max(128).optional(),
+              publishDataset: z.boolean().optional(),
               source: sourceSchema.optional(),
               sourceRevision: z.number().int().nonnegative().optional(),
               view: z.enum(["table", "chart", "custom"]).optional(),

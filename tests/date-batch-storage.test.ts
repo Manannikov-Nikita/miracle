@@ -22,6 +22,7 @@ import {
   SecretBox,
   verifyEncryptionKey,
 } from "../src/server/secrets.js";
+import { DatasetStore } from "../src/server/datasets.js";
 
 const roots: string[] = [];
 const databases: Database[] = [];
@@ -122,10 +123,33 @@ function legacySix(path: string) {
   return db;
 }
 function legacySeven(path: string) {
-  const db = fresh(path);
-  db.sqlite.exec("DROP TABLE board_images; PRAGMA user_version=7;");
+  const db = legacySix(path);
+  db.sqlite.exec(`
+    ALTER TABLE agent_chats ADD COLUMN model_settings_json TEXT CHECK(model_settings_json IS NULL OR json_valid(model_settings_json));
+    ALTER TABLE agent_chats ADD COLUMN native_session_reset INTEGER NOT NULL DEFAULT 0 CHECK(native_session_reset IN (0,1));
+    PRAGMA user_version=7;
+  `);
   return db;
 }
+function legacyEight(path: string) {
+  const db = legacySeven(path);
+  db.sqlite.exec(`
+    CREATE TABLE board_images(id TEXT PRIMARY KEY,mime_type TEXT NOT NULL,bytes BLOB NOT NULL);
+    PRAGMA user_version=8;
+  `);
+  return db;
+}
+const workspaces = [
+  legacy,
+  legacyTwo,
+  legacyThree,
+  legacyFour,
+  legacyFive,
+  legacySix,
+  legacySeven,
+  legacyEight,
+  fresh,
+];
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   for (const path of roots.splice(0))
@@ -147,16 +171,7 @@ describe("date batch storage migration", () => {
     "upgrades version %i without changing rows, identity or key",
     (schemaVersion) => {
       const path = makeRoot();
-      const db =
-        schemaVersion === 1
-          ? legacy(path)
-          : schemaVersion === 2
-            ? legacyTwo(path)
-            : schemaVersion === 3
-              ? legacyThree(path)
-              : schemaVersion === 4
-                ? legacyFour(path)
-                : legacyFive(path);
+      const db = workspaces[schemaVersion - 1](path);
       const key = readFileSync(join(path, "encryption.key"));
       const credential = db.query("SELECT password_encrypted FROM connections")
         .rows[0].password_encrypted;
@@ -251,32 +266,34 @@ describe("date batch storage migration", () => {
 });
 
 describe("versioned workspace backups", () => {
-  it.each([1, 2, 3, 4, 5, 6, 7, 8])(
+  it.each([1, 2, 3, 4, 5, 6, 7, 8, 9])(
     "preserves version %i on backup/restore, then permits upgrading old backups",
     async (schemaVersion) => {
       const root = makeRoot();
       const path = join(root, "data");
-      const db =
-        schemaVersion === 1
-          ? legacy(path)
-          : schemaVersion === 2
-            ? legacyTwo(path)
-            : schemaVersion === 3
-              ? legacyThree(path)
-              : schemaVersion === 4
-                ? legacyFour(path)
-                : schemaVersion === 5
-                  ? legacyFive(path)
-                  : schemaVersion === 6
-                    ? legacySix(path)
-                    : schemaVersion === 7
-                      ? legacySeven(path)
-                      : fresh(path);
+      const db = workspaces[schemaVersion - 1](path);
       if (schemaVersion >= 2)
         db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES('batch','interrupted','{}',?1)",
           [progress],
         );
+      const dataset =
+        schemaVersion === 9
+          ? db.transaction(() => {
+              db.query(
+                "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES('snapshot',?1,1,12,?2)",
+                [
+                  [{ id: "0", name: "value", type: "BIGINT" }],
+                  { kind: "local", sql: "SELECT 42 AS value" },
+                ],
+              );
+              db.query("INSERT INTO result_chunks VALUES('snapshot',0,?1)", [
+                [[42]],
+              ]);
+              return new DatasetStore(db).register("snapshot", "answer")
+                .dataset;
+            })
+          : undefined;
       const identity = db.query(
         "SELECT value FROM app_settings WHERE key='workspace_id'",
       ).rows[0].value;
@@ -299,6 +316,14 @@ describe("versioned workspace backups", () => {
       expect(readFileSync(join(restored, "encryption.key"))).toEqual(key);
       migrate(copy);
       expect(version(copy)).toBe(WORKSPACE_SCHEMA_VERSION);
+      if (dataset) {
+        expect(new DatasetStore(copy).get(dataset.id)).toEqual(dataset);
+        expect(
+          copy.query(
+            "SELECT rows FROM result_chunks WHERE result_set_id='snapshot'",
+          ).rows[0].rows,
+        ).toEqual([[42]]);
+      }
       expect(
         copy.query(
           "SELECT name FROM pragma_table_info('connections') WHERE name='trino_options_encrypted'",

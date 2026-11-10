@@ -180,6 +180,7 @@ const matches = (actual: string[], suffix: string[]) =>
       normalize(part) === normalize(actual[actual.length - suffix.length + i]),
   );
 const quote = (value: string, context: Context = {}) =>
+  context.engine !== "duckdb" &&
   /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(value) &&
   !reservedFor(context).has(value.toUpperCase())
     ? value

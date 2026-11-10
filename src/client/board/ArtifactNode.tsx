@@ -76,6 +76,8 @@ export const BoardActions = createContext<{
   shapeTransform?: (id: string, patch: ShapeTransformPatch) => void;
   shapeTransformEnd?: (id: string, cancelled: boolean) => void;
   busy: Record<string, boolean>;
+  datasetBusy?: Record<string, boolean>;
+  datasetRecovering?: boolean;
 }>({
   boardId: "",
   editable: false,
@@ -101,6 +103,11 @@ function ArtifactNode({
   positionAbsoluteY,
 }: NodeProps<ArtifactFlowNode>) {
   const actions = useContext(BoardActions);
+  const refreshing = Boolean(
+    actions.busy[id] ||
+    (data.datasetId &&
+      (actions.datasetRecovering || actions.datasetBusy?.[data.datasetId])),
+  );
   const editable = actions.editable && (actions.canEditNode?.(id) ?? true);
   const presentation = actions.presentation === true;
   const freeform =
@@ -328,17 +335,27 @@ function ArtifactNode({
             )}
             {editable && data.kind === "result" && (
               <button
-                title="Обновить по закреплённому SQL"
-                disabled={actions.busy[id]}
-                aria-label={
-                  actions.busy[id] ? "Обновление снимка" : "Обновить снимок"
+                title={
+                  data.datasetId
+                    ? "Обновить датасет во всех связанных блоках"
+                    : "Обновить по закреплённому SQL"
                 }
-                aria-busy={actions.busy[id] || undefined}
+                disabled={refreshing}
+                aria-label={
+                  data.datasetId
+                    ? refreshing
+                      ? "Обновление датасета"
+                      : "Обновить датасет"
+                    : refreshing
+                      ? "Обновление снимка"
+                      : "Обновить снимок"
+                }
+                aria-busy={refreshing || undefined}
                 onClick={() => actions.refresh(id)}
               >
                 <ArrowClockwise
                   size={15}
-                  className={actions.busy[id] ? "board-refreshing" : undefined}
+                  className={refreshing ? "board-refreshing" : undefined}
                   aria-hidden="true"
                 />
               </button>

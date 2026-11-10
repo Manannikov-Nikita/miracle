@@ -112,7 +112,10 @@ export interface EditorDocument {
   id: string;
   name: string;
   sql: string;
-  connectionId: string;
+  kind?: "remote" | "local";
+  connectionId?: string;
+  datasetId?: string;
+  datasetRevision?: number;
   database?: string;
   catalog?: string;
   schema?: string;
