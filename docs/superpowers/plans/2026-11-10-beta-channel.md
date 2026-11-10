@@ -27,19 +27,19 @@
 
 ## Task 1: Installer and installed upgrade checks
 
-- [ ] Add failing tests for beta guard, safe numbered versions and downgrade ordering.
-- [ ] Modify `release/install.sh`, `release/install.mjs`, generated launcher, and their tests.
-- [ ] Update native install/upgrade smoke harnesses to pass explicit beta consent and preserve stable fixture behavior; run focused tests.
+- [x] Add failing tests for beta guard, safe numbered versions and downgrade ordering.
+- [x] Modify `release/install.sh`, `release/install.mjs`, generated launcher, and their tests.
+- [x] Update native install/upgrade smoke harnesses to pass explicit beta consent and preserve stable fixture behavior; run focused tests.
 
 ## Task 2: Updater opt-in
 
-- [ ] Add tests for parseUpdateArguments, stable/default filtering, `--beta`, explicit beta `--to`, safe ordering and failures.
-- [ ] Implement in `src/server/update.ts`, update CLI help. For beta downloads pass `--beta` to installer; stable call contract remains compatible.
-- [ ] Run `tests/local-update.test.ts` and typecheck.
+- [x] Add tests for parseUpdateArguments, stable/default filtering, `--beta`, explicit beta `--to`, safe ordering and failures.
+- [x] Implement in `src/server/update.ts`, update CLI help. For beta downloads pass `--beta` to installer; stable call contract remains compatible.
+- [x] Run `tests/local-update.test.ts` and typecheck.
 
 ## Task 3: Packaging, publication and docs
 
-- [ ] Root updates manifests to 0.12.0-beta.1, build/publish version validation, release workflow and notes; stub-test publish prerelease/latest flags.
-- [ ] Document beta install/update and backup before schema migration; run full tests, typecheck/build and independent review.
-- [ ] Commit/push beta branch and tag after local gates; wait for native CI and publication.
-- [ ] Verify public assets/checksums, install through published beta URL, test beta query/update behavior, and confirm latest remains v0.11.0.
+- [x] Root updates manifests to 0.12.0-beta.1, build/publish version validation, release workflow and notes; stub-test publish prerelease/latest flags.
+- [x] Document beta install/update and backup before schema migration; run full tests, typecheck/build and independent review.
+- [x] Commit/push beta branch and tag after local gates; wait for native CI and publication.
+- [x] Verify public assets/checksums, install through published beta URL, test beta query/update behavior, and confirm latest remains v0.11.0.
