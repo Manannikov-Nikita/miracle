@@ -12,7 +12,7 @@ Miracle работает на вашем компьютере и открыва�
 
 **English:** Miracle is a personal local SQL workspace for ClickHouse and Trino. Run queries and turn result snapshots into charts, tables, and notes on boards and presentation slides. It serves a Russian-language browser interface on loopback, stores its workspace in SQLite, and ships with its own runtime.
 
-**Выпуск 0.11.0:** изображения на доске и слайдах, корректные метаданные Markdown, папки и перенос файлов, эскиз переноса блоков поверх панелей, автоматические доверенные сертификаты, копирование таблиц в Markdown и favicon. [Что нового](docs/release-0.11.0.md) · [Что проверено](docs/release-validation.md).
+**Вышла 0.11.0:** изображения на доске и слайдах, корректные метаданные Markdown, папки и перенос файлов, эскиз переноса блоков поверх панелей, автоматические доверенные сертификаты, копирование таблиц в Markdown и favicon. [Что нового](docs/release-0.11.0.md) · [Что проверено](docs/release-validation.md).
 
 ![Фильтры, названия столбцов и формат значений таблицы применяются к её графику](docs/assets/release-0.7.0-table-chart.jpg)
 
