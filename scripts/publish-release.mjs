@@ -3,7 +3,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { resolve, join } from "node:path";
 const [tag, directory] = process.argv.slice(2);
-if (!/^v\d+\.\d+\.\d+$/.test(tag || "") || !directory)
+if (
+  !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/.test(
+    tag || "",
+  ) ||
+  !directory ||
+  tag.trim() !== tag ||
+  !tag.match(/\d+/g).every((part) => Number.isSafeInteger(Number(part)))
+)
   throw Error(
     "Usage: node scripts/publish-release.mjs v1.2.3 verified-artifact-directory",
   );
@@ -37,6 +44,7 @@ execFileSync(
     "create",
     tag,
     "--verify-tag",
+    ...(version.includes("-beta.") ? ["--prerelease", "--latest=false"] : []),
     "--title",
     `Miracle ${version}`,
     ...(hasNotes ? ["--notes-file", notes] : ["--generate-notes"]),

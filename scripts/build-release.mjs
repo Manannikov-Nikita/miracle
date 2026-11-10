@@ -20,7 +20,11 @@ const [repository, version, outputArgument, targetArgument, runtimeArgument] =
   process.argv.slice(2);
 if (
   !/^[\w.-]+\/[\w.-]+$/.test(repository || "") ||
-  !/^\d+\.\d+\.\d+$/.test(version || "")
+  !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/.test(
+    version || "",
+  ) ||
+  version.trim() !== version ||
+  !version.match(/\d+/g).every((part) => Number.isSafeInteger(Number(part)))
 )
   throw new Error(
     "Usage: node scripts/build-release.mjs owner/repository 1.2.3 [output-directory] [darwin-arm64|linux-arm64|linux-x64] [verified-node-archive]",

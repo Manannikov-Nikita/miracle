@@ -35,7 +35,7 @@ Miracle работает на вашем компьютере и открыва�
 
 ## Установка
 
-Готовый установщик и архивы доступны в [выпуске 0.10.0](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.10.0). Команда ниже устанавливает последний опубликованный выпуск.
+Готовый установщик и архивы доступны в [стабильном выпуске 0.11.0](https://github.com/Manannikov-Nikita/miracle/releases/tag/v0.11.0). Команда ниже устанавливает последний стабильный выпуск.
 
 macOS на Apple Silicon, GNU/Linux x64/ARM64 и Windows через терминал WSL 2:
 
@@ -43,6 +43,14 @@ macOS на Apple Silicon, GNU/Linux x64/ARM64 и Windows через термин
 curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/latest/download/install.sh | sh
 ~/.local/bin/miracle
 ```
+
+Тестовая версия с DuckDB устанавливается поверх текущей только по явному флагу:
+
+```sh
+curl -fsSL https://github.com/Manannikov-Nikita/miracle/releases/download/v0.12.0-beta.1/install.sh | sh -s -- --beta
+```
+
+Перед открытием существующего проекта в бете сделайте `miracle backup`: схема базы обновится до 9. [Установка беты и обновления](docs/local-installation.md#тестовая-версия-0120-beta1).
 
 Начиная с установщика 0.3.1, если каталог команды отсутствует в PATH, он предлагает добавить его в настройки вашей оболочки. Подтвердите изменение и откройте новый терминал либо выполните напечатанную команду для текущего окна.
 

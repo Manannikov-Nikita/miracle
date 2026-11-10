@@ -18,7 +18,7 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: |
-          node -e 'const p=require("./package.json"),l=require("./package-lock.json"),v=process.env.VERSION.slice(1);if(!/^\d+\.\d+\.\d+$/.test(v)||[p.version,l.version,l.packages[""].version].some(x=>x!==v))throw Error("Release tag must match manifests")'
+          node -e 'const p=require("./package.json"),l=require("./package-lock.json"),v=process.env.VERSION.slice(1);if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/.test(v)||!v.match(/\d+/g).every(x=>Number.isSafeInteger(Number(x)))||[p.version,l.version,l.packages[""].version].some(x=>x!==v))throw Error("Release tag must match manifests")'
       - uses: actions/download-artifact@v8
         with:
           pattern: native-*

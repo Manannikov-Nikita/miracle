@@ -83,15 +83,17 @@ it.each([
     "publishes executable LF bootstrap scripts even from a CRLF checkout",
     false,
     "linux-x64",
+    "0.8.0-beta.1",
   ],
   [
     "preserves Unicode payload and executables when native tar creation fails",
     true,
     "linux-x64",
+    "0.8.0",
   ],
 ])(
   "%s",
-  async (_name, nativeCreationFails, target) => {
+  async (_name, nativeCreationFails, target, version) => {
     // Keep the copied builder beneath the checkout so it resolves build-only dependencies.
     const local = resolve(import.meta.dirname, "../.local");
     mkdirSync(local, { recursive: true });
@@ -115,15 +117,15 @@ it.each([
       );
       writeFileSync(
         join(fixture, "package.json"),
-        JSON.stringify({ name: "release-fixture", version: "0.8.0" }),
+        JSON.stringify({ name: "release-fixture", version }),
       );
       writeFileSync(
         join(fixture, "package-lock.json"),
         JSON.stringify({
           name: "release-fixture",
-          version: "0.8.0",
+          version,
           lockfileVersion: 3,
-          packages: { "": { name: "release-fixture", version: "0.8.0" } },
+          packages: { "": { name: "release-fixture", version } },
         }),
       );
       for (const path of [
@@ -188,7 +190,7 @@ syncBuiltinESMExports();
             : []),
           "scripts/build-release.mjs",
           "Example/Miracle",
-          "0.8.0",
+          String(version),
           output,
           String(target),
           runtime,
@@ -198,12 +200,12 @@ syncBuiltinESMExports();
       expect(built.status, built.stderr).toBe(0);
       const extracted = join(fixture, "extracted");
       mkdirSync(extracted);
-      const archive = join(output, `miracle-0.8.0-${target}.${extension}`);
+      const archive = join(output, `miracle-${version}-${target}.${extension}`);
       expect(existsSync(archive), "platform-specific release archive").toBe(
         true,
       );
       await extractTar({ file: archive, cwd: extracted, chmod: true });
-      const payload = join(extracted, `miracle-0.8.0-${target}`);
+      const payload = join(extracted, `miracle-${version}-${target}`);
       expect(
         readFileSync(join(payload, "dist/client/snow ☃/данные.txt"), "utf8"),
       ).toBe("Unicode payload\n");
@@ -214,13 +216,13 @@ syncBuiltinESMExports();
         statSync(join(payload, "dist/server/executable.sh")).mode & 0o777,
       ).toBe(0o755);
       expect(readFileSync(join(output, "install.sh"), "utf8")).toBe(
-        "#!/bin/sh\nprintf '%s\\n' 'Example/Miracle 0.8.0'\n",
+        `#!/bin/sh\nprintf '%s\\n' 'Example/Miracle ${version}'\n`,
       );
       const installed = spawnSync("sh", [join(output, "install.sh")], {
         encoding: "utf8",
       });
       expect(installed.status, installed.stderr).toBe(0);
-      expect(installed.stdout).toBe("Example/Miracle 0.8.0\n");
+      expect(installed.stdout).toBe(`Example/Miracle ${version}\n`);
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }

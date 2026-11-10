@@ -47,4 +47,4 @@ FROM read_xlsx('data/plan.xlsx', sheet = 'Лист1');
 
 `run_query` принимает `{ kind: 'local', sql, mutationId }`; внешние источники по-прежнему используют `connectionId`. Добавлены `list_datasets`, `read_dataset`, `register_dataset`, `rename_dataset`, `delete_dataset`, `refresh_dataset`. Обновление использует обычные статусы SQL, отмену и отслеживание в чате.
 
-Версия подготовлена в отдельной ветке; публикация выполняется отдельно. Результаты проверок записаны в [отчёте 0.12.0](release-validation-0.12.0.md).
+Функциональность подготовлена как **0.12.0-beta.1**, с отдельным флагом установки `--beta`; стабильным выпуском остаётся 0.11.0. [Установка и обновление беты](local-installation.md#тестовая-версия-0120-beta1), [проверки функциональности](release-validation-0.12.0.md) и [проверки beta-канала](release-validation-0.12.0-beta.1.md).

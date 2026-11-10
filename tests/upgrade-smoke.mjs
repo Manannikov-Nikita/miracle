@@ -1,5 +1,6 @@
-// Published supported installation -> candidate via the actual miracle update CLI.
-// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PREVIOUS-0.10.0.tar.gz
+// Published supported installation -> stable candidate via the CLI, or beta via
+// the opt-in installer because the published CLI predates the beta flag.
+// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PUBLISHED-0.10.0-OR-0.11.0.tar.gz
 // Every archive needs its adjacent .sha256 and rendered install.sh. No live user
 // installation or workspace is read, stopped, or modified by this test.
 import assert from "node:assert/strict";
@@ -24,23 +25,27 @@ const [candidateArgument, previousArgument, ...extraArguments] =
   process.argv.slice(2);
 if (!candidateArgument || !previousArgument || extraArguments.length)
   throw new Error(
-    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.10.0.tar.gz",
+    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.10.0-or-0.11.0.tar.gz",
   );
 const candidate = resolve(candidateArgument);
 const previousArchive = resolve(previousArgument);
-const oldVersion = "0.10.0";
 const target = `${process.platform}-${process.arch}`;
+const oldVersion = new RegExp(
+  `^miracle-(0\\.1[01]\\.0)-${target}\\.tar\\.gz$`,
+).exec(basename(previousArchive))?.[1];
+assert(
+  oldVersion,
+  "Previous release must be 0.10.0 or 0.11.0 for this architecture",
+);
+const oldSchema = oldVersion === "0.10.0" ? 7 : 8;
 const candidateVersion = new RegExp(
-  `^miracle-(\\d+\\.\\d+\\.\\d+)-${target}\\.tar\\.gz$`,
+  `^miracle-(\\d+\\.\\d+\\.\\d+(?:-beta\\.[1-9][0-9]*)?)-${target}\\.tar\\.gz$`,
 ).exec(basename(candidate))?.[1];
 assert(
   candidateVersion,
   "Candidate must target this operating system and architecture",
 );
-assert.equal(
-  basename(previousArchive),
-  `miracle-${oldVersion}-${target}.tar.gz`,
-);
+const betaCandidate = candidateVersion.includes("-beta.");
 assert.notEqual(
   candidateVersion,
   oldVersion,
@@ -126,8 +131,10 @@ if (process.argv.includes("update")) {
   undici.fetch = async (url) => {
     appendFileSync(process.env.MIRACLE_SMOKE_REQUESTS, JSON.stringify(url) + "\\n");
     let body;
-    if (url === metadata + "latest" || url === metadata + "tags/v" + version)
-      body = JSON.stringify({ tag_name: "v" + version, draft: false, prerelease: false });
+    if (url === metadata + "latest")
+      body = JSON.stringify({ tag_name: "v" + (process.env.MIRACLE_SMOKE_STABLE_VERSION || version), draft: false, prerelease: false });
+    else if (url === metadata + "tags/v" + version)
+      body = JSON.stringify({ tag_name: "v" + version, draft: false, prerelease: version.includes("-beta.") });
     else if (url === installer)
       body = readFileSync(join(dirname(process.env.MIRACLE_SMOKE_ARCHIVE), "install.sh"));
     else throw new Error("Unexpected release request: " + url);
@@ -473,12 +480,12 @@ try {
     const before = await sqliteSnapshot(oldNode);
     assert.equal(
       before.schema,
-      7,
+      oldSchema,
       "Published release has the supported project schema",
     );
     assert(before.chatColumns.includes("model_settings_json"));
     assert(before.chatColumns.includes("native_session_reset"));
-    assert(!before.tables.includes("board_images"));
+    assert.equal(before.tables.includes("board_images"), oldSchema === 8);
     assert.notEqual(before.connection.password_encrypted, password);
     const oldBackup = join(project, "backup before upgrade");
     await run("backup", oldBackup, ...storageArgs);
@@ -509,6 +516,7 @@ try {
       MIRACLE_SMOKE_CURL: curlFixture,
       MIRACLE_SMOKE_REQUESTS: join(project, "release-requests.jsonl"),
       MIRACLE_SMOKE_VERSION: candidateVersion,
+      MIRACLE_SMOKE_STABLE_VERSION: betaCandidate ? "0.11.0" : candidateVersion,
       MIRACLE_SMOKE_ARCHIVE: candidate,
       // The updater must discard unrelated manual-install overrides.
       MIRACLE_ARCHIVE: join(project, "unrelated-manual-archive.tar.gz"),
@@ -517,7 +525,11 @@ try {
     const checked = await command(launcher, ["update", "--check"], {
       extraEnv: updateEnv,
     });
-    assert.match(checked.stdout, /is available/);
+    if (betaCandidate && oldVersion === "0.11.0")
+      assert.match(checked.stdout, /Miracle 0\.11\.0 is already up to date/);
+    else if (betaCandidate)
+      assert.match(checked.stdout, /Miracle 0\.11\.0 is available/);
+    else assert.match(checked.stdout, /is available/);
     assert.deepEqual(await protectedState(), protectedBefore);
     assert.deepEqual(
       (await readFile(updateEnv.MIRACLE_SMOKE_REQUESTS, "utf8"))
@@ -528,36 +540,53 @@ try {
         "https://api.github.com/repos/Manannikov-Nikita/miracle/releases/latest",
       ],
     );
-    // Failed downloads and rejected artifacts preserve the same process and data.
-    const failedDownload = await command(
-      launcher,
-      ["update", "--to", candidateVersion],
-      {
+    const candidateInstaller = join(dirname(candidate), "install.sh");
+    const betaInstallEnv = {
+      ...updateEnv,
+      MIRACLE_ARCHIVE: "",
+      MIRACLE_CHECKSUM_FILE: "",
+    };
+    if (betaCandidate) {
+      const declined = await command("/bin/sh", [candidateInstaller], {
         allowFailure: true,
-        extraEnv: { ...updateEnv, MIRACLE_SMOKE_DOWNLOAD_FAILURE: "1" },
-      },
-    );
+        extraEnv: betaInstallEnv,
+      });
+      assert.notEqual(declined.code, 0);
+      assert.match(declined.stderr, /requires exactly one --beta flag/);
+      assert.deepEqual(await protectedState(), protectedBefore);
+    }
+    function applyCandidate({ allowFailure = false, extraEnv = {} } = {}) {
+      return betaCandidate
+        ? command("/bin/sh", [candidateInstaller, "--beta"], {
+            allowFailure,
+            extraEnv: { ...betaInstallEnv, ...extraEnv },
+          })
+        : command(launcher, ["update", "--to", candidateVersion], {
+            allowFailure,
+            extraEnv: { ...updateEnv, ...extraEnv },
+          });
+    }
+    // Failed downloads and rejected artifacts preserve the same process and data.
+    const failedDownload = await applyCandidate({
+      allowFailure: true,
+      extraEnv: { MIRACLE_SMOKE_DOWNLOAD_FAILURE: "1" },
+    });
     assert.notEqual(failedDownload.code, 0);
     assert.match(failedDownload.stderr, /release download failed/i);
     assert.deepEqual(await protectedState(), protectedBefore);
-    const rejected = await command(
-      launcher,
-      ["update", "--to", candidateVersion],
-      {
-        allowFailure: true,
-        extraEnv: { ...updateEnv, MIRACLE_SMOKE_BAD_CHECKSUM: "1" },
-      },
-    );
+    const rejected = await applyCandidate({
+      allowFailure: true,
+      extraEnv: { MIRACLE_SMOKE_BAD_CHECKSUM: "1" },
+    });
     assert.notEqual(rejected.code, 0);
     assert.match(rejected.stderr, /checksum mismatch/i);
     assert.deepEqual(await protectedState(), protectedBefore);
 
-    const upgraded = await command(
-      launcher,
-      ["update", "--to", candidateVersion],
-      { extraEnv: updateEnv },
+    const upgraded = await applyCandidate();
+    assert.match(
+      upgraded.stdout,
+      betaCandidate ? /Miracle .* installed/ : /Updating Miracle/,
     );
-    assert.match(upgraded.stdout, /Updating Miracle/);
     const installation = JSON.parse(
       await readFile(join(install, "installation.json"), "utf8"),
     );
@@ -606,10 +635,22 @@ try {
     };
     const protectedCurrent = await protectedState();
     for (const args of [["update", "--check"], ["update"]]) {
+      const downgrade = betaCandidate && args.length === 1;
       const unchanged = await command(launcher, args, {
+        allowFailure: downgrade,
         extraEnv: currentUpdateEnv,
       });
-      assert.match(unchanged.stdout, /already up to date/);
+      if (downgrade) {
+        assert.notEqual(unchanged.code, 0);
+        assert.match(unchanged.stderr, /refusing to downgrade/i);
+      } else {
+        assert.match(
+          unchanged.stdout,
+          betaCandidate
+            ? /newer than the published release/
+            : /already up to date/,
+        );
+      }
       assert.deepEqual(await protectedState(), protectedCurrent);
     }
     assert.deepEqual(
@@ -749,7 +790,7 @@ try {
       await run("stop", "--project-dir", restored);
     }
     console.log(
-      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, schema ${before.schema} -> 9, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
+      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): ${betaCandidate ? "flagged beta installer" : "CLI update"}, schema ${before.schema} -> 9, stable check-only, failed download, checksum rejection, no downgrade, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
     );
   }
   console.log(

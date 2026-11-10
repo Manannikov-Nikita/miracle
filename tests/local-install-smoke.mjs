@@ -11,13 +11,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve, join, dirname } from "node:path";
+import { resolve, join, dirname, basename } from "node:path";
 import { createServer as createHttpsServer } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import { createNativeFetch } from "./helpers/native-fetch.mjs";
 const archive = resolve(process.argv[2] || "");
 if (!process.argv[2])
   throw Error("Usage: node tests/local-install-smoke.mjs archive.tar.gz");
+const betaArchive =
+  /-beta\.[1-9][0-9]*-(?:darwin|linux)-(?:arm64|x64)\.tar\.gz$/.test(
+    basename(archive),
+  );
 const root = await realpath(
   await mkdtemp(join(tmpdir(), "miracle native Проверка ")),
 );
@@ -61,8 +65,15 @@ async function command(
     });
   });
 }
-async function installArchive() {
-  return await command("sh", [join(dirname(archive), "install.sh")]);
+async function installArchive({
+  optIn = betaArchive,
+  allowFailure = false,
+} = {}) {
+  return await command(
+    "sh",
+    [join(dirname(archive), "install.sh"), ...(optIn ? ["--beta"] : [])],
+    { allowFailure },
+  );
 }
 let node, cli, trinoServer;
 const transport = createNativeFetch();
@@ -74,6 +85,14 @@ async function run(...args) {
 }
 
 try {
+  if (betaArchive) {
+    const rejected = await installArchive({ optIn: false, allowFailure: true });
+    assert.notEqual(rejected.code, 0);
+    assert.match(rejected.stderr, /requires exactly one --beta flag/);
+    await assert.rejects(readFile(join(install, "current-version")), {
+      code: "ENOENT",
+    });
+  }
   await installArchive();
   const version = (
     await readFile(join(install, "current-version"), "utf8")
