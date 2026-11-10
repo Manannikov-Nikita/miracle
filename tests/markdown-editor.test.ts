@@ -68,6 +68,25 @@ describe("shared Markdown editor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("shows skill metadata as exact editable source without Markdown widgets", async () => {
+    const metadata = "---\nname: my_skill\ndescription: **literal** $x$\n---\n";
+    const source = metadata + "# Body";
+    await render({ value: source });
+    expect(view().state.doc.toString()).toBe(source);
+    expect(view().contentDOM.textContent).toContain("name: my_skill");
+    expect(view().contentDOM.textContent).toContain(
+      "description: **literal** $x$",
+    );
+    expect(container.querySelector(".md-preview-rule, .katex")).toBeNull();
+    expect(container.querySelector(".md-preview-h1")?.textContent).toBe("Body");
+    await act(async () =>
+      view().dispatch({ changes: { from: 10, to: 18, insert: "new_skill" } }),
+    );
+    expect(onChange).toHaveBeenLastCalledWith(
+      source.slice(0, 10) + "new_skill" + source.slice(18),
+    );
+  });
+
   it("renders math locally and reveals editable source when a formula is clicked", async () => {
     const source = "Inline $x^2$\n\n$$\n\\frac{1}{2}\n$$";
     await render({ value: source });

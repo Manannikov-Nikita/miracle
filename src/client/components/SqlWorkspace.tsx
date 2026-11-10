@@ -44,6 +44,7 @@ import type {
 import { api, ApiRequestError, json } from "../api";
 import {
   MAX_SQL_FILE_CHARACTERS,
+  type ProjectFileMove,
   type ProjectTextFile,
 } from "../../shared/project-files";
 import {
@@ -54,6 +55,7 @@ import {
   isSqlProjectFile,
   loadProjectFileDrafts,
   type ProjectFileDraft,
+  type ProjectFileMover,
 } from "../project-file-drafts";
 import ProjectTextEditor from "./ProjectTextEditor";
 import type { ProjectGitEditorState } from "../git/ProjectGitButton";
@@ -161,6 +163,7 @@ interface Props {
   onSearchNavigationConsumed?: (requestId: string) => void;
   onFileConsumed?: () => void;
   onProjectFileSaved?: () => void;
+  onFileMoverChange?: (move: ProjectFileMover | null) => void;
   onGitEditorStateChange?: (state: ProjectGitEditorState | null) => void;
   onSourceConsumed: () => void;
   onSavedConsumed: () => void;
@@ -248,6 +251,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const recoveryFailed = useRef(false);
   const [fileSaving, setFileSaving] = useState(new Set<string>());
   const fileSavingRef = useRef(new Set<string>());
+  const fileMovingPaths = useRef(new Set<string>());
   const pendingFileRefresh = useRef(new Set<string>());
   const fileRefreshVersions = useRef(new Map<string, number>());
   const refreshFile = useRef<(id: string) => Promise<void>>(async () => {});
@@ -823,6 +827,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   useEffect(() => {
     const document = p.fileToOpen;
     if (!document) return;
+    if (fileMovingPaths.current.has(document.path)) {
+      p.onFileConsumed?.();
+      return;
+    }
     if (
       isSqlProjectFile(document.path) &&
       document.content.length > MAX_SQL_FILE_CHARACTERS
@@ -974,7 +982,12 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         return;
       }
       const latest = filesRef.current.find((item) => item.id === id);
-      if (!latest || latest.revision !== file.revision) return;
+      if (
+        !latest ||
+        latest.path !== file.path ||
+        latest.revision !== file.revision
+      )
+        return;
       const content =
         tabsRef.current.find((tab) => tab.id === id)?.sql ?? latest.content;
       const dirty = content !== latest.savedContent;
@@ -1008,12 +1021,80 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         return next;
       });
     } catch (error) {
+      if (
+        fileRefreshVersions.current.get(id) !== version ||
+        filesRef.current.find((item) => item.id === id)?.path !== file.path
+      )
+        return;
       setFileErrors((errors) => ({
         ...errors,
         [id]: describeError(error).details,
       }));
     }
   };
+  const moveProjectFile = useCallback<ProjectFileMover>(
+    async (input) => {
+      const name = input.path.split("/").at(-1)!;
+      const destination = input.directory ? `${input.directory}/${name}` : name;
+      const file = filesRef.current.find((item) => item.path === input.path);
+      if (
+        fileMovingPaths.current.has(input.path) ||
+        fileMovingPaths.current.has(destination) ||
+        (file && (fileSavingRef.current.has(file.id) || workForId(file.id)))
+      )
+        throw new Error(
+          "Дождитесь завершения работы с файлом перед перемещением.",
+        );
+      if (
+        filesRef.current.some(
+          (item) => item.path === destination && item.id !== file?.id,
+        )
+      )
+        throw new Error(
+          "В редакторе уже открыт файл с целевым путём. Сначала закройте его вкладку.",
+        );
+      fileMovingPaths.current.add(input.path);
+      fileMovingPaths.current.add(destination);
+      if (file) {
+        fileRefreshVersions.current.set(
+          file.id,
+          (fileRefreshVersions.current.get(file.id) ?? 0) + 1,
+        );
+        fileSavingRef.current.add(file.id);
+        setFileSaving(new Set(fileSavingRef.current));
+      }
+      try {
+        const moved = await api<ProjectFileMove>("/api/project/file/move", {
+          method: "POST",
+          body: json(input),
+        });
+        // Rebind only path metadata. The stable id, undo history, dirty content and
+        // original disk revision remain attached to the same open document.
+        filesRef.current = filesRef.current.map((item) =>
+          item.path === moved.from
+            ? { ...item, path: moved.path, name: moved.name }
+            : item,
+        );
+        setFiles(filesRef.current);
+        p.onProjectFileSaved?.();
+        return moved;
+      } finally {
+        fileMovingPaths.current.delete(input.path);
+        fileMovingPaths.current.delete(destination);
+        if (file) {
+          fileSavingRef.current.delete(file.id);
+          setFileSaving(new Set(fileSavingRef.current));
+          if (pendingFileRefresh.current.delete(file.id))
+            void refreshFile.current(file.id);
+        }
+      }
+    },
+    [workForId, p.onProjectFileSaved],
+  );
+  useEffect(() => {
+    p.onFileMoverChange?.(moveProjectFile);
+    return () => p.onFileMoverChange?.(null);
+  }, [p.onFileMoverChange, moveProjectFile]);
   useEffect(() => {
     if (!projectSync) return;
     let previous = currentAgentWork(projectSync);
@@ -1108,6 +1189,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       const latestFile = filesRef.current.find((item) => item.id === file.id);
       if (
         !latestFile ||
+        latestFile.path !== file.path ||
         fileSavingRef.current.has(file.id) ||
         workForId(file.id)
       )
@@ -1140,6 +1222,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
         return next;
       });
     } catch (error) {
+      if (
+        filesRef.current.find((item) => item.id === file.id)?.path !== file.path
+      )
+        return;
       p.onNotify(describeError(error).details, "error");
     }
   }
@@ -1149,7 +1235,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
       file.savedContent,
   );
   const prepareGitMutation = useCallback(async () => {
-    if (fileSavingRef.current.size)
+    if (fileSavingRef.current.size || fileMovingPaths.current.size)
       throw new Error("Дождитесь сохранения файлов перед действием Git.");
     if (
       filesRef.current.some(

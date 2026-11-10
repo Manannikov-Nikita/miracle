@@ -3,7 +3,9 @@ import { z } from "zod";
 import { ProjectStore, problem } from "./project-store.js";
 import {
   createProjectFile,
+  createProjectDirectory,
   listProjectTree,
+  moveProjectFile,
   readProjectFile,
   saveProjectFile,
   searchProjectFiles,
@@ -58,6 +60,34 @@ export function registerProjectRoutes(
     );
     reply.code(201);
     return file;
+  });
+  app.post("/api/project/directory", async (req, reply) => {
+    need(req);
+    assertProjectGitIdle(store.context);
+    const input = z
+      .object({ directory: z.string().max(4096), name: z.string().max(255) })
+      .parse(req.body);
+    const directory = createProjectDirectory(store.context, input, (path) =>
+      store.work.check([{ kind: "file", id: path }]),
+    );
+    reply.code(201);
+    return directory;
+  });
+  app.post("/api/project/file/move", async (req) => {
+    need(req);
+    assertProjectGitIdle(store.context);
+    const input = z
+      .object({
+        path: z.string().min(1).max(4096),
+        directory: z.string().max(4096),
+      })
+      .parse(req.body);
+    return moveProjectFile(store.context, input, (from, to) =>
+      store.work.check([
+        { kind: "file", id: from },
+        { kind: "file", id: to },
+      ]),
+    );
   });
   app.put(
     "/api/project/file",

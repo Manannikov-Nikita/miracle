@@ -10,6 +10,7 @@ import SqlWorkspace, {
 import { editorApi } from "./helpers/editor-api";
 import type { Connection, QuerySource } from "../src/shared/types";
 import { createMetadataStore } from "../src/client/metadata-store";
+import type { ProjectFileMover } from "../src/client/project-file-drafts";
 import {
   ProjectSync,
   ProjectSyncContext,
@@ -482,6 +483,286 @@ describe("chart source SQL tabs", () => {
     );
     await readyEditor();
   }
+  it.each(["sql", "md"])(
+    "moves an open dirty %s file without losing its identity or draft",
+    async (extension) => {
+      let move: ProjectFileMover | null = null;
+      props.onFileMoverChange = (handler) => {
+        move = handler;
+      };
+      const from = `draft.${extension}`,
+        to = `docs/draft.${extension}`;
+      const writes: { path: string; content: string; baseRevision: string }[] =
+        [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          editorApi(
+            async (url, options) => {
+              if (url === "/api/project/file/move") {
+                expect(JSON.parse(String(options.body))).toEqual({
+                  path: from,
+                  directory: "docs",
+                });
+                return new Response(
+                  JSON.stringify({
+                    from,
+                    path: to,
+                    name: `draft.${extension}`,
+                  }),
+                );
+              }
+              if (
+                url.startsWith("/api/project/file?") &&
+                options.method === "PUT"
+              ) {
+                const body = JSON.parse(String(options.body));
+                writes.push({
+                  path: new URL(url, "http://localhost").searchParams.get(
+                    "path",
+                  )!,
+                  ...body,
+                });
+                return new Response(
+                  JSON.stringify({
+                    ...projectFile(to, body.content),
+                    revision: "disk-v2",
+                  }),
+                );
+              }
+              return new Response("[]");
+            },
+            () => props.workspaceId,
+          ),
+        ),
+      );
+      await openProjectFile(from, "saved content");
+      await editSql("my unsaved draft");
+      const before = JSON.parse(
+        localStorage.getItem("miracle:project-files:source-tab-test")!,
+      )[0];
+      expect(move).toBeTypeOf("function");
+      await act(async () => {
+        await move!({ path: from, directory: "docs" });
+      });
+      expect(editorValue()).toBe("my unsaved draft");
+      const after = JSON.parse(
+        localStorage.getItem("miracle:project-files:source-tab-test")!,
+      )[0];
+      expect(after).toMatchObject({
+        id: before.id,
+        path: to,
+        content: "my unsaved draft",
+        savedContent: "saved content",
+        revision: "disk-v1",
+      });
+      expect(container.querySelector(`[role=tab][title="${to}"]`)).toBeTruthy();
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            `[aria-label="${extension === "sql" ? "Сохранить SQL-файл" : "Сохранить файл"} (⌘S / Ctrl+S)"]`,
+          )!
+          .click(),
+      );
+      expect(writes).toEqual([
+        { path: to, content: "my unsaved draft", baseRevision: "disk-v1" },
+      ]);
+    },
+  );
+
+  it.each([false, true])(
+    "ignores old-path refresh replies after a file move (failure: %s)",
+    async (failure) => {
+      let move: ProjectFileMover | null = null;
+      props.onFileMoverChange = (handler) => {
+        move = handler;
+      };
+      let reply!: (response: Response) => void;
+      const sync = new ProjectSync();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          editorApi(
+            async (url) => {
+              if (url === "/api/project/file/move")
+                return new Response(
+                  JSON.stringify({
+                    from: "draft.sql",
+                    path: "docs/draft.sql",
+                    name: "draft.sql",
+                  }),
+                );
+              if (url.startsWith("/api/project/file?"))
+                return new Promise<Response>((resolve) => {
+                  reply = resolve;
+                });
+              return new Response("[]");
+            },
+            () => props.workspaceId,
+          ),
+        ),
+      );
+      await openProjectFile("draft.sql", "select 1", sync);
+      await act(async () =>
+        sync.receiveWorkSnapshot({
+          revision: 1,
+          locks: [
+            {
+              target: { kind: "file", id: "draft.sql" },
+              turnId: "turn",
+              chatId: "chat",
+              startedAt: "now",
+            },
+          ],
+        }),
+      );
+      await act(async () =>
+        sync.receiveWorkSnapshot({ revision: 2, locks: [] }),
+      );
+      expect(reply).toBeTypeOf("function");
+      await act(async () => {
+        await move!({ path: "draft.sql", directory: "docs" });
+      });
+      await act(async () =>
+        reply(
+          failure
+            ? new Response(JSON.stringify({ error: "old-path error" }), {
+                status: 404,
+              })
+            : new Response(
+                JSON.stringify(projectFile("draft.sql", "stale response")),
+              ),
+        ),
+      );
+      expect(editorValue()).toBe("select 1");
+      expect(
+        container.querySelector('[role=tab][title="docs/draft.sql"]'),
+      ).toBeTruthy();
+      expect(container.textContent).not.toContain("old-path error");
+    },
+  );
+  it("blocks moves during a save and retains the path after a rejected move", async () => {
+    let move: ProjectFileMover | null = null;
+    props.onFileMoverChange = (handler) => {
+      move = handler;
+    };
+    let finishSave!: (response: Response) => void;
+    let moves = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (url, options) => {
+            if (url === "/api/project/file/move") {
+              moves++;
+              return new Response(
+                JSON.stringify({ error: "Destination exists" }),
+                { status: 409 },
+              );
+            }
+            if (
+              url.startsWith("/api/project/file?") &&
+              options.method === "PUT"
+            )
+              return new Promise<Response>((resolve) => {
+                finishSave = resolve;
+              });
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("draft.sql", "select 1");
+    await editSql("select 2");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    await expect(
+      move!({ path: "draft.sql", directory: "docs" }),
+    ).rejects.toThrow(/Дождитесь/);
+    expect(moves).toBe(0);
+    await act(async () =>
+      finishSave(
+        new Response(JSON.stringify(projectFile("draft.sql", "select 2"))),
+      ),
+    );
+    await act(async () => {
+      await expect(
+        move!({ path: "draft.sql", directory: "docs" }),
+      ).rejects.toThrow("Destination exists");
+    });
+    expect(
+      container.querySelector('[role=tab][title="draft.sql"]'),
+    ).toBeTruthy();
+    expect(editorValue()).toBe("select 2");
+  });
+
+  it("keeps edits typed while moving and prevents saves to the old path", async () => {
+    let move: ProjectFileMover | null = null;
+    props.onFileMoverChange = (handler) => {
+      move = handler;
+    };
+    let finishMove!: (response: Response) => void;
+    const writes: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        editorApi(
+          async (url, options) => {
+            if (url === "/api/project/file/move")
+              return new Promise<Response>((resolve) => {
+                finishMove = resolve;
+              });
+            if (
+              url.startsWith("/api/project/file?") &&
+              options.method === "PUT"
+            )
+              writes.push(url);
+            return new Response("[]");
+          },
+          () => props.workspaceId,
+        ),
+      ),
+    );
+    await openProjectFile("draft.sql", "select 1");
+    let moving!: ReturnType<ProjectFileMover>;
+    await act(async () => {
+      moving = move!({ path: "draft.sql", directory: "docs" });
+    });
+    await editSql("select latest draft");
+    const save = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+    )!;
+    expect(save.disabled).toBe(true);
+    await act(async () => save.click());
+    expect(writes).toEqual([]);
+    await act(async () => {
+      finishMove(
+        new Response(
+          JSON.stringify({
+            from: "draft.sql",
+            path: "docs/draft.sql",
+            name: "draft.sql",
+          }),
+        ),
+      );
+      await moving;
+    });
+    expect(editorValue()).toBe("select latest draft");
+    const stored = JSON.parse(
+      localStorage.getItem("miracle:project-files:source-tab-test")!,
+    )[0];
+    expect(stored).toMatchObject({
+      path: "docs/draft.sql",
+      content: "select latest draft",
+      savedContent: "select 1",
+    });
+  });
   it("opens a saved Markdown search hit in the existing dirty tab and reanchors its selection", async () => {
     const saved = "# Notes\n\nA needle in saved text.\n";
     const path = "docs/search.md";

@@ -4,7 +4,9 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readSync,
   realpathSync,
@@ -28,8 +30,11 @@ import type { ProjectContext } from "../shared/agents.js";
 import {
   MAX_PROJECT_FILE_BYTES,
   type CreateProjectFile,
+  type MoveProjectFile,
+  type ProjectFileMove,
   type ProjectTextFile,
   type ProjectTree,
+  type ProjectTreeEntry,
   type SaveProjectFile,
 } from "../shared/project-files.js";
 import { problem } from "./project-store.js";
@@ -599,38 +604,131 @@ export async function scanProjectTextFiles(
   return { incomplete };
 }
 
+function createEntryPath(
+  context: FileContext,
+  input: CreateProjectFile,
+  folder = false,
+) {
+  const { directory, name } = input;
+  if (
+    !name.trim() ||
+    name === "." ||
+    name === ".." ||
+    /[\\/\u0000-\u001f\u007f<>:"|?*]/.test(name) ||
+    Buffer.byteLength(name, "utf8") > 255 ||
+    Buffer.from(name, "utf8").toString("utf8") !== name
+  )
+    throw problem(
+      400,
+      "Введите имя файла без пути и недопустимых символов (до 255 байт)",
+      "INVALID_FILE_NAME",
+    );
+  const parent = explorerPath(context, directory, true);
+  const path = directory ? `${directory}/${name}` : name;
+  if (!validRelativePath(path))
+    throw problem(400, "Слишком длинный путь к файлу", "INVALID_FILE_PATH");
+  const absolute = join(parent, name);
+  const { allowed } = scope(context);
+  if (
+    !allowed(absolute) ||
+    internalNames.has(name.toLowerCase()) ||
+    (folder &&
+      (excludedDirectories.has(name.toLowerCase()) ||
+        name.toLowerCase() === ".codegraph"))
+  )
+    throw problem(
+      403,
+      "Служебный путь недоступен в проводнике",
+      "INVALID_FILE_PATH",
+    );
+  return { path, absolute };
+}
+
+const alreadyExists = () =>
+  problem(
+    409,
+    "Файл или папка с таким именем уже существует",
+    "FILE_ALREADY_EXISTS",
+  );
+function mutationFileError(error: unknown): never {
+  if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
+    throw alreadyExists();
+  return fileError(error);
+}
+
+export function createProjectDirectory(
+  context: FileContext,
+  input: CreateProjectFile,
+  beforeWrite?: (path: string) => void,
+): ProjectTreeEntry {
+  try {
+    const { path, absolute } = createEntryPath(context, input, true);
+    if (lstatSync(absolute, { throwIfNoEntry: false })) throw alreadyExists();
+    beforeWrite?.(path);
+    mkdirSync(absolute);
+    return { path, name: input.name, kind: "directory" };
+  } catch (error) {
+    return mutationFileError(error);
+  }
+}
+
+export function moveProjectFile(
+  context: FileContext,
+  input: MoveProjectFile,
+  beforeWrite?: (from: string, to: string) => void,
+): ProjectFileMove {
+  let destination: string | undefined;
+  let linked: ReturnType<typeof lstatSync> | undefined;
+  try {
+    const source = explorerPath(context, input.path);
+    const original = lstatSync(source);
+    const name = basename(input.path);
+    const target = createEntryPath(context, {
+      directory: input.directory,
+      name,
+    });
+    const result = { from: input.path, path: target.path, name };
+    if (source === target.absolute) return result;
+    beforeWrite?.(input.path, target.path);
+    // link is exclusive even if another process creates the destination now.
+    // Unlike rename, it never overwrites an existing file, folder or symlink.
+    linkSync(source, target.absolute);
+    destination = target.absolute;
+    linked = lstatSync(destination);
+    const current = lstatSync(explorerPath(context, input.path));
+    explorerPath(context, target.path);
+    if (
+      !linked.isFile() ||
+      original.dev !== linked.dev ||
+      original.ino !== linked.ino ||
+      current.dev !== original.dev ||
+      current.ino !== original.ino
+    )
+      throw conflict();
+    unlinkSync(source);
+    destination = undefined;
+    return result;
+  } catch (error) {
+    return mutationFileError(error);
+  } finally {
+    // If removing the source fails, retain it and undo only our own new link.
+    if (destination && linked) {
+      try {
+        const current = lstatSync(destination);
+        if (current.dev === linked.dev && current.ino === linked.ino)
+          unlinkSync(destination);
+      } catch {}
+    }
+  }
+}
+
 export function createProjectFile(
   context: FileContext,
   input: CreateProjectFile,
   beforeWrite?: (path: string) => void,
 ): ProjectTextFile {
   try {
-    const { directory, name } = input;
-    if (
-      !name.trim() ||
-      name === "." ||
-      name === ".." ||
-      /[\\/\u0000-\u001f\u007f<>:"|?*]/.test(name) ||
-      Buffer.byteLength(name, "utf8") > 255 ||
-      Buffer.from(name, "utf8").toString("utf8") !== name
-    )
-      throw problem(
-        400,
-        "Введите имя файла без пути и недопустимых символов (до 255 байт)",
-        "INVALID_FILE_NAME",
-      );
-    const parent = explorerPath(context, directory, true);
-    const path = directory ? `${directory}/${name}` : name;
-    if (!validRelativePath(path))
-      throw problem(400, "Слишком длинный путь к файлу", "INVALID_FILE_PATH");
-    const absolute = join(parent, name);
-    const { allowed } = scope(context);
-    if (!allowed(absolute) || internalNames.has(name.toLowerCase()))
-      throw problem(
-        403,
-        "Служебный путь недоступен в проводнике",
-        "INVALID_FILE_PATH",
-      );
+    const { path, absolute } = createEntryPath(context, input);
     beforeWrite?.(path);
     // Exclusive creation keeps an existing file, directory or link untouched.
     const fd = openSync(
@@ -648,13 +746,7 @@ export function createProjectFile(
     }
     return readProjectFile(context, path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
-      throw problem(
-        409,
-        "Файл или папка с таким именем уже существует",
-        "FILE_ALREADY_EXISTS",
-      );
-    return fileError(error);
+    return mutationFileError(error);
   }
 }
 

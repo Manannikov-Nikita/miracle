@@ -1,3 +1,4 @@
+import type { BoardImage } from "./board-images.js";
 import type { DateRangeOptions, DateBatchProgress } from "./date-batch.js";
 export type {
   DateRangeOptions,
@@ -168,7 +169,8 @@ export interface ChartSpec {
 }
 export interface BoardNodeData {
   title: string;
-  kind: "result" | "note" | "markdown" | "shape" | "text";
+  kind: "result" | "note" | "markdown" | "shape" | "text" | "image";
+  image?: BoardImage;
   text?: string;
   textStyle?: TextStyleSpec;
   shape?: ShapeSpec;

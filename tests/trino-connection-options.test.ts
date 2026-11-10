@@ -157,6 +157,10 @@ describe("Trino connection CA", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("CA требует HTTPS");
     await click('[aria-label="Удалить: Корневой сертификат CA"]');
+    expect(document.body.textContent).toContain(
+      "Автоматически — сертификаты системы",
+    );
+    expect(document.body.textContent).toContain("Указать CA вручную");
     await act(async () => button("Проверить").click());
     expect(requestBody().trino).toEqual({ tls: { caCert: null } });
     await act(async () => button("Сохранить").click());
@@ -245,6 +249,8 @@ describe("Trino connection CA", () => {
     await act(async () => button("ClickHouse").click());
     await act(async () => button("Trino").click());
     expect(document.body.textContent).not.toContain("corporate-ca.pem");
-    expect(document.body.textContent).toContain("Не выбран");
+    expect(document.body.textContent).toContain(
+      "Автоматически — сертификаты системы",
+    );
   });
 });

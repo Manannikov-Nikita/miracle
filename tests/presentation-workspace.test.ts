@@ -523,6 +523,168 @@ describe("presentation workspace routing", () => {
     expect(host.querySelector(".board-alignment-guides")).toBeNull();
   });
 
+  it.each(["board", "presentation"] as const)(
+    "adds uploaded, dropped and pasted images to the active %s",
+    async (kind) => {
+      vi.useRealTimers();
+      await render(kind);
+      vi.stubGlobal(
+        "Image",
+        class {
+          naturalWidth = 800;
+          naturalHeight = 400;
+          onload?: () => void;
+          set src(_value: string) {
+            queueMicrotask(() => this.onload?.());
+          }
+        },
+      );
+      const previousFetch = fetch;
+      const uploads: unknown[] = [];
+      vi.stubGlobal("fetch", (path: string, options: RequestInit = {}) => {
+        if (path === "/api/board-images") {
+          uploads.push(JSON.parse(String(options.body)));
+          return Promise.resolve(
+            response({
+              id: "a".repeat(64),
+              name: "photo.png",
+              mimeType: "image/png",
+              size: 3,
+            }),
+          );
+        }
+        return previousFetch(path, options);
+      });
+      const workspace =
+        host.querySelectorAll<HTMLElement>(".board-workspace")[
+          kind === "board" ? 0 : 1
+        ];
+      const file = () =>
+        new File([new Uint8Array([1, 2, 3])], "photo.png", {
+          type: "image/png",
+        });
+      const nodes = () =>
+        (kind === "board" ? flow.board : flow.deck).nodes!.filter(
+          (node) => node.data.kind === "image",
+        );
+      const waitForImage = async (count: number) => {
+        for (let index = 0; index < 30 && nodes().length < count; index++)
+          await act(
+            async () => new Promise((resolve) => setTimeout(resolve, 5)),
+          );
+        expect(nodes()).toHaveLength(count);
+      };
+      const input =
+        workspace.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", {
+        configurable: true,
+        value: [file()],
+      });
+      await act(async () =>
+        input.dispatchEvent(new Event("change", { bubbles: true })),
+      );
+      await waitForImage(1);
+      const drop = new MouseEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 600,
+        clientY: 200,
+      });
+      Object.defineProperty(drop, "dataTransfer", {
+        value: { files: [file()], getData: () => "" },
+      });
+      await act(async () =>
+        workspace.querySelector(".board-canvas")!.dispatchEvent(drop),
+      );
+      await waitForImage(2);
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: { files: [file()], getData: () => "" },
+      });
+      await act(async () => workspace.dispatchEvent(paste));
+      await waitForImage(3);
+      const itemImage = file();
+      const items = [
+        { kind: "string", type: "text/html", getAsFile: () => null },
+        { kind: "file", type: "image/png", getAsFile: () => itemImage },
+      ];
+      const pastePayload = async (
+        payload: { files: File[]; items?: typeof items },
+        target: Element = workspace,
+      ) => {
+        const event = new Event("paste", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "clipboardData", {
+          value: { ...payload, getData: () => "" },
+        });
+        await act(async () => target.dispatchEvent(event));
+        return event;
+      };
+      // Some clipboard bridges expose the image item without populating files.
+      expect((await pastePayload({ files: [], items })).defaultPrevented).toBe(
+        true,
+      );
+      await waitForImage(4);
+      // When both representations exist, the same image is inserted only once.
+      await pastePayload({ files: [itemImage], items });
+      await waitForImage(5);
+      expect(uploads).toHaveLength(5);
+      const inputTarget = workspace.appendChild(
+        document.createElement("textarea"),
+      );
+      expect(
+        (await pastePayload({ files: [], items }, inputTarget))
+          .defaultPrevented,
+      ).toBe(false);
+      inputTarget.remove();
+      const inactiveWorkspace =
+        host.querySelectorAll<HTMLElement>(".board-workspace")[
+          kind === "board" ? 1 : 0
+        ];
+      expect(
+        (await pastePayload({ files: [], items }, inactiveWorkspace))
+          .defaultPrevented,
+      ).toBe(false);
+      expect(
+        (
+          await pastePayload({
+            files: [
+              new File(["ordinary text"], "notes.txt", { type: "text/plain" }),
+            ],
+          })
+        ).defaultPrevented,
+      ).toBe(false);
+      expect(uploads).toHaveLength(5);
+      expect(nodes()[0]).toMatchObject({
+        width: 640,
+        height: 320,
+        data: { kind: "image", image: { id: "a".repeat(64) } },
+      });
+      expect(
+        nodes().every(
+          (node) =>
+            node.slideId === (kind === "presentation" ? "first" : undefined),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("draws a lightweight transfer skeleton outside clipping panes and clears it on Escape", async () => {
+    await act(async () => moveSource(750, 200, true));
+    const overlay = document.body.querySelector(".canvas-drag-overlay");
+    expect(overlay).not.toBeNull();
+    expect(host.contains(overlay)).toBe(false);
+    expect(overlay!.querySelectorAll(".canvas-drag-skeleton")).toHaveLength(1);
+    expect(overlay!.querySelector("textarea,iframe,canvas,img")).toBeNull();
+    expect(
+      flow.board.nodes!.find((node) => node.id === "source")!.style?.opacity,
+    ).toBe(0);
+    await act(async () =>
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
+    );
+    expect(document.body.querySelector(".canvas-drag-overlay")).toBeNull();
+    expect(board.document.nodes[0].position).toEqual({ x: 0, y: 0 });
+  });
+
   it("copies across panes without persisting any intermediate source motion", async () => {
     await act(async () => {
       moveSource(750, 200, true);

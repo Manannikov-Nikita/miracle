@@ -16,6 +16,7 @@ import type {
   ResultSet,
 } from "../shared/types";
 import type { ProjectTextFile } from "../shared/project-files";
+import type { ProjectFileMover } from "./project-file-drafts";
 import { api, openLocalSession } from "./api";
 import { createMetadataStore } from "./metadata-store";
 import { Brand, ErrorBox, Modal, Spinner, Toasts } from "./components/UI";
@@ -92,6 +93,17 @@ export default function App() {
   const [savedToOpen, setSavedToOpen] = useState<QueryDocument | null>(null);
   const [fileToOpen, setFileToOpen] = useState<ProjectTextFile | null>(null);
   const [fileRevision, setFileRevision] = useState(0);
+  const fileMover = useRef<ProjectFileMover | null>(null);
+  const registerFileMover = useCallback((move: ProjectFileMover | null) => {
+    fileMover.current = move;
+  }, []);
+  const moveProjectFile = useCallback<ProjectFileMover>((input) => {
+    if (!fileMover.current)
+      throw new Error(
+        "Редактор ещё загружается. Повторите перемещение через несколько секунд.",
+      );
+    return fileMover.current(input);
+  }, []);
   const [gitEditorState, setGitEditorState] =
     useState<ProjectGitEditorState | null>(null);
   const projectFilesChanged = useCallback(
@@ -382,6 +394,7 @@ export default function App() {
                   showSql();
                 }}
                 fileRevision={fileRevision}
+                onMoveFile={moveProjectFile}
                 onOpenSource={(q, run) => {
                   setExplorerDrawer(false);
                   setSourceToOpen({ source: q, run });
@@ -495,6 +508,7 @@ export default function App() {
                                 }
                                 onFileConsumed={() => setFileToOpen(null)}
                                 onProjectFileSaved={projectFilesChanged}
+                                onFileMoverChange={registerFileMover}
                                 onGitEditorStateChange={setGitEditorState}
                                 onSourceConsumed={() => setSourceToOpen(null)}
                                 onSavedConsumed={() => setSavedToOpen(null)}
@@ -577,6 +591,10 @@ export default function App() {
           onOpenChange={setHelpOpen}
           title="Сочетания клавиш"
         >
+          <p className="muted">
+            Чтобы вставить изображение из буфера, щёлкните по доске или слайду и
+            нажмите ⌘ / Ctrl + V.
+          </p>
           <div className="shortcut-list">
             {[
               ["Поиск по проекту", "⌘ / Ctrl + K"],
@@ -595,7 +613,7 @@ export default function App() {
               ["Перемещать доску", "Пробел + перетаскивание"],
               ["Выбрать несколько блоков", "Shift + клик или рамка"],
               ["Копировать выбранные блоки", "⌘ / Ctrl + C"],
-              ["Вставить блоки", "⌘ / Ctrl + V"],
+              ["Вставить блоки или изображение из буфера", "⌘ / Ctrl + V"],
               ["Скопировать перетаскиванием", "Option / Alt + перетаскивание"],
               ["Менять размер без прилипания", "Option / Alt + край блока"],
               ["Сохранять пропорции графика", "Shift + угол графика"],

@@ -1,3 +1,10 @@
+import CanvasDragOverlay from "./CanvasDragOverlay";
+import {
+  clipboardImageFiles,
+  uploadBoardImage,
+  validateImageFiles,
+} from "./image-upload";
+import { BOARD_IMAGE_MIME_TYPES } from "../../shared/board-images";
 import {
   useCallback,
   useEffect,
@@ -30,6 +37,7 @@ import {
   PresentationChart,
   ProjectorScreen,
   FileMd,
+  ImageSquare,
   FloppyDisk,
   LinkSimple,
   Note,
@@ -268,6 +276,9 @@ function Workspace({
     [board?.document, slideId],
   );
   const [previewNodes, setPreviewNodes] = useState<BoardNode[] | null>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const imageUploadPending = useRef(false);
   const [localFocus, setLocalFocus] = useState(false);
   const [show, setShow] = useState<{
     boardId: string;
@@ -278,6 +289,13 @@ function Workspace({
   const showPending = useRef(false);
   const [startingShow, setStartingShow] = useState(false);
   const flow = useReactFlow<BoardCanvasNode, BoardFlowEdge>();
+  const transferDrag = useRef<{
+    boardId: string;
+    cancelled: boolean;
+    ids: Set<string>;
+    origin: { left: number; top: number };
+    viewport: ReturnType<typeof flow.getViewport>;
+  } | null>(null);
   const flowId = useId();
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
@@ -298,10 +316,14 @@ function Workspace({
             return {
               ...rendered,
               nodes: rendered.nodes.map((original) => {
+                const displayed =
+                  previewNodes && transferDrag.current?.ids.has(original.id)
+                    ? { ...original, style: { ...original.style, opacity: 0 } }
+                    : original;
                 const node =
                   presentation && original.type === "artifact"
-                    ? { ...original, dragHandle: ".presentation-artifact" }
-                    : original;
+                    ? { ...displayed, dragHandle: ".presentation-artifact" }
+                    : displayed;
                 return node.type === "artifact" &&
                   nodeWork(agentLocks, board.id, node.id)
                   ? {
@@ -436,11 +458,6 @@ function Workspace({
   const [latestResult, setLatestResult] = useState<ResultSet | null>(null);
   const gesture = useRef<BoardDocument | null>(null);
   const pointer = useRef({ x: 0, y: 0 });
-  const transferDrag = useRef<{
-    boardId: string;
-    cancelled: boolean;
-    viewport: ReturnType<typeof flow.getViewport>;
-  } | null>(null);
   const restoreDragViewport = useCallback(
     (viewport: ReturnType<typeof flow.getViewport>) => {
       const current = flow.getViewport();
@@ -486,10 +503,13 @@ function Workspace({
         canPreserveAspect:
           corner &&
           (node?.data.kind === "shape" ||
+            node?.data.kind === "image" ||
             (node?.data.kind === "result" &&
               (node.data.view === "chart" || node.data.view === "custom"))),
         minimum:
-          node?.data.kind === "shape" ? { width: 40, height: 40 } : undefined,
+          node?.data.kind === "shape" || node?.data.kind === "image"
+            ? { width: 40, height: 40 }
+            : undefined,
         proportional: false,
       };
       gesture.current = current.document;
@@ -1731,6 +1751,81 @@ function Workspace({
     setSelectedEdge(null);
     setInspecting(true);
   };
+  const addImages = async (files: File[], point?: { x: number; y: number }) => {
+    const captured = store.current.current;
+    const capturedSlide = slideRef.current;
+    const sequence = store.selectionSequence();
+    if (
+      !files.length ||
+      !captured ||
+      !editableRef.current ||
+      conflictRef.current ||
+      imageUploadPending.current
+    )
+      return;
+    imageUploadPending.current = true;
+    setUploadingImages(true);
+    try {
+      validateImageFiles(files);
+      if (captured.document.nodes.length + files.length > 200)
+        throw new Error("В документе может быть не больше 200 блоков.");
+      const bounds = canvasRef.current?.getBoundingClientRect();
+      const center =
+        point ??
+        (capturedSlide
+          ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
+          : bounds
+            ? flow.screenToFlowPosition({
+                x: bounds.left + bounds.width / 2,
+                y: bounds.top + bounds.height / 2,
+              })
+            : { x: 0, y: 0 });
+      const uploaded = [];
+      for (const file of files) uploaded.push(await uploadBoardImage(file));
+      const current = store.current.current;
+      if (!mounted.current) return;
+      if (
+        current?.id !== captured.id ||
+        store.selectionSequence() !== sequence ||
+        slideRef.current !== capturedSlide ||
+        !editableRef.current ||
+        conflictRef.current
+      )
+        throw new Error(
+          "Документ изменился во время загрузки. Добавьте изображения ещё раз.",
+        );
+      const nodes: BoardNode[] = uploaded.map(
+        ({ image, width, height }, index) => ({
+          id: crypto.randomUUID(),
+          type: "artifact",
+          slideId: capturedSlide,
+          width,
+          height,
+          position: {
+            x: center.x - width / 2 + index * 24,
+            y: center.y - height / 2 + index * 24,
+          },
+          data: { kind: "image", title: image.name, image },
+        }),
+      );
+      const document = {
+        ...current.document,
+        nodes: [...current.document.nodes, ...nodes],
+      };
+      validateCanvasInsertion(document);
+      change(document);
+      selectNodes(new Set(nodes.map((node) => node.id)));
+      setSelected(nodes[0].id);
+      setSelectedEdge(null);
+      setInspecting(false);
+      workspaceRef.current?.focus({ preventScroll: true });
+    } catch (error) {
+      if (mounted.current) notify((error as Error).message, "error");
+    } finally {
+      imageUploadPending.current = false;
+      if (mounted.current) setUploadingImages(false);
+    }
+  };
   const addText = (kind: "note" | "markdown" | "text") => {
     if (!board || !editable || store.conflict) return;
     const plainText = kind === "text";
@@ -1863,6 +1958,11 @@ function Workspace({
       transferDrag.current = {
         boardId: current.id,
         cancelled: false,
+        ids: new Set(positions.map((item) => item.id)),
+        origin: canvasRef.current?.getBoundingClientRect() ?? {
+          left: 0,
+          top: 0,
+        },
         viewport: flow.getViewport(),
       };
     const transfer = transferDrag.current;
@@ -2440,7 +2540,14 @@ function Workspace({
         )
           return;
         const fragment = readBoardClipboard(event.clipboardData);
-        if (!fragment) return;
+        if (!fragment) {
+          const files = clipboardImageFiles(event.clipboardData);
+          if (files.length) {
+            event.preventDefault();
+            void addImages(files);
+          }
+          return;
+        }
         event.preventDefault();
         if (fragment.workspaceId !== workspaceId) {
           notify("Нельзя вставить блоки из другого проекта.", "error");
@@ -2689,9 +2796,47 @@ function Workspace({
           </button>
         </div>
       )}
+      {previewNodes &&
+        transferDrag.current &&
+        !transferDrag.current.cancelled && (
+          <CanvasDragOverlay
+            nodes={previewNodes.filter((node) =>
+              transferDrag.current!.ids.has(node.id),
+            )}
+            origin={transferDrag.current.origin}
+            viewport={transferDrag.current.viewport}
+          />
+        )}
       {board && (
         <div className="board-tools">
           <ShapePicker disabled={!editable} onSelect={addShape} />
+          <input
+            ref={imageInput}
+            type="file"
+            hidden
+            accept={BOARD_IMAGE_MIME_TYPES.join(",")}
+            multiple
+            aria-label="Файлы изображений"
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              event.target.value = "";
+              void addImages(files);
+            }}
+          />
+          <button
+            disabled={!editable || uploadingImages}
+            onClick={() => imageInput.current?.click()}
+            title={
+              uploadingImages
+                ? "Загрузка изображений…"
+                : "Добавить изображение из файла · Вставить из буфера: ⌘ / Ctrl + V"
+            }
+            aria-label="Добавить изображение"
+            aria-busy={uploadingImages || undefined}
+            className="board-tools-icon"
+          >
+            <ImageSquare size={18} aria-hidden="true" />
+          </button>
           <button
             disabled={!editable}
             onClick={() => addText("text")}
@@ -2886,13 +3031,22 @@ function Workspace({
             if (
               editable &&
               (!registry || store.ready) &&
-              e.dataTransfer.types.includes("application/x-miracle-result")
+              (e.dataTransfer.types.includes("application/x-miracle-result") ||
+                e.dataTransfer.types.includes("Files"))
             ) {
               e.preventDefault();
               e.dataTransfer.dropEffect = "copy";
             }
           }}
           onDrop={(e) => {
+            if (e.dataTransfer.files?.length && editable) {
+              e.preventDefault();
+              void addImages(
+                Array.from(e.dataTransfer.files),
+                flow.screenToFlowPosition({ x: e.clientX, y: e.clientY }),
+              );
+              return;
+            }
             const raw = e.dataTransfer.getData("application/x-miracle-result");
             if (!raw || !editable) return;
             e.preventDefault();
@@ -3039,7 +3193,8 @@ function Workspace({
                   if (
                     presentation ||
                     node.data.kind === "shape" ||
-                    node.data.kind === "text"
+                    node.data.kind === "text" ||
+                    node.data.kind === "image"
                   ) {
                     if (!presentation && !canvasFocusTarget(event.target))
                       return;

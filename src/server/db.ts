@@ -4,12 +4,13 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   agentImagesSchema,
+  boardImagesSchema,
   agentQueryRunsSchema,
   projectSchema,
   agentModelSettingsMigration,
 } from "./project-schema.js";
 const timestamp = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
-export const WORKSPACE_SCHEMA_VERSION = 7;
+export const WORKSPACE_SCHEMA_VERSION = 8;
 const jsonFields = new Set(["source", "document", "columns", "rows", "batch"]);
 /** One prepared-statement connection owns the workspace until close. */
 export class Database {
@@ -95,7 +96,7 @@ export function migrate(db: Database, initialize?: () => void) {
   if (version > WORKSPACE_SCHEMA_VERSION)
     throw new Error("Workspace schema is newer than this version of Miracle");
   if (version === WORKSPACE_SCHEMA_VERSION) return;
-  if (version >= 4 && version <= 6) {
+  if (version >= 4 && version <= 7) {
     db.transaction(() => {
       if (version === 4)
         db.sqlite.exec(`
@@ -103,7 +104,8 @@ export function migrate(db: Database, initialize?: () => void) {
         ${agentImagesSchema}
       `);
       if (version < 6) db.sqlite.exec(agentQueryRunsSchema);
-      db.sqlite.exec(`${agentModelSettingsMigration} PRAGMA user_version=7;`);
+      if (version < 7) db.sqlite.exec(agentModelSettingsMigration);
+      db.sqlite.exec(`${boardImagesSchema} PRAGMA user_version=8;`);
     });
     return;
   }

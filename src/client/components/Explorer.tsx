@@ -31,6 +31,7 @@ import ProjectFileTree from "./ProjectFileTree";
 import { useAgentWorkLocks } from "../agents/useAgentWork";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import type { ProjectTextFile } from "../../shared/project-files";
+import type { ProjectFileMover } from "../project-file-drafts";
 export type { ExplorerSourceView } from "./SourceSchemaTree";
 export type ExplorerKind = "sources" | "queries" | "history";
 export default function Explorer({
@@ -48,6 +49,7 @@ export default function Explorer({
   onClose,
   workspaceId = "",
   onOpenFile,
+  onMoveFile,
   fileRevision = 0,
 }: {
   kind: ExplorerKind;
@@ -64,6 +66,7 @@ export default function Explorer({
   onClose?: () => void;
   workspaceId?: string;
   onOpenFile?: (file: ProjectTextFile) => void;
+  onMoveFile?: ProjectFileMover;
   fileRevision?: number;
 }) {
   const workLocks = useAgentWorkLocks();
@@ -293,6 +296,7 @@ export default function Explorer({
                 filter={filter}
                 revision={treeRevision + fileRevision}
                 onOpenFile={onOpenFile}
+                onMoveFile={onMoveFile}
                 onNotify={onNotify}
                 onClearFilter={() => setFilter("")}
                 actionsTarget={fileActionsTarget}

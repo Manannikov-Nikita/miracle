@@ -3,9 +3,15 @@ import { parser, GFM } from "@lezer/markdown";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { defaultUrlTransform } from "react-markdown";
 import { markdownMathRanges, type MarkdownMathRange } from "../markdown-math";
+import {
+  markdownBodySource,
+  markdownFrontmatterEnd,
+} from "../markdown-frontmatter";
 
 export const MAX_MARKDOWN_LENGTH = 200000;
 export const markdownParser = parser.configure(GFM);
+export const parseMarkdownPreview = (source: string) =>
+  markdownParser.parse(markdownBodySource(source));
 export type PreviewPart = {
   kind:
     | "hide"
@@ -50,10 +56,20 @@ export function activeSourceLines(
 export function planMarkdownPreview(
   source: string,
   active: Set<number>,
-  tree: Tree = markdownParser.parse(source),
+  tree: Tree = parseMarkdownPreview(source),
 ): PreviewPart[] {
   const doc = Text.of(source.split("\n"));
   const parts: PreviewPart[] = [];
+  const metadataEnd = markdownFrontmatterEnd(source);
+  if (metadataEnd) {
+    for (let n = 1; n <= doc.lineAt(metadataEnd - 1).number; n++)
+      parts.push({
+        kind: "line",
+        from: doc.line(n).from,
+        to: doc.line(n).from,
+        className: "md-preview-frontmatter",
+      });
+  }
   let math = mathCache.get(tree);
   if (!math) {
     math = markdownMathRanges(source);

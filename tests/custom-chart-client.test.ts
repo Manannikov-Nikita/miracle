@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { performance } from "node:perf_hooks";
+import {
+  setImmediate as nextTurn,
+  setTimeout as pause,
+} from "node:timers/promises";
 import { JSDOM } from "jsdom";
 import { startCustomChartRun } from "../src/client/board/custom-chart-session";
 
@@ -10,6 +15,16 @@ const spec = {
   javascript: "",
 };
 const domains: JSDOM[] = [];
+const runs = new Set<() => void>();
+function startRun(opts: Parameters<typeof startCustomChartRun>[0]) {
+  const dispose = startCustomChartRun(opts);
+  const stop = () => {
+    runs.delete(stop);
+    dispose();
+  };
+  runs.add(stop);
+  return stop;
+}
 function host() {
   const dom = new JSDOM('<div id="host"></div>');
   domains.push(dom);
@@ -29,10 +44,27 @@ function options(element: HTMLElement) {
     onDiagnosticConnection: vi.fn(),
   };
 }
-async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 30));
+async function waitFor(assertion: () => void) {
+  // WebCrypto runs outside the JS event loop and can finish after any fixed
+  // delay under load. Poll the observable result using a real monotonic clock;
+  // the sentAt test deliberately freezes Date and heartbeat intervals.
+  const deadline = performance.now() + 3000;
+  let lastError: unknown;
+  do {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await pause(5);
+  } while (performance.now() < deadline);
+  throw lastError;
 }
 afterEach(() => {
+  // Failed assertions must not leave a pending digest reporting into the next
+  // test's fetch stub, or leave its heartbeat running after fake timers reset.
+  for (const stop of runs) stop();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   domains.splice(0).forEach((dom) => dom.window.close());
@@ -58,12 +90,12 @@ describe("custom chart client lifecycle", () => {
     );
     const element = host();
     const opts = options(element);
-    const stop = startCustomChartRun(opts);
-    await settle();
+    const stop = startRun(opts);
+    await waitFor(() => expect(dataSignal).toBeDefined());
     stop();
     const count = reports.length;
     resolveData(Response.json({ columns: [], rows: [] }));
-    await settle();
+    await nextTurn();
     expect(dataSignal?.aborted).toBe(true);
     expect(element.querySelector("iframe")).toBeNull();
     expect(reports).toHaveLength(count);
@@ -90,18 +122,18 @@ describe("custom chart client lifecycle", () => {
     );
     const element = host();
     const opts = options(element);
-    let stop = startCustomChartRun(opts);
-    await settle();
-    expect(opts.onStatus.mock.calls.at(-1)?.[0]).toMatchObject({
-      status: "error",
-      stage: "data",
-      message: "Агрегируйте SQL",
-    });
+    let stop = startRun(opts);
+    await waitFor(() =>
+      expect(opts.onStatus.mock.calls.at(-1)?.[0]).toMatchObject({
+        status: "error",
+        stage: "data",
+        message: "Агрегируйте SQL",
+      }),
+    );
     stop();
     failed = false;
-    stop = startCustomChartRun(opts);
-    await settle();
-    expect(element.querySelector("iframe")).not.toBeNull();
+    stop = startRun(opts);
+    await waitFor(() => expect(element.querySelector("iframe")).not.toBeNull());
     expect(new Set(reports.map((r) => r.browserId)).size).toBe(1);
     expect(
       reports.every((r, i) => i === 0 || r.sequence > reports[i - 1].sequence),
@@ -120,9 +152,10 @@ describe("custom chart client lifecycle", () => {
       ),
     );
     const opts = options(host());
-    const stop = startCustomChartRun(opts);
-    await settle();
-    expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(false);
+    const stop = startRun(opts);
+    await waitFor(() =>
+      expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(false),
+    );
     expect(
       opts.onStatus.mock.calls.some(([s]) => s.status === "rendered"),
     ).toBe(false);
@@ -155,8 +188,8 @@ it("heartbeats the current status and stops all reporting after unmount", async 
       },
     );
   });
-  const stop = startCustomChartRun(opts);
-  await settle();
+  const stop = startRun(opts);
+  await waitFor(() => expect(posted[0]?.type).toBe("connect"));
   const frame = element.querySelector("iframe")!;
   const dom = element.ownerDocument.defaultView!;
   const connect = posted[0];
@@ -200,14 +233,15 @@ it("ignores late diagnostic responses from a previous upload", async () => {
     }),
   );
   const opts = options(host());
-  const stop = startCustomChartRun(opts);
-  await settle();
-  expect(uploads.length).toBeGreaterThan(1);
+  const stop = startRun(opts);
+  await waitFor(() => expect(uploads.length).toBeGreaterThan(1));
   uploads.at(-1)!.resolve(Response.json({ ok: true }));
-  await settle();
-  expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true);
+  await waitFor(() =>
+    expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true),
+  );
   uploads[0].reject(new Error("old failure"));
-  await settle();
+  // Drain this completed request's rejection chain before the negative check.
+  await nextTurn();
   expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true);
   stop();
 });
@@ -240,8 +274,10 @@ it("captures sentAt when creating a payload and preserves it across session retr
     }),
   );
   const opts = options(host());
-  const stop = startCustomChartRun(opts);
-  await settle();
+  const stop = startRun(opts);
+  await waitFor(() =>
+    expect(opts.onDiagnosticConnection).toHaveBeenLastCalledWith(true),
+  );
   expect(reports).toHaveLength(2);
   expect(reports.map((report) => report.sentAt)).toEqual([100000, 100000]);
   expect(reports[1].sequence).toBe(reports[0].sequence);
@@ -263,13 +299,12 @@ it("renders a readonly chart from its snapshot without publishing diagnostics", 
     }),
   );
   const element = host();
-  const stop = startCustomChartRun({
+  const stop = startRun({
     ...options(element),
     reportStatus: false,
   });
   try {
-    await settle();
-    expect(element.querySelector("iframe")).not.toBeNull();
+    await waitFor(() => expect(element.querySelector("iframe")).not.toBeNull());
     expect(requests).toEqual(["/api/result-sets/result/custom-chart"]);
   } finally {
     stop();

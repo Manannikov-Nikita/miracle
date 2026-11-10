@@ -3,6 +3,7 @@ import { request as httpsRequest } from "node:https";
 import { createGunzip, gzipSync } from "node:zlib";
 import type { Readable } from "node:stream";
 import type { EngineConnection } from "./connectors.js";
+import { connectionTlsOptions } from "./tlsTrust.js";
 import {
   CONNECTION_ERROR_MAX_BYTES,
   CONNECTION_ERROR_TOO_LARGE,
@@ -30,8 +31,7 @@ export async function clickhouseRequest(
         signal,
         ...(url.protocol === "https:"
           ? {
-              rejectUnauthorized: true,
-              ...(tls?.caCert ? { ca: tls.caCert } : {}),
+              ...connectionTlsOptions(tls?.caCert),
               ...(tls?.clientCert ? { cert: tls.clientCert } : {}),
               ...(tls?.clientKey ? { key: tls.clientKey } : {}),
             }

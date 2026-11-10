@@ -1,3 +1,4 @@
+import { registerBoardImageRoutes } from "./board-image-routes.js";
 import {
   checkCustomChartMetadata,
   customChartData,
@@ -433,6 +434,7 @@ export async function buildApp(
     const uuid = (req: FastifyRequest, key = "id") =>
       z.uuid().parse((req.params as any)[key]);
     registerProjectRoutes(app, projectStore, need);
+    registerBoardImageRoutes(app, projectStore, need);
     registerProjectGitRoutes(app, projectStore, need);
     app.get("/api/health", async () => ({ ok: true }));
     app.get("/api/session", async (_req, reply) => {

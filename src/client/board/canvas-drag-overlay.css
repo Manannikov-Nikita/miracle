@@ -1,0 +1,40 @@
+.canvas-drag-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+  user-select: none;
+}
+.canvas-drag-skeleton {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid rgba(130, 183, 156, 0.9);
+  border-radius: 6px;
+  padding: 12px;
+  background: rgba(32, 42, 37, 0.76);
+  box-shadow: 0 4px 18px #0003;
+  color: #e4eae6;
+  opacity: 0.85;
+}
+.canvas-drag-skeleton span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font:
+    12px/1.4 system-ui,
+    sans-serif;
+  margin-bottom: 12px;
+}
+.canvas-drag-skeleton i {
+  display: block;
+  height: 8px;
+  margin-bottom: 8px;
+  width: 72%;
+  border-radius: 2px;
+  background: #a8b5ad30;
+}
+.canvas-drag-skeleton i:last-child {
+  width: 44%;
+}

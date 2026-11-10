@@ -28,9 +28,11 @@ export function toArtifactFlowNode(
     dragHandle:
       node.data.kind === "shape"
         ? ".board-shape-content"
-        : node.data.kind === "text"
-          ? ".board-text-content"
-          : ".board-node-header",
+        : node.data.kind === "image"
+          ? ".board-image-content"
+          : node.data.kind === "text"
+            ? ".board-text-content"
+            : ".board-node-header",
     // These nodes have explicit sizes. React Flow resets internal measurements
     // when controlled nodes change, so the resizer needs them on every render.
     measured: { width, height },

@@ -107,6 +107,51 @@ describe("table snapshot rendering", () => {
     return bodyRows().map((row) => row.querySelector("td")?.textContent);
   }
 
+  it("copies the full formatted and filtered table as Markdown, not just its page", async () => {
+    const result = resultSet(205);
+    const rows: Cell[][] = Array.from({ length: 205 }, (_, index) => [
+      `A${index}`,
+      String(index),
+    ]);
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const spec = createTableSpec(result.columns);
+    spec.columns = { name: { label: "Имя" }, value: { hidden: true } };
+    await render(result, rows.slice(0, 200), spec);
+    const button = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Скопировать таблицу в Markdown"]',
+    );
+    expect(button).not.toBeNull();
+    await act(async () => button!.click());
+    expect(writeText).toHaveBeenCalledOnce();
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied.startsWith("| Имя |\n| --- |\n| A0 |")).toBe(true);
+    expect(copied.endsWith("| A204 |")).toBe(true);
+    expect(copied.split("\n")).toHaveLength(207);
+    expect(copied).not.toContain("Значение");
+  });
+
+  it("reports clipboard failure instead of claiming a successful Markdown copy", async () => {
+    const result = resultSet();
+    const rows: Cell[][] = [["A", "1"]];
+    vi.mocked(api).mockResolvedValue({ result, rows });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    await render(result, rows, createTableSpec(result.columns));
+    const button = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Скопировать таблицу в Markdown"]',
+    );
+    expect(button).not.toBeNull();
+    await act(async () => button!.click());
+    expect(container.textContent).toContain("Не удалось скопировать");
+  });
+
   it("persists editable header sorting so another view can use the same order", async () => {
     const result = resultSet();
     const rows: Cell[][] = [

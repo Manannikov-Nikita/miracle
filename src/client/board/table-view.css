@@ -91,3 +91,9 @@
   outline: 1px solid var(--board-accent);
   outline-offset: -1px;
 }
+.table-copy-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
