@@ -1,5 +1,5 @@
 // Published supported installation -> candidate via the actual miracle update CLI.
-// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PREVIOUS-0.10.0.tar.gz
+// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PUBLISHED-0.10.0-OR-0.11.0.tar.gz
 // Every archive needs its adjacent .sha256 and rendered install.sh. No live user
 // installation or workspace is read, stopped, or modified by this test.
 import assert from "node:assert/strict";
@@ -24,22 +24,25 @@ const [candidateArgument, previousArgument, ...extraArguments] =
   process.argv.slice(2);
 if (!candidateArgument || !previousArgument || extraArguments.length)
   throw new Error(
-    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.10.0.tar.gz",
+    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.10.0-or-0.11.0.tar.gz",
   );
 const candidate = resolve(candidateArgument);
 const previousArchive = resolve(previousArgument);
-const oldVersion = "0.10.0";
 const target = `${process.platform}-${process.arch}`;
+const oldVersion = new RegExp(
+  `^miracle-(0\\.1[01]\\.0)-${target}\\.tar\\.gz$`,
+).exec(basename(previousArchive))?.[1];
+assert(
+  oldVersion,
+  "Previous release must be 0.10.0 or 0.11.0 for this architecture",
+);
+const oldSchema = oldVersion === "0.10.0" ? 7 : 8;
 const candidateVersion = new RegExp(
   `^miracle-(\\d+\\.\\d+\\.\\d+)-${target}\\.tar\\.gz$`,
 ).exec(basename(candidate))?.[1];
 assert(
   candidateVersion,
   "Candidate must target this operating system and architecture",
-);
-assert.equal(
-  basename(previousArchive),
-  `miracle-${oldVersion}-${target}.tar.gz`,
 );
 assert.notEqual(
   candidateVersion,
@@ -473,12 +476,12 @@ try {
     const before = await sqliteSnapshot(oldNode);
     assert.equal(
       before.schema,
-      7,
+      oldSchema,
       "Published release has the supported project schema",
     );
     assert(before.chatColumns.includes("model_settings_json"));
     assert(before.chatColumns.includes("native_session_reset"));
-    assert(!before.tables.includes("board_images"));
+    assert.equal(before.tables.includes("board_images"), oldSchema === 8);
     assert.notEqual(before.connection.password_encrypted, password);
     const oldBackup = join(project, "backup before upgrade");
     await run("backup", oldBackup, ...storageArgs);
@@ -676,7 +679,7 @@ try {
     assert.equal(
       after.schema,
       8,
-      "Update must migrate the workspace to schema 8",
+      "Updated stable release must use workspace schema 8",
     );
     assert(after.tables.includes("board_images"));
     for (const column of ["model_settings_json", "native_session_reset"])
@@ -747,7 +750,7 @@ try {
       await run("stop", "--project-dir", restored);
     }
     console.log(
-      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, schema 7 -> 8, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
+      `PASS ${oldVersion} -> ${candidateVersion} (${storage}): CLI update, schema ${before.schema} -> ${after.schema}, check-only, failed download, checksum rejection, current-version no-op, same PID/data on no-op/failure, preserved secrets/query/board/result/editor/profile/chat/history, model settings, old/new backup restore`,
     );
   }
   console.log(
