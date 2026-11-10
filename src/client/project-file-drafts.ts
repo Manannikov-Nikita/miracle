@@ -1,4 +1,12 @@
-import type { ProjectTextFile } from "../shared/project-files";
+import type {
+  MoveProjectFile,
+  ProjectFileMove,
+  ProjectTextFile,
+} from "../shared/project-files";
+
+export type ProjectFileMover = (
+  input: MoveProjectFile,
+) => Promise<ProjectFileMove>;
 
 export interface ProjectFileDraft extends ProjectTextFile {
   id: string;

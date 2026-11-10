@@ -2,6 +2,7 @@ import { createHttpTransport, type HttpResponse } from "./http-transport.js";
 import type { EngineConnection } from "./connectors.js";
 import { connectionTransportError } from "./connectionErrors.js";
 import { ConnectionDiagnosticError } from "./connectionErrors.js";
+import { connectionTlsOptions } from "./tlsTrust.js";
 
 export type TrinoResponse = HttpResponse;
 interface TrinoRequestOptions {
@@ -25,14 +26,13 @@ export function createTrinoTransport(
   config: { authentication?: boolean } = {},
 ) {
   const ca = c.trino?.tls?.caCert;
-  const transport = createHttpTransport(
-    ca
-      ? {
-          connect: { ca, rejectUnauthorized: true },
-          connections: 1,
-        }
-      : {},
-  );
+  const transport = createHttpTransport({
+    connect:
+      new URL(c.url).protocol === "https:"
+        ? connectionTlsOptions(ca)
+        : { rejectUnauthorized: true },
+    ...(ca ? { connections: 1 } : {}),
+  });
   return {
     async request(
       url: string,

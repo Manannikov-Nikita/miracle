@@ -30,5 +30,16 @@ export interface CreateProjectFile {
   name: string;
 }
 
+export interface MoveProjectFile {
+  path: string;
+  directory: string;
+}
+
+export interface ProjectFileMove {
+  from: string;
+  path: string;
+  name: string;
+}
+
 export const MAX_PROJECT_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_SQL_FILE_CHARACTERS = 1_000_000;

@@ -11,6 +11,7 @@ import {
   CaretLeft,
   CaretRight,
   CaretUp,
+  MarkdownLogo,
 } from "@phosphor-icons/react";
 import type { Cell, ResultSet } from "../../shared/types";
 import type {
@@ -28,6 +29,8 @@ import {
   tableBarPercent,
 } from "./tableModel";
 import { acquireTableSnapshot } from "./tableSnapshot";
+import { tableToMarkdown } from "../../shared/markdown-table";
+import { writeClipboardText } from "../clipboard-text";
 import "./table-view.css";
 
 const pageSize = 200;
@@ -114,6 +117,8 @@ export default function TableView({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [retry, setRetry] = useState(0);
+  const [copyStatus, setCopyStatus] = useState("");
+  const [copying, setCopying] = useState(false);
   const [visible, setVisible] = useState(false);
   const [loadedFull, setLoadedFull] = useState(false);
   const [loadedOffset, setLoadedOffset] = useState(0);
@@ -261,6 +266,38 @@ export default function TableView({
     });
   };
   const failure = error || prepared?.error;
+  async function copyMarkdown() {
+    if (copying || !data) return;
+    setCopying(true);
+    setCopyStatus("");
+    const snapshot = full ? undefined : acquireTableSnapshot(result.id);
+    try {
+      const exported = snapshot
+        ? snapshot.promise.then(({ rows }) =>
+            buildTable(result.columns, rows, spec),
+          )
+        : Promise.resolve(data);
+      await writeClipboardText(
+        exported.then((table) =>
+          tableToMarkdown(
+            table.columns.map((column) => column.options.label || column.name),
+            table.rows.map((row) =>
+              table.columns.map(
+                (column, index) =>
+                  formatTableCell(row[index], column, column.options).text,
+              ),
+            ),
+          ),
+        ),
+      );
+      setCopyStatus("Скопировано в Markdown");
+    } catch {
+      setCopyStatus("Не удалось скопировать таблицу");
+    } finally {
+      snapshot?.release();
+      setCopying(false);
+    }
+  }
   return (
     <div
       className={`board-result table-view${spec.wrap ? " table-view-wrap" : ""}`}
@@ -490,6 +527,22 @@ export default function TableView({
                 : ""}
               {busy ? " · загрузка" : ""}
             </span>
+            <span className="table-copy-status" role="status">
+              {copyStatus}
+            </span>
+            <button
+              type="button"
+              aria-label="Скопировать таблицу в Markdown"
+              title={
+                copying
+                  ? "Копирование таблицы…"
+                  : "Скопировать всю таблицу в Markdown"
+              }
+              disabled={copying || busy}
+              onClick={() => void copyMarkdown()}
+            >
+              <MarkdownLogo size={16} aria-hidden="true" />
+            </button>
             {(total > pageSize || safeOffset > 0) && (
               <>
                 <button

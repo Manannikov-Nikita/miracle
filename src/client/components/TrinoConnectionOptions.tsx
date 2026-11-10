@@ -143,9 +143,9 @@ export default function TrinoConnectionOptions({
           Использовать HTTPS
         </label>
         <p className="muted connection-option-hint">
-          Укажите HTTPS-адрес и порт вашего Trino или шлюза. Для корпоративного
-          центра сертификации выберите его CA или цепочку CA. Для публичного
-          сертификата файл обычно не нужен.
+          Miracle автоматически использует встроенные и системные доверенные
+          сертификаты. Если CA вашей организации установлен в системе, искать
+          PEM-файл не нужно. При необходимости укажите CA вручную.
         </p>
         <fieldset
           className="connection-certificates"
@@ -160,15 +160,11 @@ export default function TrinoConnectionOptions({
               <span className="muted">
                 {present
                   ? filename || "Сохранён"
-                  : options === null ||
-                      options?.tls === null ||
-                      options?.tls?.caCert === null
-                    ? "Будет удалён"
-                    : "Не выбран"}
+                  : "Автоматически — сертификаты системы"}
               </span>
             </div>
             <label className="button small connection-file-picker">
-              {present ? "Заменить" : "Выбрать файл"}
+              {present ? "Заменить" : "Указать CA вручную"}
               <input
                 aria-label="Корневой сертификат CA"
                 type="file"
@@ -196,9 +192,10 @@ export default function TrinoConnectionOptions({
           </div>
         </fieldset>
         <p className="muted connection-option-hint">
-          PEM, до 128 КиБ. Сертификат сервера и его имя проверяются всегда. CA
-          действует только для этого подключения, хранится зашифрованно и не
-          возвращается в форму.
+          PEM, до 128 КиБ. Сертификат сервера и его имя проверяются всегда.
+          Ручной CA заменяет автоматический выбор только для этого подключения,
+          хранится зашифрованно и не возвращается в форму. Удалите его, чтобы
+          снова использовать сертификаты системы.
         </p>
         {loading && (
           <span className="muted" role="status">

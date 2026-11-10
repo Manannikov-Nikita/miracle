@@ -51,6 +51,165 @@ const file = (name: string, content: string | Buffer = "hello") => {
   return path;
 };
 
+it("creates folders in the selected parent and never replaces existing entries", async () => {
+  expect(
+    files.createProjectDirectory(context(), { directory: "", name: "docs" }),
+  ).toEqual({
+    path: "docs",
+    name: "docs",
+    kind: "directory",
+  });
+  files.createProjectDirectory(context(), {
+    directory: "docs",
+    name: "Заметки",
+  });
+  expect((await files.listProjectTree(context(), "docs")).entries).toEqual([
+    { path: "docs/Заметки", name: "Заметки", kind: "directory" },
+  ]);
+  file("existing.txt", "keep");
+  for (const name of ["docs", "existing.txt"])
+    expect(() =>
+      files.createProjectDirectory(context(), { directory: "", name }),
+    ).toThrow(
+      expect.objectContaining({ statusCode: 409, code: "FILE_ALREADY_EXISTS" }),
+    );
+  expect(readFileSync(join(project, "existing.txt"), "utf8")).toBe("keep");
+});
+
+it("moves regular files between folders and root without changing bytes or permissions", () => {
+  const bytes = Buffer.from([0, 255, 17, 5]);
+  const original = file("docs/image.bin", bytes);
+  chmodSync(original, 0o640);
+  const moved = files.moveProjectFile(context(), {
+    path: "docs/image.bin",
+    directory: "",
+  });
+  expect(moved).toEqual({
+    from: "docs/image.bin",
+    path: "image.bin",
+    name: "image.bin",
+  });
+  expect(existsSync(original)).toBe(false);
+  expect(readFileSync(join(project, "image.bin"))).toEqual(bytes);
+  expect(statSync(join(project, "image.bin")).mode & 0o777).toBe(0o640);
+  files.moveProjectFile(context(), { path: "image.bin", directory: "docs" });
+  expect(readFileSync(original)).toEqual(bytes);
+});
+
+it("keeps both paths intact when a move destination already exists", () => {
+  file("source/a.txt", "source");
+  file("target/a.txt", "target");
+  expect(() =>
+    files.moveProjectFile(context(), {
+      path: "source/a.txt",
+      directory: "target",
+    }),
+  ).toThrow(
+    expect.objectContaining({ statusCode: 409, code: "FILE_ALREADY_EXISTS" }),
+  );
+  expect(readFileSync(join(project, "source/a.txt"), "utf8")).toBe("source");
+  expect(readFileSync(join(project, "target/a.txt"), "utf8")).toBe("target");
+  rmSync(join(project, "target/a.txt"));
+  symlinkSync(join(root, "missing"), join(project, "target/a.txt"));
+  expect(() =>
+    files.moveProjectFile(context(), {
+      path: "source/a.txt",
+      directory: "target",
+    }),
+  ).toThrow();
+  expect(readFileSync(join(project, "source/a.txt"), "utf8")).toBe("source");
+  expect(existsSync(join(root, "missing"))).toBe(false);
+});
+
+it("rejects directory creation and moves through private paths, traversal and links", () => {
+  file("notes.txt", "keep");
+  mkdirSync(join(project, ".git"));
+  mkdirSync(join(project, ".codegraph"));
+  symlinkSync(root, join(project, "alias"));
+  symlinkSync(join(project, "notes.txt"), join(project, "link.txt"));
+  for (const directory of [
+    "..",
+    ".git",
+    ".codegraph",
+    "private-state",
+    "alias",
+  ])
+    for (const operation of [
+      () => files.createProjectDirectory(context(), { directory, name: "new" }),
+      () => files.moveProjectFile(context(), { path: "notes.txt", directory }),
+    ])
+      expect(operation).toThrow();
+  for (const name of [
+    "..",
+    "a/b",
+    ".git",
+    ".miracle",
+    ".codegraph",
+    "node_modules",
+  ])
+    expect(() =>
+      files.createProjectDirectory(context(), { directory: "", name }),
+    ).toThrow();
+  expect(() =>
+    files.moveProjectFile(context(), { path: "link.txt", directory: "" }),
+  ).toThrow();
+  expect(() =>
+    files.moveProjectFile(context(), { path: ".git", directory: "" }),
+  ).toThrow();
+  expect(readFileSync(join(project, "notes.txt"), "utf8")).toBe("keep");
+});
+
+it("authenticates folder creation and protects both move paths from agent work", async () => {
+  file("notes.txt", "keep");
+  const app = Fastify();
+  const store = routeStore(app);
+  registerProjectRoutes(app, store, (request) => {
+    if (request.headers["x-test-session"] !== "allowed")
+      throw problem(401, "Session required");
+  });
+  const headers = { "x-test-session": "allowed" };
+  try {
+    const folder = {
+      method: "POST" as const,
+      url: "/api/project/directory",
+      payload: { directory: "", name: "docs" },
+    };
+    expect((await app.inject(folder)).statusCode).toBe(401);
+    store.work.runAs(
+      { turnId: "folder-turn", chatId: "test-chat", isActive: () => true },
+      () => store.work.begin([{ kind: "file", id: "docs" }]),
+    );
+    expect((await app.inject({ ...folder, headers })).statusCode).toBe(423);
+    expect(existsSync(join(project, "docs"))).toBe(false);
+    store.work.releaseTurn("folder-turn");
+    expect((await app.inject({ ...folder, headers })).statusCode).toBe(201);
+    expect((await app.inject({ ...folder, headers })).statusCode).toBe(409);
+    const move = {
+      method: "POST" as const,
+      url: "/api/project/file/move",
+      payload: { path: "notes.txt", directory: "docs" },
+    };
+    expect((await app.inject(move)).statusCode).toBe(401);
+    for (const path of ["notes.txt", "docs/notes.txt"]) {
+      store.work.runAs(
+        { turnId: "test-turn", chatId: "test-chat", isActive: () => true },
+        () => store.work.begin([{ kind: "file", id: path }]),
+      );
+      expect((await app.inject({ ...move, headers })).statusCode).toBe(423);
+      expect(existsSync(join(project, "notes.txt"))).toBe(true);
+      store.work.releaseTurn("test-turn");
+    }
+    expect((await app.inject({ ...move, headers })).json()).toEqual({
+      from: "notes.txt",
+      path: "docs/notes.txt",
+      name: "notes.txt",
+    });
+    expect(readFileSync(join(project, "docs/notes.txt"), "utf8")).toBe("keep");
+  } finally {
+    await app.close();
+  }
+});
+
 it("creates empty files in the chosen directory with the exact user-supplied filename", () => {
   mkdirSync(join(project, "docs"));
   for (const input of [

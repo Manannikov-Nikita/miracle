@@ -7,6 +7,7 @@ import { visit, SKIP } from "unist-util-visit";
 import { fromHtmlIsomorphic } from "hast-util-from-html-isomorphic";
 import type { Root as MarkdownRoot } from "mdast";
 import type { Root as HtmlRoot } from "hast";
+import { markdownBodySource } from "./markdown-frontmatter";
 
 const mathOptions: KatexOptions = {
   trust: false,
@@ -98,7 +99,7 @@ export type MarkdownMathRange = {
 export function markdownMathRanges(source: string): MarkdownMathRange[] {
   if (!source.includes("$")) return [];
   const ranges: MarkdownMathRange[] = [];
-  visit(mathParser.parse(source), (node) => {
+  visit(mathParser.parse(markdownBodySource(source)), (node) => {
     // Tables are a single live-preview widget and render their own formulas.
     if (node.type === "table") return SKIP;
     if (node.type !== "math" && node.type !== "inlineMath") return;

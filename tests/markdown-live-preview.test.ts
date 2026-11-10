@@ -8,6 +8,55 @@ import {
 } from "../src/client/board/markdown-live-preview";
 
 describe("Markdown live preview", () => {
+  it("keeps YAML front matter literal while previewing the Markdown body", () => {
+    const metadata =
+      "---\nname: my_skill\ndescription: **literal** $value$ [link](https://example.com)\n---\n";
+    const source = metadata + "# Heading\n\n**Body** $x$";
+    const parts = planMarkdownPreview(source, new Set());
+    expect(
+      parts
+        .filter((p) => p.from < metadata.length)
+        .every(
+          (p) => p.kind === "line" && p.className === "md-preview-frontmatter",
+        ),
+    ).toBe(true);
+    expect(parts.find((p) => p.className === "md-preview-h1")?.from).toBe(
+      metadata.length,
+    );
+    expect(
+      parts
+        .filter((p) => p.kind === "math")
+        .map((p) => source.slice(p.from, p.to)),
+    ).toEqual(["$x$"]);
+  });
+
+  it("preserves front matter with BOM and CRLF and keeps an unfinished mapping editable", () => {
+    for (const source of [
+      "\uFEFF---\r\nname: my_skill\r\ndescription: $cost$\r\n---\r\n",
+      "---\nname: my_skill\ndescription: **literal** $cost$",
+    ]) {
+      const parts = planMarkdownPreview(source, new Set());
+      expect(parts.length).toBeGreaterThan(0);
+      expect(
+        parts.every(
+          (p) => p.kind === "line" && p.className === "md-preview-frontmatter",
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("retains ordinary horizontal rules and does not use YAML links as body references", () => {
+    expect(
+      planMarkdownPreview("---\n\n# Body", new Set()).some(
+        (p) => p.kind === "rule",
+      ),
+    ).toBe(true);
+    const source = "---\nname: my_skill\n[x]: https://example.com\n---\n\n[x]";
+    expect(
+      planMarkdownPreview(source, new Set()).some((p) => p.kind === "link"),
+    ).toBe(false);
+  });
+
   it("previews inline and display math with original source ranges", () => {
     const source =
       "Total $x_1 + x_2$\n\n$$\\frac{1}{2}$$\n\n$$\na^2+b^2=c^2\n$$";

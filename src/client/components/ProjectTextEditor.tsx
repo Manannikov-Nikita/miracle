@@ -68,7 +68,7 @@ export default function ProjectTextEditor({
       revealedRequest.current === revealRequest.requestId ||
       model.uri.toString() !==
         monaco.Uri.parse(
-          `miracle-file://${workspaceId}/${encodeURIComponent(file.path)}`,
+          `miracle-file://${workspaceId}/${encodeURIComponent(file.id)}`,
         ).toString()
     )
       return;
@@ -96,6 +96,7 @@ export default function ProjectTextEditor({
     isMarkdown,
     revealRequest,
     file.path,
+    file.id,
     file.content,
     workspaceId,
     onRevealComplete,
@@ -170,7 +171,7 @@ export default function ProjectTextEditor({
           </div>
         ) : (
           <Editor
-            path={`miracle-file://${workspaceId}/${encodeURIComponent(file.path)}`}
+            path={`miracle-file://${workspaceId}/${encodeURIComponent(file.id)}`}
             value={file.content}
             language={ready ? language : "plaintext"}
             theme="miracle-dark"

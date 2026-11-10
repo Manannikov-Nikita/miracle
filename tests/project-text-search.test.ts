@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   selection: vi.fn(),
   reveal: vi.fn(),
   focus: vi.fn(),
+  modelPaths: [] as string[],
 }));
 
 // Keep Monaco's actual URI parser: it canonicalizes encoded path separators,
@@ -28,6 +29,7 @@ vi.mock("@monaco-editor/react", async () => {
       value: string;
       onMount: (editor: unknown) => void;
     }) => {
+      harness.modelPaths.push(props.path);
       const latest = useRef(props);
       latest.current = props;
       useEffect(() => {
@@ -65,9 +67,44 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
+  harness.modelPaths = [];
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
+});
+
+it("keeps the same Monaco model when the open file moves to another folder", async () => {
+  const props: ComponentProps<typeof ProjectTextEditor> = {
+    workspaceId: "moving-project",
+    file: {
+      id: "stable-file-id",
+      path: "settings.json",
+      name: "settings.json",
+      content: "dirty",
+      savedContent: "saved",
+      revision: "disk-v1",
+      size: 5,
+      updatedAt: "now",
+    },
+    saving: false,
+    onChange: vi.fn(),
+    onSave: vi.fn(),
+  };
+  await act(async () => root.render(createElement(ProjectTextEditor, props)));
+  const modelPath = harness.modelPaths.at(-1);
+  await act(async () =>
+    root.render(
+      createElement(ProjectTextEditor, {
+        ...props,
+        file: { ...props.file, path: "docs/settings.json" },
+      }),
+    ),
+  );
+  expect(harness.modelPaths.at(-1)).toBe(modelPath);
+  expect(container.querySelector("textarea")?.value).toBe("dirty");
+  expect(container.querySelector(".project-file-path")?.textContent).toBe(
+    "docs/settings.json",
+  );
 });
 afterEach(async () => {
   await act(async () => root.unmount());

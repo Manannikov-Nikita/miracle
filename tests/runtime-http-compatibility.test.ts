@@ -163,7 +163,7 @@ it("Trino without a custom CA survives unsupported socket QoS", async () => {
   const f = await fixture();
   const result =
     await f.script(`import { createTrinoTransport } from ${JSON.stringify(pathToFileURL(resolve("src/server/trinoTransport.ts")).href)};
-const transport = createTrinoTransport({});
+const transport = createTrinoTransport({ name: 'QoS fixture', engine: 'trino', url: 'http://127.0.0.1:${f.port}', username: '', password: '' });
 try {
   const response = await transport.request('http://127.0.0.1:${f.port}/v1/statement', { method: 'POST', body: 'SELECT 1', headers: {}, signal: AbortSignal.timeout(3000) });
   console.log((await response.json()).value);

@@ -186,8 +186,9 @@ export default function ClickHouseConnectionOptions({
             Использовать HTTPS
           </label>
           <p className="muted connection-option-hint">
-            HTTPS обычно использует порт 8443. Сертификат сервера проверяется
-            всегда. Для публичного сертификата файл CA не нужен.
+            HTTPS обычно использует порт 8443. Miracle автоматически использует
+            встроенные и системные доверенные сертификаты. Если CA вашей
+            организации установлен в системе, искать PEM-файл не нужно.
           </p>
           <fieldset
             className="connection-certificates"
@@ -205,14 +206,20 @@ export default function ClickHouseConnectionOptions({
                     <span className="muted">
                       {present
                         ? names[field] || "Сохранён"
-                        : options?.tls === null ||
-                            options?.tls?.[field] === null
-                          ? "Будет удалён"
-                          : "Не выбран"}
+                        : field === "caCert"
+                          ? "Автоматически — сертификаты системы"
+                          : options?.tls === null ||
+                              options?.tls?.[field] === null
+                            ? "Будет удалён"
+                            : "Не выбран"}
                     </span>
                   </div>
                   <label className="button small connection-file-picker">
-                    {present ? "Заменить" : "Выбрать файл"}
+                    {present
+                      ? "Заменить"
+                      : field === "caCert"
+                        ? "Указать CA вручную"
+                        : "Выбрать файл"}
                     <input
                       aria-label={title}
                       type="file"
@@ -264,9 +271,12 @@ export default function ClickHouseConnectionOptions({
             Для mTLS на прокси без входа в ClickHouse оставьте выключенным.
           </p>
           <p className="muted connection-option-hint">
-            PEM, до 128 КиБ на файл. Для mTLS выберите сертификат клиента и
-            закрытый ключ без пароля. Материал сертификатов хранится на сервере
-            и не возвращается в форму.
+            PEM, до 128 КиБ на файл. Сертификат сервера и его имя проверяются
+            всегда. Ручной CA заменяет автоматический выбор только для этого
+            подключения; удалите его, чтобы снова использовать сертификаты
+            системы. Для mTLS выберите сертификат клиента и закрытый ключ без
+            пароля. Материал сертификатов хранится на сервере и не возвращается
+            в форму.
           </p>
           {hasCertificates && (
             <button

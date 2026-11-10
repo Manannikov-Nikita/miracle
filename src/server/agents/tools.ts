@@ -328,7 +328,7 @@ export const miracleTools = [
   ),
   tool(
     "create_board",
-    "Create a named board or presentation. A new presentation starts with one slide unless a full document is supplied. Optional document uses schemaVersion 1 and flat nodes and edges arrays. A presentation document has kind:'presentation' and ordered slides [{id,title,background}], and every node and edge has slideId. For nodes: type artifact, position {x,y}, data {title,kind: result|note|markdown|shape|text}; result nodes reference resultSetId. Use mutationId UUID. " +
+    "Create a named board or presentation. A new presentation starts with one slide unless a full document is supplied. Optional document uses schemaVersion 1 and flat nodes and edges arrays. A presentation document has kind:'presentation' and ordered slides [{id,title,background}], and every node and edge has slideId. For nodes: type artifact, position {x,y}, data {title,kind: result|note|markdown|shape|text|image}; result nodes reference resultSetId. Image nodes preserve an existing image reference {id,name,mimeType,size,alt?,fit?}; upload images through the UI first. Use mutationId UUID. " +
       shapeGuide +
       textGuide,
     { name: string, kind, document: object, mutationId: id },
@@ -337,7 +337,7 @@ export const miracleTools = [
   ),
   tool(
     "board_patch",
-    "Apply atomic board or presentation operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Presentations also support add_slide {slide:{id,title,background}}, update_slide {id,patch:{title?,background?}}, remove_slide {id} (includes children), reorder_slides {slideIds} (a complete permutation). Use slideId on every new presentation node and edge, including free-ended links; an edge cannot span slides. Presentation coordinates are 1600×900. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart/shape/textStyle are replaced as complete objects; read_board and preserve their unchanged fields. " +
+    "Apply atomic board or presentation operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Presentations also support add_slide {slide:{id,title,background}}, update_slide {id,patch:{title?,background?}}, remove_slide {id} (includes children), reorder_slides {slideIds} (a complete permutation). Use slideId on every new presentation node and edge, including free-ended links; an edge cannot span slides. Presentation coordinates are 1600×900. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart/shape/textStyle/image are replaced as complete objects; read_board and preserve their unchanged fields. " +
       shapeGuide +
       textGuide,
     {

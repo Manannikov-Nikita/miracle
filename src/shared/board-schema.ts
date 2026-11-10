@@ -1,3 +1,4 @@
+import { boardImageSchema } from "./board-images.js";
 import { z } from "zod";
 import { tableSpecSchema } from "./table-schema.js";
 import { dateRangeDates } from "./date-batch.js";
@@ -112,7 +113,15 @@ export const boardDocumentSchema = z
           data: z
             .object({
               title: z.string().max(500),
-              kind: z.enum(["result", "note", "markdown", "shape", "text"]),
+              kind: z.enum([
+                "result",
+                "note",
+                "markdown",
+                "shape",
+                "text",
+                "image",
+              ]),
+              image: boardImageSchema.optional(),
               text: z.string().max(200000).optional(),
               textStyle: textStyleSchema.optional(),
               shape: shapeSpecSchema.optional(),
@@ -128,6 +137,12 @@ export const boardDocumentSchema = z
             })
             .passthrough()
             .superRefine((data, context) => {
+              if (data.kind === "image" && !data.image)
+                context.addIssue({
+                  code: "custom",
+                  path: ["image"],
+                  message: "Для блока нужно изображение",
+                });
               if (data.kind === "shape" && !data.shape)
                 context.addIssue({
                   code: "custom",

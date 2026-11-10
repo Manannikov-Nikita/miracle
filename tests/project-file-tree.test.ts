@@ -69,6 +69,189 @@ describe("project file tree", () => {
       ),
     );
   }
+  function tree() {
+    return container.querySelector<HTMLDivElement>('[role="tree"]')!;
+  }
+  async function drag(
+    path: string,
+    target: () => HTMLElement,
+    checkEnter = false,
+  ) {
+    const data = new Map<string, string>();
+    const transfer = {
+      effectAllowed: "",
+      dropEffect: "",
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) || "",
+    };
+    const dispatch = (node: HTMLElement, type: string) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: transfer });
+      node.dispatchEvent(event);
+      return event;
+    };
+    await act(async () => dispatch(item(path), "dragstart"));
+    await act(async () => {
+      const enter = dispatch(target(), "dragenter");
+      if (checkEnter) {
+        expect(enter.defaultPrevented).toBe(true);
+        expect(transfer.dropEffect).toBe("move");
+      }
+      dispatch(target(), "dragover");
+      dispatch(target(), "drop");
+    });
+  }
+
+  it("moves dragged files into folders and back to the root", async () => {
+    const moved: { path: string; directory: string }[] = [];
+    await render({
+      onMoveFile: async (input) => {
+        moved.push(input);
+        return {
+          from: input.path,
+          path: input.directory
+            ? `${input.directory}/${input.path.split("/").at(-1)}`
+            : input.path.split("/").at(-1)!,
+          name: input.path.split("/").at(-1)!,
+        };
+      },
+    });
+    expect(item("README.md").draggable).toBe(true);
+    expect(item("docs").draggable).toBe(false);
+    await drag("README.md", () => item("docs"));
+    const treeRows = [...tree().querySelectorAll('[role="treeitem"]')];
+    await drag("docs/guide.md", () => {
+      expect([...tree().querySelectorAll('[role="treeitem"]')]).toEqual(
+        treeRows,
+      );
+      expect(tree().textContent).toContain("Переместить в корень проекта");
+      return tree();
+    });
+    expect(moved).toEqual([
+      { path: "README.md", directory: "docs" },
+      { path: "docs/guide.md", directory: "" },
+    ]);
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it("reports failed moves and retains the source row", async () => {
+    await render({
+      onMoveFile: async () => {
+        throw new Error("Имя уже занято");
+      },
+    });
+    await drag("README.md", () => item("docs"));
+    expect(onNotify).toHaveBeenCalledWith("Имя уже занято", "error");
+    expect(item("README.md")).toBeTruthy();
+  });
+
+  it("accepts root drops on tree background without adding a toolbar button", async () => {
+    const toolbar = document.body.appendChild(document.createElement("div"));
+    const moves: { path: string; directory: string }[] = [];
+    try {
+      await render({
+        actionsTarget: toolbar,
+        onMoveFile: async (input) => {
+          moves.push(input);
+          return { from: input.path, path: "guide.md", name: "guide.md" };
+        },
+      });
+      expect(toolbar.querySelectorAll("button")).toHaveLength(2);
+      expect(toolbar.textContent).not.toContain("Корень проекта");
+      expect(tree().textContent).not.toContain("Переместить в корень проекта");
+      await click("docs");
+      await drag("docs/guide.md", tree, true);
+      expect(moves).toEqual([{ path: "docs/guide.md", directory: "" }]);
+      expect(tree().textContent).not.toContain("Переместить в корень проекта");
+      expect(onNotify).toHaveBeenCalledWith(
+        "Файл guide.md перемещён",
+        "success",
+      );
+    } finally {
+      toolbar.remove();
+    }
+  });
+
+  it("does not turn no-op folder drops or drops on file rows into root moves", async () => {
+    const move = vi.fn();
+    const bubbled = vi.fn();
+    await render({ onMoveFile: move });
+    await click("docs");
+    document.addEventListener("drop", bubbled);
+    try {
+      await drag("docs/guide.md", () => item("docs"));
+      expect(bubbled).not.toHaveBeenCalled();
+      await drag("docs/guide.md", () => item("README.md"));
+      expect(move).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("drop", bubbled);
+    }
+  });
+
+  it.each([
+    ["dragenter", "README.md"],
+    ["dragover", "README.md"],
+    ["dragenter", "docs"],
+    ["dragover", "docs"],
+  ])(
+    "clears root highlight on %s over invalid target %s",
+    async (eventType, path) => {
+      const move = vi.fn();
+      await render({ onMoveFile: move });
+      await click("docs");
+      const transfer = { effectAllowed: "", dropEffect: "", setData: vi.fn() };
+      const dispatch = async (
+        node: HTMLElement,
+        type: string,
+        relatedTarget: HTMLElement | null = null,
+      ) => {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperties(event, {
+          dataTransfer: { value: transfer },
+          relatedTarget: { value: relatedTarget },
+        });
+        await act(async () => node.dispatchEvent(event));
+        return event;
+      };
+      await dispatch(item("docs/guide.md"), "dragstart");
+      await dispatch(tree(), "dragenter");
+      expect(tree().classList.contains("project-root-drop-active")).toBe(true);
+      await dispatch(tree(), "dragleave", item(path));
+      const rejected = await dispatch(item(path), eventType);
+      expect(rejected.defaultPrevented).toBe(false);
+      expect(tree().classList.contains("project-root-drop-active")).toBe(false);
+      await dispatch(item(path), "drop");
+      expect(move).not.toHaveBeenCalled();
+    },
+  );
+
+  it("clears selection from whitespace and Escape while keeping the open file and keyboard navigation", async () => {
+    await render();
+    await click("docs");
+    await click("docs/guide.md");
+    await act(async () => tree().click());
+    expect(tree().querySelector('[aria-selected="true"]')).toBeNull();
+    expect(document.activeElement).toBe(tree());
+    expect(onOpenFile).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      tree().dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      ),
+    );
+    expect(document.activeElement).toBe(item("docs"));
+    const escaped = vi.fn();
+    document.addEventListener("keydown", escaped);
+    try {
+      await key("docs", "Escape");
+      expect(escaped).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", escaped);
+    }
+    expect(tree().querySelector('[aria-selected="true"]')).toBeNull();
+    expect(item("docs").getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(tree());
+    expect(onOpenFile).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.useFakeTimers();

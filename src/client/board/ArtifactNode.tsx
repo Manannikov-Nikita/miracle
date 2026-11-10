@@ -1,3 +1,4 @@
+import ImageContent from "./ImageContent";
 import {
   createContext,
   memo,
@@ -102,7 +103,8 @@ function ArtifactNode({
   const actions = useContext(BoardActions);
   const editable = actions.editable && (actions.canEditNode?.(id) ?? true);
   const presentation = actions.presentation === true;
-  const freeform = data.kind === "shape" || data.kind === "text";
+  const freeform =
+    data.kind === "shape" || data.kind === "text" || data.kind === "image";
   const inlineEditable = editable && !presentation;
   const colors = presentation
     ? presentationColors(actions.slideBackground ?? "#ffffff")
@@ -378,6 +380,13 @@ function ArtifactNode({
                 ? (table) => actions.update(id, { table })
                 : undefined
             }
+          />
+        )}
+        {data.kind === "image" && data.image && (
+          <ImageContent
+            key={data.image.id}
+            image={data.image}
+            title={data.title}
           />
         )}
         {data.kind === "note" && (

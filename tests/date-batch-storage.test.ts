@@ -121,6 +121,11 @@ function legacySix(path: string) {
   `);
   return db;
 }
+function legacySeven(path: string) {
+  const db = fresh(path);
+  db.sqlite.exec("DROP TABLE board_images; PRAGMA user_version=7;");
+  return db;
+}
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
   for (const path of roots.splice(0))
@@ -246,7 +251,7 @@ describe("date batch storage migration", () => {
 });
 
 describe("versioned workspace backups", () => {
-  it.each([1, 2, 3, 4, 5, 6, 7])(
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])(
     "preserves version %i on backup/restore, then permits upgrading old backups",
     async (schemaVersion) => {
       const root = makeRoot();
@@ -264,7 +269,9 @@ describe("versioned workspace backups", () => {
                   ? legacyFive(path)
                   : schemaVersion === 6
                     ? legacySix(path)
-                    : fresh(path);
+                    : schemaVersion === 7
+                      ? legacySeven(path)
+                      : fresh(path);
       if (schemaVersion >= 2)
         db.query(
           "INSERT INTO query_runs(id,status,source,batch) VALUES('batch','interrupted','{}',?1)",

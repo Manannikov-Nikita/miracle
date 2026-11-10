@@ -6,11 +6,19 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CaretLeft, CaretRight, Copy, Table } from "@phosphor-icons/react";
+import {
+  CaretLeft,
+  CaretRight,
+  Copy,
+  MarkdownLogo,
+  Table,
+} from "@phosphor-icons/react";
 import type { Cell, ResultSet } from "../../shared/types";
-import { getResultRows } from "../api";
+import { api, getResultRows } from "../api";
 import { describeError } from "../error-message";
 import { ErrorBox, IconButton, Spinner } from "./UI";
+import { tableToMarkdown } from "../../shared/markdown-table";
+import { writeClipboardText } from "../clipboard-text";
 export function cellText(value: Cell | undefined): string {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "object") return JSON.stringify(value);
@@ -41,6 +49,7 @@ export default function ResultTable({
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
+  const [copyingMarkdown, setCopyingMarkdown] = useState(false);
   const parent = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setOffset(0);
@@ -129,6 +138,36 @@ export default function ResultTable({
       onNotify("Текущая страница скопирована", "success");
     } catch {
       onNotify("Не удалось скопировать. Выделите данные вручную.", "error");
+    }
+  }
+  async function copyMarkdown() {
+    if (copyingMarkdown) return;
+    setCopyingMarkdown(true);
+    const controller = new AbortController();
+    try {
+      // Date-batch results grow under the same ID; never put a partial SQL
+      // result into the board's immutable snapshot cache.
+      const snapshot = api<{ rows: Cell[][] }>(
+        `/api/result-sets/${encodeURIComponent(result.id)}/table`,
+        { signal: controller.signal },
+      );
+      await writeClipboardText(
+        snapshot.then(({ rows: allRows }) =>
+          tableToMarkdown(
+            result.columns.map((column) => column.name),
+            allRows.map((row) => row.map(cellText)),
+          ),
+        ),
+      );
+      onNotify("Таблица скопирована в Markdown", "success");
+    } catch {
+      onNotify(
+        "Не удалось скопировать таблицу в Markdown. Попробуйте ещё раз.",
+        "error",
+      );
+    } finally {
+      controller.abort();
+      setCopyingMarkdown(false);
     }
   }
   return (
@@ -241,6 +280,15 @@ export default function ResultTable({
             onClick={copy}
           >
             <Copy size={14} />
+          </IconButton>
+          <IconButton
+            label="Скопировать таблицу в Markdown"
+            disabled={
+              busy || !!error || copyingMarkdown || !result.columns.length
+            }
+            onClick={() => void copyMarkdown()}
+          >
+            <MarkdownLogo size={14} />
           </IconButton>
           {result.rowCount > limit && (
             <>

@@ -35,6 +35,7 @@ describe("inline project file creation", () => {
   let root: Root;
   let props: ComponentProps<typeof ProjectFileTree>;
   let created: ProjectTextFile[];
+  let createdFolders: { path: string; name: string; kind: "directory" }[];
   const onOpenFile = vi.fn();
   const onClearFilter = vi.fn();
   const create =
@@ -57,21 +58,21 @@ describe("inline project file creation", () => {
     expect(match).toBeTruthy();
     return match!;
   }
-  function input() {
+  function input(folder = false) {
     return container.querySelector<HTMLInputElement>(
-      'input[aria-label="Имя нового файла"]',
+      `input[aria-label="${folder ? "Имя новой папки" : "Имя нового файла"}"]`,
     )!;
   }
   async function click(target: HTMLElement) {
     await act(async () => target.click());
   }
-  async function name(value: string) {
+  async function name(value: string, folder = false) {
     await act(async () => {
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
         "value",
-      )!.set!.call(input(), value);
-      input().dispatchEvent(new Event("input", { bubbles: true }));
+      )!.set!.call(input(folder), value);
+      input(folder).dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
   async function render(change: Partial<typeof props> = {}) {
@@ -93,12 +94,23 @@ describe("inline project file creation", () => {
     localStorage.clear();
     vi.clearAllMocks();
     created = [];
+    createdFolders = [];
     create.mockImplementation(async ({ directory, name }) => {
       const result = document(directory ? `${directory}/${name}` : name);
       created.push(result);
       return result;
     });
     vi.mocked(api).mockImplementation(async (url, options) => {
+      if (url === "/api/project/directory" && options?.method === "POST") {
+        const { directory, name } = JSON.parse(options.body as string);
+        const folder = {
+          path: directory ? `${directory}/${name}` : name,
+          name,
+          kind: "directory" as const,
+        };
+        createdFolders.push(folder);
+        return folder;
+      }
       if (options?.method === "POST")
         return create(JSON.parse(options.body as string));
       const request = new URL(url, "http://localhost");
@@ -109,6 +121,13 @@ describe("inline project file creation", () => {
           ...original,
           entries: [
             ...original.entries,
+            ...createdFolders.filter(
+              (folder) =>
+                folder.path.slice(
+                  0,
+                  Math.max(0, folder.path.lastIndexOf("/")),
+                ) === path,
+            ),
             ...created
               .filter(
                 (file) =>
@@ -141,6 +160,21 @@ describe("inline project file creation", () => {
       onClearFilter,
     };
   });
+
+  it("creates a folder under the selected parent and selects it for the next file", async () => {
+    await render({ actionsTarget: toolbar });
+    await click(item("docs"));
+    await click(button("Создать папку"));
+    expect(window.document.activeElement).toBe(input(true));
+    await name("Заметки", true);
+    await submit();
+    expect(item("docs/Заметки").getAttribute("aria-selected")).toBe("true");
+    expect(onOpenFile).not.toHaveBeenCalled();
+    await click(button("Создать файл"));
+    await name("draft.md");
+    await submit();
+    expect(onOpenFile).toHaveBeenCalledWith(document("docs/Заметки/draft.md"));
+  });
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
@@ -168,7 +202,7 @@ describe("inline project file creation", () => {
   );
 
   it.each([false, true])(
-    "creates inside the selected folder, beside a selected file, then returns to the root explicitly (toolbar portal: %s)",
+    "creates inside the selected folder, beside a selected file, then returns to the root through whitespace (toolbar portal: %s)",
     async (portal) => {
       await render(portal ? { actionsTarget: toolbar } : {});
       if (portal) {
@@ -194,7 +228,11 @@ describe("inline project file creation", () => {
         directory: "docs",
         name: "рядом.md",
       });
-      await click(button("Корень проекта"));
+      expect(
+        container.querySelector('[aria-label="Корень проекта"]'),
+      ).toBeNull();
+      expect(toolbar.querySelector('[aria-label="Корень проекта"]')).toBeNull();
+      await click(container.querySelector<HTMLElement>('[role="tree"]')!);
       await click(button("Создать файл"));
       await name("root.txt");
       await submit();
@@ -204,6 +242,21 @@ describe("inline project file creation", () => {
       });
     },
   );
+
+  it("creates folders at the root when no tree item is selected", async () => {
+    await render({ actionsTarget: toolbar });
+    await click(item("docs"));
+    await click(container.querySelector<HTMLElement>('[role="tree"]')!);
+    await click(button("Создать папку"));
+    expect(container.querySelector("form")?.getAttribute("aria-label")).toBe(
+      "Новая папка: корень проекта",
+    );
+    await name("root-folder", true);
+    await submit();
+    expect(createdFolders).toEqual([
+      { path: "root-folder", name: "root-folder", kind: "directory" },
+    ]);
+  });
 
   it("keeps duplicate errors and the entered name inline, then permits a corrected retry", async () => {
     create.mockRejectedValueOnce(
@@ -228,6 +281,7 @@ describe("inline project file creation", () => {
 
   it("cancels on Escape without requests and leaves Enter available for native form submission", async () => {
     await render();
+    await click(item("docs"));
     await click(button("Создать файл"));
     await name("cancel.py");
     const enter = new KeyboardEvent("keydown", {
@@ -250,6 +304,11 @@ describe("inline project file creation", () => {
     expect(escape.defaultPrevented).toBe(true);
     expect(input()).toBeNull();
     expect(create).not.toHaveBeenCalled();
+    expect(item("docs").getAttribute("aria-selected")).toBe("true");
+    await click(button("Создать файл"));
+    expect(container.querySelector("form")?.getAttribute("aria-label")).toBe(
+      "Новый файл: docs",
+    );
   });
 
   it("rejects paths locally and suppresses duplicate submissions while creation is pending", async () => {

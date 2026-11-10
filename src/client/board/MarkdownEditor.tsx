@@ -30,7 +30,7 @@ import {
   activeSourceLines,
   externalDocumentChange,
   MAX_MARKDOWN_LENGTH,
-  markdownParser,
+  parseMarkdownPreview,
   planMarkdownPreview,
   type PreviewPart,
 } from "./markdown-live-preview";
@@ -287,7 +287,7 @@ const previewField = StateField.define<{
   decorations: DecorationSet;
 }>({
   create(state) {
-    const tree = markdownParser.parse(state.doc.toString());
+    const tree = parseMarkdownPreview(state.doc.toString());
     return {
       tree,
       focused: false,
@@ -306,7 +306,7 @@ const previewField = StateField.define<{
     )
       return previous;
     const tree = transaction.docChanged
-      ? markdownParser.parse(transaction.newDoc.toString())
+      ? parseMarkdownPreview(transaction.newDoc.toString())
       : previous.tree;
     return {
       tree,

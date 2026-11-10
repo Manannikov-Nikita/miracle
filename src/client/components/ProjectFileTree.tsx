@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   CaretRight,
@@ -6,11 +12,17 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   Check,
   Plus,
   X,
 } from "@phosphor-icons/react";
-import type { ProjectTextFile, ProjectTree } from "../../shared/project-files";
+import type {
+  ProjectTextFile,
+  ProjectTree,
+  ProjectTreeEntry,
+} from "../../shared/project-files";
+import type { ProjectFileMover } from "../project-file-drafts";
 import { api } from "../api";
 import { IconButton } from "./UI";
 import { useAgentWorkLocks } from "../agents/useAgentWork";
@@ -30,6 +42,7 @@ export default function ProjectFileTree({
   filter,
   revision,
   onOpenFile,
+  onMoveFile,
   onNotify,
   onClearFilter,
   actionsTarget,
@@ -38,6 +51,7 @@ export default function ProjectFileTree({
   filter: string;
   revision: number;
   onOpenFile: (file: ProjectTextFile) => void;
+  onMoveFile?: ProjectFileMover;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
   onClearFilter?: () => void;
   actionsTarget?: HTMLElement | null;
@@ -64,10 +78,16 @@ export default function ProjectFileTree({
   const [selected, setSelected] = useState("");
   const [selectedDirectory, setSelectedDirectory] = useState("");
   const [creatingIn, setCreatingIn] = useState<string | null>(null);
+  const [createKind, setCreateKind] = useState<"file" | "directory">("file");
   const [newName, setNewName] = useState("");
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
+  const [draggedFile, setDraggedFile] = useState<string | null>(null);
+  const draggedFileRef = useRef<string | null>(null);
+  const [dropPath, setDropPath] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
+  const movingRef = useRef(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
   const [opening, setOpening] = useState("");
@@ -102,7 +122,8 @@ export default function ProjectFileTree({
     );
   }
 
-  function startCreate() {
+  function startCreate(kind: "file" | "directory" = "file") {
+    if (movingRef.current) return;
     if (creatingIn !== null) {
       nameInput.current?.focus();
       return;
@@ -121,6 +142,7 @@ export default function ProjectFileTree({
     setExpanded(next);
     setNewName("");
     setCreateError("");
+    setCreateKind(kind);
     setCreatingIn(selectedDirectory);
   }
 
@@ -139,7 +161,9 @@ export default function ProjectFileTree({
       /[/\\\u0000-\u001f\u007f]/.test(newName)
     ) {
       setCreateError(
-        "Введите имя файла без разделителей пути, например notes.md",
+        createKind === "directory"
+          ? "Введите имя папки без разделителей пути"
+          : "Введите имя файла без разделителей пути, например notes.md",
       );
       nameInput.current?.focus();
       return;
@@ -150,18 +174,31 @@ export default function ProjectFileTree({
     setCreating(true);
     setCreateError("");
     try {
-      const file = await api<ProjectTextFile>("/api/project/file", {
-        method: "POST",
-        body: JSON.stringify({ directory, name: newName }),
-      });
+      const file = await api<ProjectTextFile | ProjectTreeEntry>(
+        `/api/project/${createKind}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ directory, name: newName }),
+        },
+      );
       if (!mounted.current) return;
       setCreatingIn(null);
       void load(directory);
       if (selectionRevision.current === selectionAtStart) {
         setSelected(file.path);
-        setSelectedDirectory(directory);
-        onOpenFile(file);
-      } else onNotify(`Файл ${file.name} создан`, "success");
+        setSelectedDirectory(
+          createKind === "directory" ? file.path : directory,
+        );
+        if (createKind === "file") onOpenFile(file as ProjectTextFile);
+        else {
+          setExpanded((current) => new Set([...current, file.path]));
+          void load(file.path);
+        }
+      } else
+        onNotify(
+          `${createKind === "directory" ? "Папка" : "Файл"} ${file.name} ${createKind === "directory" ? "создана" : "создан"}`,
+          "success",
+        );
     } catch (error) {
       if (mounted.current) setCreateError((error as Error).message);
     } finally {
@@ -172,11 +209,12 @@ export default function ProjectFileTree({
 
   function newFileRow(path: string, level: number) {
     if (creatingIn !== path) return null;
+    const folder = createKind === "directory";
     return (
       <form
         className="project-create-file"
         noValidate
-        aria-label={`Новый файл: ${path || "корень проекта"}`}
+        aria-label={`${folder ? "Новая папка" : "Новый файл"}: ${path || "корень проекта"}`}
         style={{ paddingLeft: 12 + (level - 1) * 14 + 18 }}
         onSubmit={(event) => {
           event.preventDefault();
@@ -184,11 +222,15 @@ export default function ProjectFileTree({
         }}
       >
         <div className="project-create-row">
-          <FileText size={15} aria-hidden="true" />
+          {folder ? (
+            <Folder size={15} aria-hidden="true" />
+          ) : (
+            <FileText size={15} aria-hidden="true" />
+          )}
           <input
             ref={nameInput}
-            aria-label="Имя нового файла"
-            placeholder="имя.ext"
+            aria-label={folder ? "Имя новой папки" : "Имя нового файла"}
+            placeholder={folder ? "имя папки" : "имя.ext"}
             value={newName}
             autoComplete="off"
             autoFocus
@@ -212,14 +254,20 @@ export default function ProjectFileTree({
             }}
           />
           <IconButton
-            label="Создать файл с этим именем"
+            label={
+              folder
+                ? "Создать папку с этим именем"
+                : "Создать файл с этим именем"
+            }
             onClick={() => void createFile()}
             disabled={creating}
           >
             {creating ? <span aria-hidden="true">…</span> : <Check size={13} />}
           </IconButton>
           <IconButton
-            label="Отменить создание файла"
+            label={
+              folder ? "Отменить создание папки" : "Отменить создание файла"
+            }
             onClick={cancelCreate}
             disabled={creating}
           >
@@ -349,15 +397,35 @@ export default function ProjectFileTree({
   }
 
   function navigate(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (creatingIn !== null) cancelCreate();
+      else select("", true);
+      event.currentTarget.focus();
+      return;
+    }
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
       "button[role=treeitem]",
     );
-    if (!target) return;
     const items = [
       ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
         "button[role=treeitem]",
       ),
     ];
+    if (!target) {
+      const next =
+        event.key === "ArrowDown" || event.key === "Home"
+          ? items[0]
+          : event.key === "ArrowUp" || event.key === "End"
+            ? items.at(-1)
+            : undefined;
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
+      return;
+    }
     const index = items.indexOf(target);
     let next: HTMLButtonElement | undefined;
     if (event.key === "ArrowDown")
@@ -390,6 +458,96 @@ export default function ProjectFileTree({
     next?.focus();
   }
 
+  function clearDrag() {
+    draggedFileRef.current = null;
+    setDraggedFile(null);
+    setDropPath(null);
+  }
+
+  async function moveFile(path: string, directory: string) {
+    if (!onMoveFile || movingRef.current) return;
+    const parent = path.slice(0, Math.max(0, path.lastIndexOf("/")));
+    if (parent === directory) return;
+    const selectionAtStart = selectionRevision.current;
+    movingRef.current = true;
+    setMoving(path);
+    openRequest.current?.abort();
+    setOpening("");
+    cancelCreate();
+    try {
+      const result = await onMoveFile({ path, directory });
+      if (!mounted.current) return;
+      onClearFilter?.();
+      void load(parent);
+      void load(directory);
+      if (directory) setExpanded((current) => new Set([...current, directory]));
+      if (selectionRevision.current === selectionAtStart) {
+        setSelected(result.path);
+        setSelectedDirectory(directory);
+      }
+      onNotify(`Файл ${result.name} перемещён`, "success");
+    } catch (error) {
+      if (mounted.current) onNotify((error as Error).message, "error");
+    } finally {
+      movingRef.current = false;
+      if (mounted.current) setMoving(null);
+    }
+  }
+
+  function isTreeBackground(target: EventTarget) {
+    return (
+      target instanceof Element &&
+      !target.closest('[role="treeitem"], .project-create-file, button, input')
+    );
+  }
+
+  function dropTarget(directory: string) {
+    const accepts = (event: DragEvent<HTMLElement>) => {
+      const path = draggedFileRef.current;
+      return (
+        !!path &&
+        !movingRef.current &&
+        (directory !== "" || isTreeBackground(event.target)) &&
+        path.slice(0, Math.max(0, path.lastIndexOf("/"))) !== directory
+      );
+    };
+    return {
+      onDragEnter: (event: DragEvent<HTMLElement>) => {
+        event.stopPropagation();
+        if (!accepts(event)) {
+          if (draggedFileRef.current) setDropPath(null);
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setDropPath(directory);
+      },
+      onDragOver: (event: DragEvent<HTMLElement>) => {
+        event.stopPropagation();
+        if (!accepts(event)) {
+          if (draggedFileRef.current) setDropPath(null);
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setDropPath(directory);
+      },
+      onDragLeave: (event: DragEvent<HTMLElement>) => {
+        event.stopPropagation();
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          setDropPath(null);
+      },
+      onDrop: (event: DragEvent<HTMLElement>) => {
+        event.stopPropagation();
+        if (!accepts(event)) return;
+        event.preventDefault();
+        const path = draggedFileRef.current!;
+        clearDrag();
+        void moveFile(path, directory);
+      },
+    };
+  }
+
   function fileRow(
     path: string,
     name: string,
@@ -407,6 +565,22 @@ export default function ProjectFileTree({
         aria-level={level}
         aria-selected={selected === path}
         aria-busy={opening === path}
+        disabled={moving === path}
+        draggable={!!onMoveFile && !work && !moving && !creating}
+        onDragStart={(event) => {
+          if (!onMoveFile || work || movingRef.current || creatingRef.current) {
+            event.preventDefault();
+            return;
+          }
+          draggedFileRef.current = path;
+          setDraggedFile(path);
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData(
+            "application/x-miracle-project-file",
+            path,
+          );
+        }}
+        onDragEnd={clearDrag}
         key={path}
         title={path}
         className={`project-file-row ${selected === path ? "selected" : ""}${work ? " agent-work-active" : ""}`}
@@ -460,7 +634,8 @@ export default function ProjectFileTree({
                 aria-level={level}
                 aria-expanded={expanded.has(entry.path)}
                 aria-selected={selected === entry.path}
-                className={`project-file-row project-folder-row ${selected === entry.path ? "selected" : ""}`}
+                className={`project-file-row project-folder-row ${selected === entry.path ? "selected" : ""}${dropPath === entry.path ? " project-drop-active" : ""}`}
+                {...dropTarget(entry.path)}
                 title={entry.path}
                 style={{ paddingLeft: 12 + (level - 1) * 14 }}
                 onClick={() => toggle(entry.path)}
@@ -501,20 +676,20 @@ export default function ProjectFileTree({
   const actions = (
     <>
       <IconButton
-        label="Корень проекта"
-        aria-pressed={selected === ""}
-        title="Выбрать корень проекта"
-        onClick={() => select("", true)}
-      >
-        <Folder size={14} />
-      </IconButton>
-      <IconButton
         label="Создать файл"
         title={`Создать файл: ${selectedDirectory || "корень проекта"}`}
-        onClick={startCreate}
-        disabled={creating}
+        onClick={() => startCreate()}
+        disabled={creating || !!moving}
       >
         <Plus size={14} />
+      </IconButton>
+      <IconButton
+        label="Создать папку"
+        title={`Создать папку: ${selectedDirectory || "корень проекта"}`}
+        onClick={() => startCreate("directory")}
+        disabled={creating || !!moving}
+      >
+        <FolderPlus size={14} />
       </IconButton>
     </>
   );
@@ -527,9 +702,16 @@ export default function ProjectFileTree({
             <div className="project-tree-actions">{actions}</div>
           )}
       <div
-        className="project-file-tree"
+        className={`project-file-tree${dropPath === "" ? " project-root-drop-active" : ""}`}
         role="tree"
         aria-label="Файлы проекта"
+        tabIndex={0}
+        {...dropTarget("")}
+        onClick={(event) => {
+          if (!isTreeBackground(event.target)) return;
+          select("", true);
+          event.currentTarget.focus();
+        }}
         onKeyDown={navigate}
       >
         {search && creatingIn === null ? (
@@ -562,6 +744,9 @@ export default function ProjectFileTree({
           </>
         ) : (
           directory("", 1)
+        )}
+        {draggedFile?.includes("/") && (
+          <p className="project-root-drop-hint">Переместить в корень проекта</p>
         )}
       </div>
     </>

@@ -277,6 +277,15 @@ export class WorkspaceOperations {
     return { ok: true as const };
   }
   private refs(id: string, document: BoardDocument) {
+    for (const node of document.nodes) {
+      if (
+        node.data.image &&
+        !this.db.query("SELECT id FROM board_images WHERE id=?1", [
+          node.data.image.id,
+        ]).rowCount
+      )
+        throw problem(400, "Изображение блока не найдено");
+    }
     this.db.query("DELETE FROM board_result_refs WHERE board_id=?1", [id]);
     const ids = [
       ...new Set(

@@ -93,6 +93,51 @@ export default function Inspector({
             }}
           />
         )}
+        {node.data.kind === "image" && node.data.image && (
+          <>
+            <label>
+              Описание изображения
+              <textarea
+                aria-label="Описание изображения"
+                maxLength={2000}
+                value={node.data.image.alt ?? ""}
+                readOnly={!editable}
+                onChange={(event) =>
+                  change({
+                    ...node,
+                    data: {
+                      ...node.data,
+                      image: { ...node.data.image!, alt: event.target.value },
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              Размещение
+              <select
+                aria-label="Размещение изображения"
+                disabled={!editable}
+                value={node.data.image.fit ?? "contain"}
+                onChange={(event) =>
+                  change({
+                    ...node,
+                    data: {
+                      ...node.data,
+                      image: {
+                        ...node.data.image!,
+                        fit: event.target.value as "contain" | "cover",
+                      },
+                    },
+                  })
+                }
+              >
+                <option value="contain">Вписать целиком</option>
+                <option value="cover">Заполнить блок</option>
+              </select>
+            </label>
+          </>
+        )}
         {node.data.kind === "text" && (
           <TextBlockSettings
             key={node.id}

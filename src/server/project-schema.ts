@@ -1,3 +1,6 @@
+export const boardImagesSchema = `
+CREATE TABLE IF NOT EXISTS board_images(id TEXT PRIMARY KEY,mime_type TEXT NOT NULL,bytes BLOB NOT NULL);
+`;
 export const agentImagesSchema = `
 CREATE TABLE agent_images(chat_id TEXT NOT NULL REFERENCES agent_chats(id) ON DELETE CASCADE,id TEXT NOT NULL,mime_type TEXT NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(chat_id,id));
 `;
@@ -24,5 +27,6 @@ CREATE INDEX agent_messages_chat ON agent_messages(chat_id,created_at);
 CREATE INDEX agent_turns_chat ON agent_turns(chat_id,created_at);
 ${agentQueryRunsSchema}
 ${agentModelSettingsMigration}
-PRAGMA user_version=7;
+${boardImagesSchema}
+PRAGMA user_version=8;
 `;
