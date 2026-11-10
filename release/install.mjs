@@ -23,10 +23,11 @@ if (!["darwin", "linux"].includes(process.platform))
 if (process.platform === "darwin" && process.arch !== "arm64")
   throw new Error("Miracle supports macOS on Apple Silicon (ARM64) only.");
 
-const [sourceArgument, rootArgument, binArgument] = process.argv.slice(2);
+const [sourceArgument, rootArgument, binArgument, ...options] =
+  process.argv.slice(2);
 if (!sourceArgument || !rootArgument)
   throw new Error(
-    "Usage: bundled-node install.mjs extracted-payload install-root [bin-directory]",
+    "Usage: bundled-node install.mjs extracted-payload install-root [bin-directory] [--beta]",
   );
 const source = resolve(sourceArgument),
   root = resolve(rootArgument);
@@ -34,20 +35,31 @@ const bin = resolve(binArgument || join(homedir(), ".local", "bin"));
 const version = JSON.parse(
   await readFile(join(source, "package.json"), "utf8"),
 ).version;
+// POSIX ERE syntax lets the shell launcher enforce the same path grammar.
+const versionPattern =
+  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.([1-9][0-9]*))?$/;
 function versionParts(value) {
-  if (
-    typeof value !== "string" ||
-    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)
-  )
+  const match = typeof value === "string" && versionPattern.exec(value);
+  if (!match || match[0] !== value)
     throw new Error(
       "Invalid installation version; inspect the version pointer before retrying.",
     );
-  const parts = value.split(".").map(Number);
+  const parts = match.slice(1, 4).map(Number);
+  if (match[5] !== undefined) parts.push(Number(match[5]));
   if (!parts.every(Number.isSafeInteger))
     throw new Error("Invalid installation version.");
-  return parts;
+  // A stable build ranks above every numbered beta of the same base version.
+  return parts.length === 3 ? [...parts, Infinity] : parts;
 }
 const targetVersion = versionParts(version);
+if (Number.isFinite(targetVersion[3])) {
+  if (options.length !== 1 || options[0] !== "--beta")
+    throw new Error("Beta installation requires exactly one --beta flag.");
+} else if (options.length) {
+  throw new Error(
+    "This stable installer takes no flags. Use the versioned beta installer with --beta.",
+  );
+}
 const nodeAt = (dir) => join(dir, "runtime/bin/node");
 const cliAt = (dir) => join(dir, "dist/server/server/cli.js");
 function validate(dir) {
@@ -99,7 +111,7 @@ try {
   );
   if (activeVersion !== undefined) {
     const active = versionParts(activeVersion);
-    for (let index = 0; index < 3; index++) {
+    for (let index = 0; index < targetVersion.length; index++) {
       if (targetVersion[index] < active[index])
         throw new Error(
           `Refusing to downgrade Miracle ${activeVersion} to ${version}; running projects and the active installation are unchanged.`,
@@ -221,7 +233,30 @@ try {
   }
   await mkdir(bin, { recursive: true, mode: 0o700 });
   const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
-  const launcher = `#!/bin/sh\nset -eu\nMIRACLE_INSTALL_ROOT=${quote(root)}\nMIRACLE_BIN_DIR=${quote(bin)}\nexport MIRACLE_INSTALL_ROOT MIRACLE_BIN_DIR\nIFS= read -r miracle_version < "$MIRACLE_INSTALL_ROOT/current-version"\ncase "$miracle_version" in *[!0-9.]*|'') echo 'Invalid Miracle version pointer' >&2; exit 1;; esac\nexec "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/runtime/bin/node" "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/dist/server/server/cli.js" "$@"\n`;
+  const launcher = `#!/bin/sh
+set -eu
+MIRACLE_INSTALL_ROOT=${quote(root)}
+MIRACLE_BIN_DIR=${quote(bin)}
+export MIRACLE_INSTALL_ROOT MIRACLE_BIN_DIR
+# Reject non-text bytes before awk, which may truncate a record at a NUL.
+if ! miracle_version=$(
+  PATH=/usr/bin:/bin LC_ALL=C tr -c '0123456789.beta\\n-' '?' < "$MIRACLE_INSTALL_ROOT/current-version" |
+  PATH=/usr/bin:/bin LC_ALL=C awk -F '[.-]' '
+    NR == 1 && /${versionPattern.source}/ {
+      max = ${Number.MAX_SAFE_INTEGER}
+      if ($1 + 0 <= max && $2 + 0 <= max && $3 + 0 <= max && $5 + 0 <= max) version = $0
+    }
+    END {
+      if (NR != 1 || version == "") exit 1
+      print version
+    }
+  '
+); then
+  echo 'Invalid Miracle version pointer' >&2
+  exit 1
+fi
+exec "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/runtime/bin/node" "$MIRACLE_INSTALL_ROOT/versions/$miracle_version/dist/server/server/cli.js" "$@"
+`;
   await writeFile(join(bin, ".miracle.tmp"), launcher, { mode: 0o755 });
   await chmod(join(bin, ".miracle.tmp"), 0o755);
   await rename(join(bin, ".miracle.tmp"), join(bin, "miracle"));

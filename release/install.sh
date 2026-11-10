@@ -3,6 +3,10 @@ set -eu
 VERSION='__VERSION__'
 REPOSITORY='__REPOSITORY__'
 fail() { printf '%s\n' "$*" >&2; exit 1; }
+case "$VERSION" in
+ *-beta.*) [ "$#" -eq 1 ] && [ "$1" = "--beta" ] || fail 'Beta installation requires exactly one --beta flag.';;
+ *) [ "$#" -eq 0 ] || fail 'This stable installer takes no flags. Use the versioned beta installer with --beta.';;
+esac
 case "$(uname -s)" in
  Darwin) os=darwin; default_root="$HOME/Library/Application Support/Miracle";;
  Linux) os=linux; default_root="${XDG_DATA_HOME:-$HOME/.local/share}/miracle"; ldd --version 2>&1 | head -1 | grep -qiE 'glibc|GNU libc|GNU C Library' || fail 'Miracle requires GNU/Linux with glibc. musl/Alpine is unsupported.';;
@@ -34,4 +38,4 @@ awk -v top="miracle-$VERSION-$os-$arch" 'BEGIN{bad=0} /^\// || /(^|\/)\.\.($|\/)
 tar -tvzf "$temporary/$asset" | awk 'substr($0,1,1)!="-" && substr($0,1,1)!="d" {bad=1} END{exit bad}' || fail 'Release archive contains unsupported links.'
 tar -xzf "$temporary/$asset" -C "$temporary" || fail 'Release extraction failed; existing installation is unchanged.'
 payload="$temporary/miracle-$VERSION-$os-$arch"
-"$payload/runtime/bin/node" "$payload/install.mjs" "$payload" "$root" "$bin"
+"$payload/runtime/bin/node" "$payload/install.mjs" "$payload" "$root" "$bin" "$@"
