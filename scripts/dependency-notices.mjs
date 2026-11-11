@@ -97,7 +97,10 @@ for (const [path, info] of entries.sort(([a], [b]) => a.localeCompare(b))) {
     `## ${name} ${info.version}\n\nLicense: ${info.license || pkg.license}\nSource: ${repository || info.resolved}\n\n${texts.join("\n\n")}`,
   );
 }
-const output = `# Third-party notices\n\nGenerated from package-lock.json by scripts/dependency-notices.mjs. Includes server dependencies and browser dependencies bundled into the web application. Individual upstream licenses apply; Miracle's Apache-2.0 license does not replace them.\n\nNative release archives also contain Node.js; its complete upstream license is included at runtime/LICENSE. Browser dependencies are bundled by Vite and their notices are included below.\n\n${sections.join("\n\n---\n\n")}\n`;
+sections.push(
+  `## Pasta UI (adapted components)\n\nLicense: MIT\nSource: https://github.com/syeddhasnainn/pastaui/blob/1f6de38bf4dc82cf17bb662361b3c03bebbfc4d4/src/components/ai/context-breakdown.tsx\nSource: https://github.com/syeddhasnainn/pastaui/blob/1f6de38bf4dc82cf17bb662361b3c03bebbfc4d4/src/components/ai/agent-activity.tsx\n\n${await readFile(join(root, "licenses/upstream/pastaui-LICENSE"), "utf8")}`,
+);
+const output = `# Third-party notices\n\nGenerated from package-lock.json and adapted-source licenses by scripts/dependency-notices.mjs. Includes server dependencies and browser dependencies bundled into the web application. Individual upstream licenses apply; Miracle's Apache-2.0 license does not replace them.\n\nNative release archives also contain Node.js; its complete upstream license is included at runtime/LICENSE. Browser dependencies are bundled by Vite and their notices are included below.\n\n${sections.join("\n\n---\n\n")}\n`;
 // Keep license wording intact while making generated output stable across OSes.
 await writeFile(
   join(root, "THIRD_PARTY_NOTICES.md"),

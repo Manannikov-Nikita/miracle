@@ -229,12 +229,18 @@ describe("agent transcript", () => {
     await act(async () =>
       previous.querySelector<HTMLButtonElement>("button")!.click(),
     );
-    const dialog = host.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("earlier receipt");
-    expect(dialog.textContent).not.toContain("latest receipt");
+    const timeline = previous.querySelector(".agent-activity-timeline")!;
+    expect(timeline).not.toBeNull();
+    await act(async () =>
+      timeline
+        .querySelector<HTMLButtonElement>(".agent-activity-details-trigger")!
+        .click(),
+    );
+    expect(timeline.textContent).toContain("earlier receipt");
+    expect(timeline.textContent).not.toContain("latest receipt");
   });
 
-  it("opens details outside the transcript and combines phases only for the same native call", async () => {
+  it("shows inline activity and combines phases only for the same native call", async () => {
     await render([
       message("a-start", "action", "read_result", {
         id: "call-a",
@@ -254,21 +260,25 @@ describe("agent transcript", () => {
       }),
     ]);
     const trigger = host.querySelector<HTMLButtonElement>(
-      'button[aria-haspopup="dialog"]',
-    );
-    expect(trigger).not.toBeNull();
-    await act(async () => trigger!.click());
-    const dialog = host.querySelector('[role="dialog"]')!;
-    expect(dialog).not.toBeNull();
-    expect(dialog.closest(".agent-turn")).toBeNull();
-    expect(dialog.querySelectorAll(".agent-activity-item")).toHaveLength(2);
-    expect(dialog.textContent).toContain("first result");
-    const close = dialog.querySelector<HTMLButtonElement>(
-      'button[aria-label="Закрыть действия"]',
+      ".agent-activity-trigger",
     )!;
-    await act(async () => close.click());
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    const timeline = host.querySelector(".agent-activity-timeline")!;
+    expect(timeline.closest(".agent-turn")).not.toBeNull();
+    expect(timeline.querySelectorAll(".agent-activity-step")).toHaveLength(2);
+    expect(timeline.querySelector(".agent-activity-raw")).toBeNull();
+    await act(async () =>
+      timeline
+        .querySelector<HTMLButtonElement>(".agent-activity-details-trigger")!
+        .click(),
+    );
+    expect(
+      timeline.querySelector(".agent-activity-raw")?.textContent,
+    ).toContain("first result");
+    await act(async () => trigger.click());
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector(".agent-activity-timeline")).toBeNull();
     expect(host.querySelector('[role="dialog"]')).toBeNull();
-    await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("keeps permission requests visible and actionable without opening the activity journal", async () => {
@@ -461,12 +471,7 @@ describe("agent transcript", () => {
       message("audit-1", "action", "read_board", { tool: "read_board" }),
       message("audit-2", "action", "read_board", { tool: "read_board" }),
     ]);
-    await act(async () =>
-      host
-        .querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!
-        .click(),
-    );
-    const items = host.querySelectorAll(".agent-activity-item");
+    const items = host.querySelectorAll(".agent-activity-step");
     expect(items).toHaveLength(2);
     expect(
       [...items].map((item) => item.querySelector("small")?.textContent),
@@ -500,18 +505,25 @@ describe("agent transcript", () => {
       expect(
         host.querySelector(".agent-activity-icon")?.getAttribute("data-state"),
       ).toBe(status);
+      const trigger = host.querySelector<HTMLButtonElement>(
+        ".agent-activity-trigger",
+      )!;
+      if (trigger.getAttribute("aria-expanded") === "false")
+        await act(async () => trigger.click());
+      const failedItem = host.querySelector(
+        '.agent-activity-step[data-state="failed"]',
+      );
+      expect(
+        failedItem?.querySelector(".agent-activity-step-state")?.textContent,
+      ).toBe("Ошибка");
       await act(async () =>
-        host
-          .querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!
+        failedItem!
+          .querySelector<HTMLButtonElement>(".agent-activity-details-trigger")!
           .click(),
       );
-      const failedItem = host.querySelector(
-        '.agent-activity-item small[data-state="failed"]',
-      );
-      expect(failedItem?.textContent).toBe("Ошибка");
-      expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
-        "Result was not ready",
-      );
+      expect(
+        failedItem?.querySelector(".agent-activity-raw")?.textContent,
+      ).toContain("Result was not ready");
     },
   );
 

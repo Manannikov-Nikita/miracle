@@ -18,6 +18,77 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+it("follows growing activity only while the reader is at the bottom", async () => {
+  const state = {
+    selected: "chat",
+    profiles: [],
+    chats: [],
+    conversation: {
+      chat: { id: "chat", provider: "codex", profileId: "profile" },
+      messages: [],
+      turns: [],
+    },
+    active: {
+      id: "turn",
+      chatId: "chat",
+      status: "running",
+      context: {},
+      createdAt: "now",
+    },
+    busy: false,
+    resolvedApprovals: new Map(),
+    setSelected: vi.fn(),
+    stop: vi.fn(),
+    approve: vi.fn(),
+  } as unknown as AgentChatState;
+  const render = async () => {
+    await act(async () =>
+      root.render(
+        createElement(AgentChatView, {
+          state,
+          selectedProfile: "profile",
+          onProfileChange: vi.fn(),
+          draft: "",
+          onDraftChange: vi.fn(),
+          onSend: vi.fn(),
+          onSettings: vi.fn(),
+        }),
+      ),
+    );
+  };
+  await render();
+  const log = host.querySelector<HTMLElement>('[role="log"]')!;
+  Object.defineProperties(log, {
+    scrollHeight: { value: 900 },
+    clientHeight: { value: 400 },
+  });
+  state.conversation!.messages.push({
+    id: "a",
+    chatId: "chat",
+    turnId: "turn",
+    role: "action",
+    content: "Read",
+    createdAt: "now",
+    details: { id: "call", phase: "started" },
+  });
+  await render();
+  expect(log.scrollTop).toBe(900);
+  log.scrollTop = 200;
+  await act(async () => log.dispatchEvent(new Event("scroll")));
+  state.conversation!.messages.push({
+    id: "b",
+    chatId: "chat",
+    turnId: "turn",
+    role: "action",
+    content: "Read",
+    createdAt: "now",
+    details: { id: "call", phase: "completed" },
+  });
+  await render();
+  expect(log.scrollTop).toBe(200);
+  expect(host.querySelector(".agent-jump")).toBeNull();
+});
+
 it("does not move the reader or show a new-message prompt when an approval arrives, resolves, or expands", async () => {
   const value = {
     selected: "chat",

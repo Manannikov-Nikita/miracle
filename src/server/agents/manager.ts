@@ -37,6 +37,14 @@ import {
   questionAnswers,
   questionsSchema,
 } from "./interactions.js";
+import { contextSnapshot } from "./context-usage.js";
+import { miracleTools } from "./tools.js";
+import type {
+  AgentContextSnapshot,
+  AgentContextUsage,
+} from "../../shared/agent-context.js";
+
+const contextToolDefinitions = JSON.stringify(miracleTools);
 
 export interface AgentToolServices {
   connections: () => unknown[];
@@ -119,6 +127,8 @@ export interface ActiveAgent {
   runIds: Set<string>;
   assistant?: AgentMessage;
   buffer: string;
+  contextPrompt?: string;
+  lastContextUsage?: AgentContextSnapshot;
   images: AgentImageAttachment[];
   flushTimer?: ReturnType<typeof setTimeout>;
 }
@@ -400,8 +410,10 @@ export class AgentManager {
     });
     const delivery = (async () => {
       try {
-        await active.process!.steer!({
-          prompt: this.prompt(active, b.content, false, b.context),
+        const prompt = this.prompt(active, b.content, false, b.context);
+        const agentProcess = active.process!;
+        await agentProcess.steer!({
+          prompt,
           images: providerImages(this.store, turn.chatId, images),
           clientRequestId: b.clientRequestId,
         });
@@ -409,6 +421,21 @@ export class AgentManager {
           ...message.details,
           steer: { requestId: b.clientRequestId, identity, status: "accepted" },
         });
+        if (
+          this.active === active &&
+          !active.cancelled &&
+          active.process === agentProcess
+        ) {
+          active.contextPrompt = prompt;
+          // Native telemetry/completion may arrive before the accepted steer
+          // continuation. Reconcile estimates even while completion awaits it.
+          if (active.lastContextUsage)
+            this.recordContextUsage(
+              active,
+              active.lastContextUsage,
+              active.lastContextUsage.measuredAt,
+            );
+        }
         return this.store.turn(turnId);
       } catch (error) {
         const text = (
@@ -714,9 +741,39 @@ export class AgentManager {
       });
     }
   }
+  private recordContextUsage(
+    active: ActiveAgent,
+    usage: AgentContextUsage,
+    measuredAt = now(),
+  ) {
+    this.flush(active);
+    const snapshot = contextSnapshot(
+      usage,
+      {
+        prompt: active.contextPrompt || "",
+        conversation: this.store
+          .conversation(active.turn.chatId)
+          .messages.filter(
+            (message) =>
+              ["user", "assistant"].includes(message.role) &&
+              deliveredMessage(message),
+          )
+          .map((message) => message.content)
+          .join("\n"),
+        tools: contextToolDefinitions,
+      },
+      measuredAt,
+    );
+    if (snapshot) {
+      active.lastContextUsage = snapshot;
+      this.store.setContextUsage(active.turn.chatId, active.turn.id, snapshot);
+    }
+  }
   private event(active: ActiveAgent, event: AdapterEvent) {
     if (this.active !== active || active.cancelled || active.ending) return;
-    if (event.type === "question") {
+    if (event.type === "context-usage") {
+      this.recordContextUsage(active, event.usage);
+    } else if (event.type === "question") {
       this.question(active, event.questions, event.id);
     } else if (event.type === "subagent") {
       this.flush(active);
@@ -773,20 +830,40 @@ export class AgentManager {
           "system",
           "Настройки модели изменены. Новая сессия Claude получит сохранённую историю чата.",
         );
+      let launchId = 0;
       const launch = (
         resumeSessionId: string | undefined,
         fallback = false,
       ) => {
+        const currentLaunch = ++launchId;
+        active.lastContextUsage = undefined;
+        if (!resumeSessionId) this.store.clearContextUsage(active.turn.chatId);
+        const prompt = this.prompt(active, content, fallback);
+        active.contextPrompt = prompt;
         active.process = startAgentTurn({
           provider,
           command,
           modelSettings,
           cwd: this.store.context.projectRoot,
-          prompt: this.prompt(active, content, fallback),
+          prompt,
           images: this.imagesForTurn(active, fallback),
           resumeSessionId,
           mcp: { url: `${this.origin()}/agent/mcp`, token: active.token },
-          onEvent: (event) => this.event(active, event),
+          onEvent: (event) => {
+            if (currentLaunch === launchId)
+              this.event(
+                active,
+                event.type === "action"
+                  ? {
+                      ...event,
+                      details: {
+                        ...event.details,
+                        activityScope: currentLaunch,
+                      },
+                    }
+                  : event,
+              );
+          },
         });
         return active.process.completion;
       };

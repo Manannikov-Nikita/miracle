@@ -1,4 +1,5 @@
 import type { DateRangeOptions } from "./date-batch.js";
+import type { AgentContextSnapshot } from "./agent-context.js";
 import type {
   AgentQuestionRequest,
   AgentSubagent,
@@ -94,6 +95,7 @@ export interface AgentMessage {
   details?: Record<string, unknown> & {
     question?: AgentQuestionRequest;
     subagent?: AgentSubagent;
+    contextUsage?: AgentContextSnapshot | null;
   };
   createdAt: string;
 }

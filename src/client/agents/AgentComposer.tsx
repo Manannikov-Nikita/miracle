@@ -22,6 +22,7 @@ import { useAgentPortalContainer } from "./useAgentPortalContainer";
 import type { OpenEditorTab } from "./ProjectSync";
 import { waitingForAnswer } from "./AgentQuestion";
 import AgentModelSettings from "./AgentModelSettings";
+import AgentContextUsage from "./AgentContextUsage";
 
 export interface ComposerProps {
   state: AgentChatState;
@@ -76,6 +77,16 @@ export default function AgentComposer({
   const steering = Boolean(
     state.active && state.active.chatId === state.selected,
   );
+  const contextUsage =
+    state.conversation?.chat.id === state.selected
+      ? [...state.conversation.messages]
+          .reverse()
+          .find(
+            (message) =>
+              message.role === "user" &&
+              message.details?.contextUsage !== undefined,
+          )?.details?.contextUsage
+      : null;
   useEffect(() => {
     state.setModelProfile?.(profileId);
   }, [profileId, state.setModelProfile]);
@@ -97,6 +108,11 @@ export default function AgentComposer({
   };
   return (
     <div className="agent-composer-zone">
+      <AgentContextUsage
+        usage={contextUsage}
+        chatKey={state.selected || `new:${profileId}`}
+        updating={steering}
+      />
       <form
         className={`agent-composer${dragging ? " dragging" : ""}`}
         onPaste={(event) => {

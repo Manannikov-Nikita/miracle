@@ -12,6 +12,7 @@ import type {
 } from "../../shared/agents";
 import { api, json } from "../api";
 import { useProjectSync } from "./ProjectSync";
+import type { AgentContextUpdate } from "../../shared/agent-context";
 export function useAgentChat() {
   const project = useProjectSync();
   const [resolvedApprovals, setResolvedApprovals] = useState(
@@ -61,6 +62,19 @@ export function useAgentChat() {
     messageEpoch = useRef(0),
     refreshSequence = useRef(0);
   const terminalTurns = useRef(new Set<string>());
+  const contextEpoch = useRef(0);
+  const contextUpdates = useRef(
+    new Map<string, AgentContextUpdate & { epoch: number }>(),
+  );
+  const applyContextUpdate = (message: AgentMessage, after = -1) => {
+    const update = contextUpdates.current.get(message.id);
+    return update && update.chatId === message.chatId && update.epoch > after
+      ? {
+          ...message,
+          details: { ...message.details, contextUsage: update.contextUsage },
+        }
+      : message;
+  };
   const setModelProfile = useCallback((profileId: string) => {
     if (modelDraftRef.current.profileId === profileId) return;
     modelDraftRef.current = { profileId };
@@ -122,6 +136,7 @@ export function useAgentChat() {
   const loadConversation = useCallback(async (id: string) => {
     const sequence = ++generation.current,
       epoch = messageEpoch.current,
+      contextAtRead = contextEpoch.current,
       metadataEpoch = chatEpoch.current;
     if (!id) {
       setConversation(null);
@@ -143,18 +158,48 @@ export function useAgentChat() {
       );
       setChats(chatsRef.current);
       setConversation((current) => {
+        const incoming = new Map(
+          value.messages.map((message) => [message.id, message]),
+        );
+        const reconcileContext = (message: AgentMessage) => {
+          const fetched = incoming.get(message.id);
+          return applyContextUpdate(
+            fetched
+              ? {
+                  ...message,
+                  details: {
+                    ...message.details,
+                    contextUsage: fetched.details?.contextUsage,
+                  },
+                }
+              : message,
+            contextAtRead,
+          );
+        };
         if (
           epoch === messageEpoch.current ||
           current?.chat.id !== value.chat.id
         )
-          return { ...value, chat };
+          return {
+            ...value,
+            chat,
+            messages: value.messages.map(reconcileContext),
+          };
         const messages = new Map(
           value.messages.map((message) => [message.id, message]),
         );
         for (const message of current.messages)
           messages.set(message.id, message);
-        return { ...value, chat, messages: [...messages.values()] };
+        return {
+          ...value,
+          chat,
+          messages: [...messages.values()].map(reconcileContext),
+        };
       });
+      // The fresh response supersedes events observed before this read began.
+      for (const [messageId, update] of contextUpdates.current)
+        if (update.chatId === id && update.epoch <= contextAtRead)
+          contextUpdates.current.delete(messageId);
     }
   }, []);
   useEffect(() => {
@@ -178,6 +223,31 @@ export function useAgentChat() {
         .catch((e) => setError(e.message));
     });
     const unsubscribe = project.subscribe((event) => {
+      if (event.type === "agent.context.updated") {
+        const update = event.data as AgentContextUpdate;
+        if (
+          !update?.chatId ||
+          !update.messageId ||
+          update.contextUsage === undefined
+        )
+          return;
+        contextUpdates.current.set(update.messageId, {
+          ...update,
+          epoch: ++contextEpoch.current,
+        });
+        messageEpoch.current++;
+        if (update.chatId === selectedRef.current)
+          setConversation((current) =>
+            current?.chat.id === update.chatId
+              ? {
+                  ...current,
+                  messages: current.messages.map((message) =>
+                    applyContextUpdate(message),
+                  ),
+                }
+              : current,
+          );
+      }
       if (event.type === "turn.updated") {
         const turn = event.data as AgentTurn;
         turnEpoch.current++;
@@ -196,7 +266,11 @@ export function useAgentChat() {
           void loadConversation(turn.chatId).catch((e) => setError(e.message));
       }
       if (event.type === "agent.event") {
-        const message = event.data as AgentMessage;
+        const incoming = event.data as AgentMessage;
+        const message =
+          incoming.details?.contextUsage === undefined
+            ? applyContextUpdate(incoming)
+            : incoming;
         messageEpoch.current++;
         if (!openRef.current || message.chatId !== selectedRef.current)
           setUnread(true);
