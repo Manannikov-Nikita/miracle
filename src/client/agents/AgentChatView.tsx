@@ -10,10 +10,17 @@ export default function AgentChatView(props: ComposerProps) {
   const previousChat = useRef(state.selected);
   const previousText = useRef("");
   const [below, setBelow] = useState(false);
-  // Tool and approval traffic changes captions, never the reader's position.
+  // Background activity follows only a reader already pinned to the bottom.
   const text = (state.conversation?.messages || [])
     .filter((m) => m.role !== "action" && m.role !== "approval")
     .map((m) => `${m.id}:${m.content}`)
+    .join("\n");
+  const activity = (state.conversation?.messages || [])
+    .filter((message) => message.role === "action")
+    .map(
+      (message) =>
+        `${message.id}:${message.details?.phase}:${message.details?.status}:${message.details?.subagent?.status}`,
+    )
     .join("\n");
   useLayoutEffect(() => {
     const element = log.current;
@@ -31,6 +38,15 @@ export default function AgentChatView(props: ComposerProps) {
       previousText.current = text;
     }
   }, [text, state.selected]);
+  useLayoutEffect(() => {
+    if (
+      log.current &&
+      pinned.current &&
+      state.active?.chatId === state.selected &&
+      log.current.querySelector('.agent-activity-trigger[aria-expanded="true"]')
+    )
+      log.current.scrollTop = log.current.scrollHeight;
+  }, [activity, state.active?.chatId, state.selected]);
   useEffect(() => {
     const element = log.current;
     if (!element || typeof ResizeObserver === "undefined") return;

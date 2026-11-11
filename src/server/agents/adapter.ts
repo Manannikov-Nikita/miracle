@@ -7,6 +7,7 @@ import {
   resolveCodexModelSettings,
 } from "./codex-models.js";
 import type { AgentModelSettings } from "../../shared/agents.js";
+import type { AgentContextUsage } from "../../shared/agent-context.js";
 import type { AgentProviderImage } from "./images.js";
 import type {
   AgentQuestion,
@@ -14,6 +15,7 @@ import type {
 } from "../../shared/agent-interactions.js";
 
 export type AdapterEvent =
+  | { type: "context-usage"; usage: AgentContextUsage }
   | { type: "question"; id: string; questions: AgentQuestion[] }
   | { type: "subagent"; subagent: AgentSubagent }
   | { type: "message"; text: string }

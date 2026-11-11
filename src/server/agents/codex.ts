@@ -1,6 +1,7 @@
 import type { AgentAdapterOptions, AgentProcess } from "./adapter.js";
 import { buildAgentCommand, childAgentEnvironment } from "./command.js";
 import { codexQuestions } from "./interactions.js";
+import { codexContextUsage } from "./provider-context.js";
 import {
   codexActivitySubagent,
   type AgentSubagent,
@@ -263,6 +264,41 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       return;
     }
     if ((params.turnId ?? params.turn?.id) !== turnId) return;
+    if (method === "turn/plan/updated") {
+      if (!Array.isArray(params.plan)) return;
+      const plan = params.plan
+        .filter(
+          (step: any) =>
+            typeof step?.step === "string" &&
+            step.step.trim().length > 0 &&
+            ["pending", "inProgress", "completed"].includes(step.status),
+        )
+        .slice(0, 50)
+        .map((step: any) => ({
+          step: clean(step.step).slice(0, 2000),
+          status: step.status,
+        }));
+      if (params.plan.length > 0 && plan.length === 0) return;
+      emit({
+        type: "action",
+        text: "План работы",
+        details: {
+          id: `plan:${turnId}`,
+          type: "plan",
+          phase: "updated",
+          plan,
+          ...(typeof params.explanation === "string"
+            ? { explanation: clean(params.explanation).slice(0, 4000) }
+            : {}),
+        },
+      });
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const usage = codexContextUsage(params.tokenUsage);
+      if (usage) emit({ type: "context-usage", usage });
+      return;
+    }
     if (
       method === "item/agentMessage/delta" &&
       typeof params.delta === "string"

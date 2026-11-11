@@ -17,6 +17,7 @@ import "./agents.css";
 import "./agent-images.css";
 import { waitingForAnswer } from "./AgentQuestion";
 import AgentActivityRail from "./AgentActivityRail";
+import { ThinkingOrb } from "thinking-orbs";
 export default function AgentAssistant({
   onOpenRun,
 }: { onOpenRun?: (id: string) => Promise<void> } = {}) {
@@ -201,7 +202,12 @@ export default function AgentAssistant({
         {state.open ? (
           <X size={23} />
         ) : active?.status === "running" ? (
-          <Spinner />
+          <ThinkingOrb
+            state="working"
+            size={32}
+            theme="dark"
+            aria-hidden="true"
+          />
         ) : (
           <ChatCircle size={25} />
         )}

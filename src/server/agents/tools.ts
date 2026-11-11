@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { customChartGuide } from "../custom-chart-guide.js";
 import { chartGuide, chartInputSchema } from "../chart-guide.js";
 import { boardKindSchema, sourceSchema } from "../validation.js";
@@ -7,6 +8,7 @@ import type { AgentManager, ActiveAgent } from "./manager.js";
 import { entityWorkInput } from "./entity-work.js";
 import { shapeSpecSchema } from "../../shared/shapes.js";
 import { textStyleSchema } from "../../shared/text-style.js";
+import { miracleToolFailure, miracleToolSummary } from "./tool-activity.js";
 
 const shapeGuide =
   "Shapes use data {title,kind:'shape',text,shape:{type,...}}. Shape type is rectangle|rounded-rectangle|ellipse|triangle|diamond|hexagon|arrow|line. A line is a standalone visual shape node, not an edge; it has no connection handles. Line fields: lineDirection (horizontal|vertical|diagonal-down|diagonal-up), lineStart/lineEnd (none|arrow). Defaults are horizontal with no arrowheads; set lineEnd:arrow for an arrow. Use width/height to control length and diagonal slope; fill and text are not rendered for lines. Optional shape fields: rotation (0–360 degrees clockwise around the shape center; default 0), fill (#RRGGBB or transparent), stroke/textColor (#RRGGBB), strokeWidth (0-12), strokeStyle (solid|dashed|dotted), opacity (0-1), cornerRadius (0-50 percent), fontSize (8-144), fontFamily (sans|serif|mono), bold/italic/underline (boolean), textAlign (left|center|right), verticalAlign (top|middle|bottom). Shape text is plain text, up to 200000 characters; do not supply SVG or HTML markup as geometry. Use node width/height to resize; interactive shapes have a 40×40 minimum.";
@@ -436,7 +438,54 @@ export async function callMiracleTool(
           manager.store.turn(active.turn.id).status,
         ),
     },
-    () => executeMiracleTool(manager, active, name, input),
+    async () => {
+      // Permission callbacks already own an approval/question lifecycle.
+      if (name === "permission_prompt")
+        return executeMiracleTool(manager, active, name, input);
+      manager.store.work.assertActor();
+      const tool = miracleTools.some((entry) => entry.name === name)
+        ? name
+        : "unknown_tool";
+      const details = { id: randomUUID(), source: "miracle", tool };
+      const started = performance.now();
+      const write = (extra: Record<string, unknown>) =>
+        manager.store.message(
+          active.turn.chatId,
+          active.turn.id,
+          "action",
+          tool,
+          { ...details, ...extra },
+        );
+      const stillOwned = () =>
+        manager.active === active &&
+        !active.ending &&
+        ["running", "waiting"].includes(
+          manager.store.turn(active.turn.id).status,
+        );
+      write({ phase: "started", status: "running" });
+      try {
+        const result = await executeMiracleTool(manager, active, name, input);
+        if (stillOwned())
+          write({
+            phase: "completed",
+            status: "completed",
+            durationMs: Math.max(0, Math.round(performance.now() - started)),
+            ...miracleToolSummary(name, result),
+          });
+        return result;
+      } catch (error) {
+        if (stillOwned())
+          write({
+            phase: "completed",
+            status: active.cancelled ? "cancelled" : "failed",
+            durationMs: Math.max(0, Math.round(performance.now() - started)),
+            summary: active.cancelled
+              ? "Действие отменено"
+              : miracleToolFailure(error),
+          });
+        throw error;
+      }
+    },
   );
 }
 
@@ -645,9 +694,6 @@ async function executeMiracleTool(
   store.work.assertActor();
   if (manager.active !== active || active.cancelled)
     throw problem(401, "Agent task ended during tool call");
-  store.message(active.turn.chatId, active.turn.id, "action", name, {
-    tool: name,
-  });
   const json = JSON.stringify(result);
   if (Buffer.byteLength(json) > responseLimit) {
     if (

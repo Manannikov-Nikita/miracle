@@ -1,6 +1,6 @@
 # Third-party notices
 
-Generated from package-lock.json by scripts/dependency-notices.mjs. Includes server dependencies and browser dependencies bundled into the web application. Individual upstream licenses apply; Miracle's Apache-2.0 license does not replace them.
+Generated from package-lock.json and adapted-source licenses by scripts/dependency-notices.mjs. Includes server dependencies and browser dependencies bundled into the web application. Individual upstream licenses apply; Miracle's Apache-2.0 license does not replace them.
 
 Native release archives also contain Node.js; its complete upstream license is included at runtime/LICENSE. Browser dependencies are bundled by Vite and their notices are included below.
 
@@ -10623,6 +10623,38 @@ software or this license, under any kind of legal claim.***
 
 ---
 
+## thinking-orbs 0.3.2
+
+License: MIT
+Source: git+https://github.com/Jakubantalik/Libraries.dev.git
+
+### LICENSE
+
+MIT License
+
+Copyright (c) 2026 Jakub Antalik
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+---
+
 ## thread-stream 4.2.0
 
 License: MIT
@@ -11479,3 +11511,34 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+---
+
+## Pasta UI (adapted components)
+
+License: MIT
+Source: https://github.com/syeddhasnainn/pastaui/blob/1f6de38bf4dc82cf17bb662361b3c03bebbfc4d4/src/components/ai/context-breakdown.tsx
+Source: https://github.com/syeddhasnainn/pastaui/blob/1f6de38bf4dc82cf17bb662361b3c03bebbfc4d4/src/components/ai/agent-activity.tsx
+
+MIT License
+
+Copyright (c) 2026 Pasta UI
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

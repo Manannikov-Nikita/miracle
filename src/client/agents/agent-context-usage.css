@@ -1,0 +1,200 @@
+.agent-context-usage {
+  --context-conversation: #79b8e8;
+  --context-project: #b2a2d9;
+  --context-tools: #d8b574;
+  --context-instructions: var(--mint);
+  --context-other: #c58e9d;
+  position: relative;
+  margin-bottom: 8px;
+  color: var(--agent-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.agent-context-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--agent-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-context-trigger:hover,
+.agent-context-trigger[aria-expanded="true"] {
+  color: var(--agent-text);
+}
+.agent-context-trigger:focus-visible,
+.agent-context-close:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 4px;
+}
+.agent-context-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  line-height: 16px;
+}
+.agent-context-trigger-total {
+  margin-left: auto;
+}
+.agent-context-trigger-total > span {
+  color: var(--agent-muted);
+}
+.agent-context-summary > svg {
+  flex: none;
+  transition: transform 150ms;
+}
+.agent-context-summary > svg.is-open {
+  transform: rotate(180deg);
+}
+.agent-context-bar {
+  display: flex;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--agent-hover);
+}
+.agent-context-segment {
+  height: 100%;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  border-right: 1px solid var(--agent-bg);
+  transition: width 200ms ease;
+}
+.agent-context-segment:last-child {
+  border-right: 0;
+}
+.agent-context-tone-conversation {
+  background: var(--context-conversation);
+}
+.agent-context-tone-project {
+  background: var(--context-project);
+}
+.agent-context-tone-tools {
+  background: var(--context-tools);
+}
+.agent-context-tone-instructions {
+  background: var(--context-instructions);
+}
+.agent-context-tone-other {
+  background: var(--context-other);
+}
+.agent-context-panel {
+  position: absolute;
+  inset: auto 0 calc(100% + 8px);
+  z-index: 2;
+  box-sizing: border-box;
+  max-height: min(440px, 55dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  border: 1px solid var(--agent-line);
+  border-radius: 16px;
+  background: var(--agent-surface);
+  color: var(--agent-soft);
+  box-shadow: 0 12px 32px #0004;
+}
+.agent-context-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agent-context-heading h3 {
+  margin: 0;
+  color: var(--agent-muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+.agent-context-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--agent-muted);
+  cursor: pointer;
+}
+.agent-context-close:hover {
+  background: var(--agent-hover);
+  color: var(--agent-text);
+}
+.agent-context-total {
+  margin: 4px 0;
+  color: var(--agent-text);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 28px;
+  overflow-wrap: anywhere;
+}
+.agent-context-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0 0 16px;
+  color: var(--agent-muted);
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.agent-context-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+}
+.agent-context-rows li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  line-height: 18px;
+}
+.agent-context-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.agent-context-row-label {
+  flex: 1;
+  min-width: 0;
+}
+.agent-context-row-percentage {
+  min-width: 44px;
+  color: var(--agent-muted);
+  text-align: right;
+}
+.agent-context-rows .agent-context-available {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--agent-line);
+}
+.agent-context-available .agent-context-dot {
+  box-shadow: inset 0 0 0 1px var(--agent-muted);
+}
+.agent-context-note,
+.agent-context-measured {
+  margin: 8px 0 0;
+  color: var(--agent-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-context-segment,
+  .agent-context-summary > svg {
+    transition: none;
+  }
+}

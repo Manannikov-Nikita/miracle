@@ -2,6 +2,12 @@ import type { AgentAdapterOptions, AgentProcess } from "./adapter.js";
 import { randomUUID } from "node:crypto";
 import type { AgentSubagent } from "../../shared/agent-interactions.js";
 import type { AgentProviderImage } from "./images.js";
+import type { AgentContextUsage } from "../../shared/agent-context.js";
+import {
+  claudeContextUsage,
+  claudeContextWindow,
+  contextModel,
+} from "./provider-context.js";
 import { buildAgentCommand, childAgentEnvironment } from "./command.js";
 import {
   AgentTransport,
@@ -52,7 +58,12 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
     resultError: Error | undefined;
   const partialMessages = new Set<string>();
   let currentMessage = "initial";
-  const tools = new Set<string>();
+  let currentModel: string | undefined;
+  let contextUsage: AgentContextUsage | undefined;
+  const tools = new Map<
+    string,
+    { name: string; input: unknown; completed: boolean }
+  >();
   const subagents = new Map<string, AgentSubagent>();
   const taskTools = new Map<string, string>();
   const initialInputId = randomUUID();
@@ -193,8 +204,59 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
     }
     // Child messages are observable activity only. They never belong to the root transcript.
     if (isChild) return;
+    const rootMessage =
+      message.type === "assistant"
+        ? message.message
+        : message.type === "stream_event" &&
+            message.event?.type === "message_start"
+          ? message.event.message
+          : undefined;
+    if (rootMessage) {
+      const model = contextModel(rootMessage.model);
+      if (model && model !== currentModel) {
+        currentModel = model;
+        contextUsage = undefined;
+      }
+      const usage = claudeContextUsage(rootMessage.usage, currentModel);
+      if (usage) {
+        contextUsage = usage;
+        emit({ type: "context-usage", usage });
+      }
+    }
     if (message.type === "user" && Array.isArray(message.message?.content)) {
       for (const block of message.message.content) {
+        if (!block || typeof block !== "object") continue;
+        const tool = tools.get(block.tool_use_id);
+        if (block.type === "tool_result" && tool && !tool.completed) {
+          tool.completed = true;
+          // Only text content belongs in the activity summary. Image/document
+          // payloads and arbitrary tool result objects must not enter the log.
+          const text =
+            typeof block.content === "string"
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content
+                    .filter(
+                      (item: any) =>
+                        item?.type === "text" && typeof item.text === "string",
+                    )
+                    .map((item: any) => item.text)
+                    .join("\n")
+                : "";
+          const result = clean(text).slice(0, 4000);
+          emit({
+            type: "action",
+            text: tool.name,
+            details: {
+              id: block.tool_use_id,
+              type: "toolUse",
+              phase: "completed",
+              status: block.is_error === true ? "failed" : "completed",
+              isError: block.is_error === true,
+              ...(result ? { result } : {}),
+            },
+          });
+        }
         const id = taskTools.get(block.tool_use_id);
         const previous = id ? subagents.get(id) : undefined;
         if (
@@ -234,6 +296,7 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
         message.message.id || currentMessage,
       );
       for (const block of message.message.content) {
+        if (!block || typeof block !== "object") continue;
         if (
           block.type === "text" &&
           !hasPartial &&
@@ -242,12 +305,26 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
           textEmitted = true;
           emit({ type: "message", text: block.text });
         }
-        if (block.type === "tool_use" && !tools.has(block.id)) {
-          tools.add(block.id);
+        if (
+          block.type === "tool_use" &&
+          typeof block.id === "string" &&
+          block.id.length > 0 &&
+          block.id.length <= 512 &&
+          typeof block.name === "string" &&
+          block.name.length > 0 &&
+          !tools.has(block.id)
+        ) {
+          const name = block.name.slice(0, 512);
+          tools.set(block.id, { name, input: block.input, completed: false });
           emit({
             type: "action",
-            text: String(block.name),
-            details: { id: block.id, input: block.input },
+            text: name,
+            details: {
+              id: block.id,
+              type: "toolUse",
+              phase: "started",
+              input: block.input,
+            },
           });
         }
       }
@@ -264,6 +341,19 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
       });
     if (message.type === "result") {
       resultSeen = true;
+      if (contextUsage) {
+        // Result usage is accumulated spend; only its matching model's capacity
+        // belongs with the latest root response's input measurement.
+        const window = claudeContextWindow(
+          message.modelUsage,
+          contextUsage.model,
+        );
+        contextUsage = {
+          ...contextUsage,
+          ...(window !== undefined ? { contextWindow: window } : {}),
+        };
+        emit({ type: "context-usage", usage: contextUsage });
+      }
       if (
         !textEmitted &&
         !message.is_error &&

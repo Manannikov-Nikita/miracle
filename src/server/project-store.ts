@@ -9,6 +9,10 @@ import type { SecretBox } from "./secrets.js";
 import { dateRangeSchema } from "./validation.js";
 import { EntityWork } from "./agents/entity-work.js";
 import type {
+  AgentContextSnapshot,
+  AgentContextUpdate,
+} from "../shared/agent-context.js";
+import type {
   AgentChat,
   AgentConversation,
   AgentMessage,
@@ -473,11 +477,10 @@ export class ProjectStore {
               !b.modelSettings.reasoningEffort
             ? undefined
             : b.modelSettings;
-      const resetSession =
-        current.provider === "claude" &&
+      const settingsChanged =
         b.modelSettings !== undefined &&
-        JSON.stringify(current.modelSettings) !==
-          JSON.stringify(b.modelSettings);
+        JSON.stringify(current.modelSettings) !== JSON.stringify(nextSettings);
+      const resetSession = current.provider === "claude" && settingsChanged;
       this.db.query(
         "UPDATE agent_chats SET auto_approve=?2,updated_at=?3,model_settings_json=?4,native_session_reset=CASE WHEN ?5 AND native_session_id IS NOT NULL THEN 1 ELSE native_session_reset END,native_session_id=CASE WHEN ?5 THEN NULL ELSE native_session_id END WHERE id=?1",
         [
@@ -488,6 +491,7 @@ export class ProjectStore {
           resetSession,
         ],
       );
+      if (settingsChanged) this.clearContextUsage(id);
       const chat = this.chat(id);
       this.publish("chat.updated", id, chat);
       return chat;
@@ -564,5 +568,43 @@ export class ProjectStore {
       .query("SELECT id FROM agent_turns WHERE chat_id=?1 ORDER BY rowid", [id])
       .rows.map((r) => this.turn(r.id));
     return { chat, messages, turns };
+  }
+  setContextUsage(
+    chatId: string,
+    turnId: string,
+    snapshot: AgentContextSnapshot,
+  ) {
+    this.atomic(() => {
+      const root = this.db.query(
+        "SELECT id,details_json FROM agent_messages WHERE chat_id=?1 AND turn_id=?2 AND role='user' AND json_extract(details_json,'$.steer') IS NULL ORDER BY rowid LIMIT 1",
+        [chatId, turnId],
+      ).rows[0];
+      if (!root) return;
+      this.writeContextUsage(chatId, root.id, root.details_json, snapshot);
+    });
+  }
+  clearContextUsage(chatId: string) {
+    this.atomic(() => {
+      const roots = this.db.query(
+        "SELECT id,details_json FROM agent_messages WHERE chat_id=?1 AND json_type(details_json,'$.contextUsage')='object' ORDER BY rowid",
+        [chatId],
+      ).rows;
+      for (const root of roots)
+        this.writeContextUsage(chatId, root.id, root.details_json, null);
+    });
+  }
+  private writeContextUsage(
+    chatId: string,
+    messageId: string,
+    detailsJson: string | null,
+    contextUsage: AgentContextSnapshot | null,
+  ) {
+    const details = detailsJson ? JSON.parse(detailsJson) : {};
+    this.db.query("UPDATE agent_messages SET details_json=?2 WHERE id=?1", [
+      messageId,
+      JSON.stringify({ ...details, contextUsage }),
+    ]);
+    const update: AgentContextUpdate = { chatId, messageId, contextUsage };
+    this.publish("agent.context.updated", chatId, update);
   }
 }

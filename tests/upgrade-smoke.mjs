@@ -1,5 +1,6 @@
 // Published supported installation -> candidate via the actual miracle update CLI.
-// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PUBLISHED-0.10.0-OR-0.11.0.tar.gz
+// Usage: node tests/upgrade-smoke.mjs CANDIDATE.tar.gz PUBLISHED-0.11.1.tar.gz
+// Published 0.10.0 and 0.11.0 archives are also supported.
 // Every archive needs its adjacent .sha256 and rendered install.sh. No live user
 // installation or workspace is read, stopped, or modified by this test.
 import assert from "node:assert/strict";
@@ -24,17 +25,17 @@ const [candidateArgument, previousArgument, ...extraArguments] =
   process.argv.slice(2);
 if (!candidateArgument || !previousArgument || extraArguments.length)
   throw new Error(
-    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.10.0-or-0.11.0.tar.gz",
+    "Usage: node tests/upgrade-smoke.mjs candidate.tar.gz previous-0.11.1.tar.gz (also supports 0.10.0 and 0.11.0)",
   );
 const candidate = resolve(candidateArgument);
 const previousArchive = resolve(previousArgument);
 const target = `${process.platform}-${process.arch}`;
 const oldVersion = new RegExp(
-  `^miracle-(0\\.1[01]\\.0)-${target}\\.tar\\.gz$`,
+  `^miracle-(0\\.10\\.0|0\\.11\\.[01])-${target}\\.tar\\.gz$`,
 ).exec(basename(previousArchive))?.[1];
 assert(
   oldVersion,
-  "Previous release must be 0.10.0 or 0.11.0 for this architecture",
+  "Previous release must be 0.10.0, 0.11.0, or 0.11.1 for this architecture",
 );
 const oldSchema = oldVersion === "0.10.0" ? 7 : 8;
 const candidateVersion = new RegExp(
