@@ -5,6 +5,7 @@ import "monaco-editor/languages/definitions/sql/register.js";
 import "monaco-editor/editor/contrib/suggest/browser/suggestController.js";
 import "monaco-editor/editor/contrib/snippet/browser/snippetController2.js";
 import "monaco-editor/features/wordOperations/register.js";
+import "monaco-editor/features/hover/register.js";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -96,6 +97,7 @@ import ResultCanvasActions from "./ResultCanvasActions";
 import { Select } from "./Select";
 import { formatSql, sqlFileName } from "../sql-files";
 import { sqlStatementAt } from "../sql-statements";
+import { attachSqlDiagnostics } from "../sql-diagnostics-controller";
 import { createSqlMetadataLoader, sqlSuggestions } from "../sql-completion";
 import type { MetadataStore } from "../metadata-store";
 import {
@@ -450,6 +452,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   );
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const sqlDiagnostics = useRef<ReturnType<typeof attachSqlDiagnostics> | null>(
+    null,
+  );
+  useEffect(() => () => sqlDiagnostics.current?.dispose(), []);
   const restoreEditorFocus = useRef(false);
   const applyActiveSql = useRef(() => {});
   applyActiveSql.current = () => {
@@ -557,6 +563,11 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
   const activeLanguage = sqlLanguageForEngine(connection?.engine);
   const activeLanguageRef = useRef(activeLanguage);
   activeLanguageRef.current = activeLanguage;
+  const validationEngine = useRef(connection?.engine);
+  validationEngine.current = connection?.engine;
+  useEffect(() => {
+    sqlDiagnostics.current?.refresh();
+  }, [active.id, connection?.id, connection?.engine]);
   const patch = useCallback(
     (id: string, values: Partial<Tab>) => {
       if (
@@ -1939,6 +1950,10 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
     };
     updateModelLanguage();
     applyActiveSql.current();
+    sqlDiagnostics.current?.dispose();
+    sqlDiagnostics.current = attachSqlDiagnostics(editor, monaco, () => ({
+      engine: validationEngine.current,
+    }));
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
       runAction.current(),
     );
@@ -2538,6 +2553,7 @@ function LoadedSqlWorkspace(p: Props & { documents: EditorDocument[] }) {
                       padding: { top: 18, bottom: 14 },
                       lineNumbersMinChars: 3,
                       renderLineHighlight: "line",
+                      renderValidationDecorations: "on",
                       automaticLayout: true,
                       wordWrap: "off",
                       tabSize: 4,
