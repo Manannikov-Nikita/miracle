@@ -18,11 +18,22 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type {
+  MoveProjectFile,
   ProjectTextFile,
   ProjectTree,
   ProjectTreeEntry,
 } from "../../shared/project-files";
-import type { ProjectFileMover } from "../project-file-drafts";
+import type {
+  ProjectFileMover,
+  ProjectFileDeleter,
+} from "../project-file-drafts";
+import ProjectFileContextMenu, {
+  type ProjectFileAction,
+  type ProjectMenuAction,
+} from "./ProjectFileContextMenu";
+import ProjectFileActionDialog, {
+  type ProjectFileOperation,
+} from "./ProjectFileActionDialog";
 import { api } from "../api";
 import { IconButton } from "./UI";
 import { useAgentWorkLocks } from "../agents/useAgentWork";
@@ -43,6 +54,7 @@ export default function ProjectFileTree({
   revision,
   onOpenFile,
   onMoveFile,
+  onDeleteFile,
   onNotify,
   onClearFilter,
   actionsTarget,
@@ -52,11 +64,70 @@ export default function ProjectFileTree({
   revision: number;
   onOpenFile: (file: ProjectTextFile) => void;
   onMoveFile?: ProjectFileMover;
+  onDeleteFile?: ProjectFileDeleter;
   onNotify: (message: string, tone?: "error" | "success" | "info") => void;
   onClearFilter?: () => void;
   actionsTarget?: HTMLElement | null;
 }) {
   const workLocks = useAgentWorkLocks();
+  const treeRef = useRef<HTMLDivElement>(null);
+  const menuTrigger = useRef<HTMLElement | null>(null);
+  const skipMenuFocus = useRef(false);
+  const pendingTreeFocus = useRef(false);
+  const [menuEntry, setMenuEntry] = useState<ProjectTreeEntry | null>(null);
+  const [operation, setOperation] = useState<ProjectFileOperation | null>(null);
+  const [renaming, setRenaming] = useState<ProjectTreeEntry | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const renameInput = useRef<HTMLInputElement>(null);
+  const within = (path: string, root: string) =>
+    path === root || path.startsWith(`${root}/`);
+  const locked = (path: string) =>
+    workLocks.some(
+      (work) => work.target.kind === "file" && within(work.target.id, path),
+    );
+  function restoreTreeFocus() {
+    pendingTreeFocus.current = true;
+    const target = treeRef.current?.querySelector<HTMLElement>(
+      '[aria-selected="true"]',
+    );
+    (target || treeRef.current)?.focus();
+    if (target || !selected) pendingTreeFocus.current = false;
+  }
+  function beginOperation(entry: ProjectTreeEntry, action: ProjectFileAction) {
+    if (movingRef.current || creatingRef.current || locked(entry.path)) return;
+    if (
+      (action === "delete" && !onDeleteFile) ||
+      (action !== "delete" && !onMoveFile)
+    )
+      return;
+    openRequest.current?.abort();
+    setOpening("");
+    cancelCreate();
+    if (action === "rename") {
+      setRenameName(entry.name);
+      setRenameError("");
+      setRenaming(entry);
+    } else {
+      setRenaming(null);
+      setOperation({ entry, action });
+    }
+  }
+  function menuAction(action: ProjectMenuAction) {
+    skipMenuFocus.current = true;
+    if (action === "new-file" || action === "new-directory") {
+      startCreate(
+        action === "new-file" ? "file" : "directory",
+        menuEntry?.path || "",
+      );
+    } else if (menuEntry) beginOperation(menuEntry, action);
+  }
+  function contextTarget(entry: ProjectTreeEntry | null, target: HTMLElement) {
+    skipMenuFocus.current = false;
+    menuTrigger.current = target;
+    select(entry?.path || "", entry?.kind !== "file");
+    setMenuEntry(entry);
+  }
   const storageKey = `miracle:project-tree:${workspaceId}`;
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     try {
@@ -102,6 +173,35 @@ export default function ProjectFileTree({
   const search = filter.trim();
 
   useEffect(() => {
+    if (!pendingTreeFocus.current || operation || moving || renaming) return;
+    const target = treeRef.current?.querySelector<HTMLElement>(
+      '[aria-selected="true"]',
+    );
+    if (
+      target ||
+      !selected ||
+      !Object.values(directories).some((state) => state.loading)
+    ) {
+      pendingTreeFocus.current = false;
+      (target || treeRef.current)?.focus();
+    }
+  }, [directories, selected, operation, moving, renaming]);
+
+  function focusRename() {
+    if (!renaming) return;
+    renameInput.current?.focus();
+    const dot = renaming.kind === "file" ? renaming.name.lastIndexOf(".") : -1;
+    renameInput.current?.setSelectionRange(
+      0,
+      dot > 0 ? dot : renaming.name.length,
+    );
+  }
+  useEffect(focusRename, [renaming]);
+  useEffect(() => {
+    if (renameError && !moving) renameInput.current?.focus();
+  }, [renameError, moving]);
+
+  useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -114,6 +214,8 @@ export default function ProjectFileTree({
   function select(path: string, isDirectory: boolean) {
     selectionRevision.current++;
     if (creatingIn !== null && !creatingRef.current) cancelCreate();
+    if (renaming && renaming.path !== path && !movingRef.current)
+      setRenaming(null);
     openRequest.current?.abort();
     setOpening("");
     setSelected(path);
@@ -122,8 +224,12 @@ export default function ProjectFileTree({
     );
   }
 
-  function startCreate(kind: "file" | "directory" = "file") {
+  function startCreate(
+    kind: "file" | "directory" = "file",
+    parent = selectedDirectory,
+  ) {
     if (movingRef.current) return;
+    setRenaming(null);
     if (creatingIn !== null) {
       nameInput.current?.focus();
       return;
@@ -132,7 +238,7 @@ export default function ProjectFileTree({
     setOpening("");
     onClearFilter?.();
     const next = new Set(expanded);
-    const segments = selectedDirectory.split("/").filter(Boolean);
+    const segments = parent.split("/").filter(Boolean);
     for (let index = 0; index < segments.length; index++) {
       const path = segments.slice(0, index + 1).join("/");
       next.add(path);
@@ -143,7 +249,7 @@ export default function ProjectFileTree({
     setNewName("");
     setCreateError("");
     setCreateKind(kind);
-    setCreatingIn(selectedDirectory);
+    setCreatingIn(parent);
   }
 
   function cancelCreate() {
@@ -214,6 +320,7 @@ export default function ProjectFileTree({
       <form
         className="project-create-file"
         noValidate
+        onContextMenu={(event) => event.stopPropagation()}
         aria-label={`${folder ? "Новая папка" : "Новый файл"}: ${path || "корень проекта"}`}
         style={{ paddingLeft: 12 + (level - 1) * 14 + 18 }}
         onSubmit={(event) => {
@@ -281,6 +388,135 @@ export default function ProjectFileTree({
             role="alert"
           >
             {createError}
+          </p>
+        )}
+      </form>
+    );
+  }
+
+  function cancelRename() {
+    if (movingRef.current) return;
+    setRenaming(null);
+    setRenameError("");
+    pendingTreeFocus.current = true;
+  }
+
+  async function submitRename() {
+    if (!renaming || movingRef.current) return;
+    if (
+      !renameName.trim() ||
+      renameName === "." ||
+      renameName === ".." ||
+      /[/\\\u0000-\u001f\u007f]/.test(renameName)
+    ) {
+      setRenameError("Введите имя без разделителей пути");
+      renameInput.current?.focus();
+      return;
+    }
+    if (renameName === renaming.name) {
+      cancelRename();
+      return;
+    }
+    setRenameError("");
+    try {
+      await performMove(renaming, {
+        path: renaming.path,
+        directory: renaming.path.slice(
+          0,
+          Math.max(0, renaming.path.lastIndexOf("/")),
+        ),
+        name: renameName,
+      });
+      if (mounted.current) {
+        setRenaming(null);
+        pendingTreeFocus.current = true;
+      }
+    } catch (error) {
+      if (mounted.current) setRenameError((error as Error).message);
+    }
+  }
+
+  function renameRow(entry: ProjectTreeEntry, level: number, fullPath = false) {
+    const folder = entry.kind === "directory";
+    const Icon = folder ? Folder : /\.sql$/i.test(entry.name) ? Code : FileText;
+    return (
+      <form
+        key={entry.path}
+        role="treeitem"
+        aria-label={entry.name}
+        aria-level={level}
+        aria-selected={selected === entry.path}
+        aria-expanded={folder ? expanded.has(entry.path) : undefined}
+        aria-busy={!!moving}
+        title={entry.path}
+        className="project-rename-file selected"
+        style={{
+          paddingLeft: 12 + (level - 1) * 14 + (folder || fullPath ? 0 : 18),
+        }}
+        noValidate
+        onContextMenu={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submitRename();
+        }}
+      >
+        <div className="project-create-row">
+          {folder && (
+            <CaretRight
+              size={12}
+              className={expanded.has(entry.path) ? "expanded" : ""}
+              aria-hidden="true"
+            />
+          )}
+          <Icon size={15} aria-hidden="true" />
+          <input
+            ref={renameInput}
+            aria-label="Новое имя"
+            value={renameName}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            disabled={!!moving}
+            aria-invalid={!!renameError}
+            aria-describedby={renameError ? "project-rename-error" : undefined}
+            onChange={(event) => {
+              setRenameName(event.target.value);
+              setRenameError("");
+            }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRename();
+              }
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (!event.nativeEvent.isComposing) void submitRename();
+              }
+            }}
+          />
+          <IconButton
+            label="Применить имя"
+            onClick={() => void submitRename()}
+            disabled={!!moving}
+          >
+            {moving ? <span aria-hidden="true">…</span> : <Check size={13} />}
+          </IconButton>
+          <IconButton
+            label="Отменить переименование"
+            onClick={cancelRename}
+            disabled={!!moving}
+          >
+            <X size={13} />
+          </IconButton>
+        </div>
+        {renameError && (
+          <p
+            id="project-rename-error"
+            className="project-create-error"
+            role="alert"
+          >
+            {renameError}
           </p>
         )}
       </form>
@@ -375,6 +611,7 @@ export default function ProjectFileTree({
   }
 
   async function open(path: string) {
+    if (renaming && !movingRef.current) setRenaming(null);
     selectionRevision.current++;
     openRequest.current?.abort();
     const controller = new AbortController();
@@ -397,6 +634,52 @@ export default function ProjectFileTree({
   }
 
   function navigate(event: KeyboardEvent<HTMLDivElement>) {
+    if (
+      (event.target as HTMLElement).closest(
+        "input, textarea, [contenteditable=true]",
+      )
+    )
+      return;
+    if (
+      event.key === "ContextMenu" ||
+      (event.key === "F10" && event.shiftKey)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const target =
+        (event.target as HTMLElement).closest<HTMLElement>(
+          '[role="treeitem"]',
+        ) || event.currentTarget;
+      const bounds = target.getBoundingClientRect();
+      target.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: bounds.left + 16,
+          clientY: bounds.top + 16,
+        }),
+      );
+      return;
+    }
+    if (event.key === "F2") {
+      const target = (event.target as HTMLElement).closest<HTMLElement>(
+        '[role="treeitem"]',
+      );
+      if (target) {
+        event.preventDefault();
+        event.stopPropagation();
+        beginOperation(
+          {
+            path: target.title,
+            name: target.title.split("/").at(-1)!,
+            kind: target.hasAttribute("aria-expanded") ? "directory" : "file",
+          },
+          "rename",
+        );
+      }
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -464,30 +747,109 @@ export default function ProjectFileTree({
     setDropPath(null);
   }
 
-  async function moveFile(path: string, directory: string) {
-    if (!onMoveFile || movingRef.current) return;
-    const parent = path.slice(0, Math.max(0, path.lastIndexOf("/")));
-    if (parent === directory) return;
+  function refreshTree(nextExpanded: Set<string>) {
+    generation.current++;
+    requests.current.forEach((request) => request.abort());
+    requests.current.clear();
+    setDirectories({});
+    setExpanded(nextExpanded);
+    void load("");
+    nextExpanded.forEach((path) => void load(path));
+  }
+  async function performMove(entry: ProjectTreeEntry, input: MoveProjectFile) {
+    if (!onMoveFile || movingRef.current)
+      throw new Error("Дождитесь завершения операции");
     const selectionAtStart = selectionRevision.current;
     movingRef.current = true;
-    setMoving(path);
+    setMoving(input.path);
     openRequest.current?.abort();
     setOpening("");
     cancelCreate();
     try {
-      const result = await onMoveFile({ path, directory });
+      const result = await onMoveFile(input);
       if (!mounted.current) return;
       onClearFilter?.();
-      void load(parent);
-      void load(directory);
-      if (directory) setExpanded((current) => new Set([...current, directory]));
+      const nextExpanded = new Set(
+        [...expanded].map((path) =>
+          within(path, result.from)
+            ? result.path + path.slice(result.from.length)
+            : path,
+        ),
+      );
+      const parts = input.directory.split("/").filter(Boolean);
+      parts.forEach((_, index) =>
+        nextExpanded.add(parts.slice(0, index + 1).join("/")),
+      );
+      refreshTree(nextExpanded);
       if (selectionRevision.current === selectionAtStart) {
         setSelected(result.path);
-        setSelectedDirectory(directory);
+        setSelectedDirectory(
+          entry.kind === "directory" ? result.path : input.directory,
+        );
       }
-      onNotify(`Файл ${result.name} перемещён`, "success");
+      if (input.name)
+        onNotify(
+          `${entry.kind === "directory" ? "Папка" : "Файл"} ${result.name} ${entry.kind === "directory" ? "переименована" : "переименован"}`,
+          "success",
+        );
+    } finally {
+      movingRef.current = false;
+      if (mounted.current) setMoving(null);
+    }
+  }
+  async function moveFile(path: string, directory: string) {
+    if (path.slice(0, Math.max(0, path.lastIndexOf("/"))) === directory) return;
+    const entry = Object.values(directories)
+      .flatMap((state) => state.tree?.entries || [])
+      .find((entry) => entry.path === path) || {
+      path,
+      name: path.split("/").at(-1)!,
+      kind: "file" as const,
+    };
+    try {
+      await performMove(entry, { path, directory });
     } catch (error) {
       if (mounted.current) onNotify((error as Error).message, "error");
+    }
+  }
+  async function confirmOperation(
+    current: ProjectFileOperation,
+    value: string,
+  ) {
+    const { entry, action } = current;
+    if (action !== "delete") {
+      await performMove(entry, {
+        path: entry.path,
+        directory: value,
+      });
+      return;
+    }
+    if (!onDeleteFile || movingRef.current)
+      throw new Error("Дождитесь завершения операции");
+    movingRef.current = true;
+    setMoving(entry.path);
+    openRequest.current?.abort();
+    setOpening("");
+    cancelCreate();
+    try {
+      const result = await onDeleteFile({ path: entry.path });
+      if (!mounted.current) return;
+      onClearFilter?.();
+      refreshTree(
+        new Set([...expanded].filter((path) => !within(path, result.path))),
+      );
+      if (within(selected, result.path)) {
+        const parent = result.path.slice(
+          0,
+          Math.max(0, result.path.lastIndexOf("/")),
+        );
+        setSelected(parent);
+        setSelectedDirectory(parent);
+      }
+      onNotify(
+        `${entry.kind === "directory" ? "Папка" : "Файл"} ${entry.name} ${entry.kind === "directory" ? "удалена" : "удалён"}`,
+        "success",
+      );
     } finally {
       movingRef.current = false;
       if (mounted.current) setMoving(null);
@@ -507,6 +869,8 @@ export default function ProjectFileTree({
       return (
         !!path &&
         !movingRef.current &&
+        !renaming &&
+        !within(directory, path) &&
         (directory !== "" || isTreeBackground(event.target)) &&
         path.slice(0, Math.max(0, path.lastIndexOf("/"))) !== directory
       );
@@ -554,6 +918,7 @@ export default function ProjectFileTree({
     level: number,
     fullPath = false,
   ) {
+    if (renaming?.path === path) return renameRow(renaming, level, fullPath);
     const Icon = /\.sql$/i.test(name) ? Code : FileText;
     const work = workLocks.find(
       (work) => work.target.kind === "file" && work.target.id === path,
@@ -566,9 +931,15 @@ export default function ProjectFileTree({
         aria-selected={selected === path}
         aria-busy={opening === path}
         disabled={moving === path}
-        draggable={!!onMoveFile && !work && !moving && !creating}
+        draggable={!!onMoveFile && !work && !moving && !creating && !renaming}
         onDragStart={(event) => {
-          if (!onMoveFile || work || movingRef.current || creatingRef.current) {
+          if (
+            !onMoveFile ||
+            work ||
+            movingRef.current ||
+            creatingRef.current ||
+            renaming
+          ) {
             event.preventDefault();
             return;
           }
@@ -585,6 +956,9 @@ export default function ProjectFileTree({
         title={path}
         className={`project-file-row ${selected === path ? "selected" : ""}${work ? " agent-work-active" : ""}`}
         style={{ paddingLeft: 12 + (level - 1) * 14 + (fullPath ? 0 : 18) }}
+        onContextMenu={(event) =>
+          contextTarget({ path, name, kind: "file" }, event.currentTarget)
+        }
         onClick={() => void open(path)}
         onFocus={() => select(path, false)}
       >
@@ -628,31 +1002,66 @@ export default function ProjectFileTree({
             fileRow(entry.path, entry.name, level)
           ) : (
             <div key={entry.path} role="none">
-              <button
-                type="button"
-                role="treeitem"
-                aria-level={level}
-                aria-expanded={expanded.has(entry.path)}
-                aria-selected={selected === entry.path}
-                className={`project-file-row project-folder-row ${selected === entry.path ? "selected" : ""}${dropPath === entry.path ? " project-drop-active" : ""}`}
-                {...dropTarget(entry.path)}
-                title={entry.path}
-                style={{ paddingLeft: 12 + (level - 1) * 14 }}
-                onClick={() => toggle(entry.path)}
-                onFocus={() => select(entry.path, true)}
-              >
-                <CaretRight
-                  size={12}
-                  className={expanded.has(entry.path) ? "expanded" : ""}
-                  aria-hidden="true"
-                />
-                {expanded.has(entry.path) ? (
-                  <FolderOpen size={15} aria-hidden="true" />
-                ) : (
-                  <Folder size={15} aria-hidden="true" />
-                )}
-                <span className="project-file-name">{entry.name}</span>
-              </button>
+              {renaming?.path === entry.path ? (
+                renameRow(entry, level)
+              ) : (
+                <button
+                  type="button"
+                  role="treeitem"
+                  aria-level={level}
+                  aria-expanded={expanded.has(entry.path)}
+                  aria-selected={selected === entry.path}
+                  className={`project-file-row project-folder-row ${selected === entry.path ? "selected" : ""}${dropPath === entry.path ? " project-drop-active" : ""}`}
+                  {...dropTarget(entry.path)}
+                  title={entry.path}
+                  style={{ paddingLeft: 12 + (level - 1) * 14 }}
+                  disabled={moving === entry.path}
+                  draggable={
+                    !!onMoveFile &&
+                    !locked(entry.path) &&
+                    !moving &&
+                    !creating &&
+                    !renaming
+                  }
+                  onDragStart={(event) => {
+                    if (
+                      !onMoveFile ||
+                      locked(entry.path) ||
+                      movingRef.current ||
+                      creatingRef.current ||
+                      renaming
+                    ) {
+                      event.preventDefault();
+                      return;
+                    }
+                    draggedFileRef.current = entry.path;
+                    setDraggedFile(entry.path);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(
+                      "application/x-miracle-project-file",
+                      entry.path,
+                    );
+                  }}
+                  onDragEnd={clearDrag}
+                  onContextMenu={(event) =>
+                    contextTarget(entry, event.currentTarget)
+                  }
+                  onClick={() => toggle(entry.path)}
+                  onFocus={() => select(entry.path, true)}
+                >
+                  <CaretRight
+                    size={12}
+                    className={expanded.has(entry.path) ? "expanded" : ""}
+                    aria-hidden="true"
+                  />
+                  {expanded.has(entry.path) ? (
+                    <FolderOpen size={15} aria-hidden="true" />
+                  ) : (
+                    <Folder size={15} aria-hidden="true" />
+                  )}
+                  <span className="project-file-name">{entry.name}</span>
+                </button>
+              )}
               {expanded.has(entry.path) && (
                 <div role="group">{directory(entry.path, level + 1)}</div>
               )}
@@ -701,54 +1110,88 @@ export default function ProjectFileTree({
         : actionsTarget === undefined && (
             <div className="project-tree-actions">{actions}</div>
           )}
-      <div
-        className={`project-file-tree${dropPath === "" ? " project-root-drop-active" : ""}`}
-        role="tree"
-        aria-label="Файлы проекта"
-        tabIndex={0}
-        {...dropTarget("")}
-        onClick={(event) => {
-          if (!isTreeBackground(event.target)) return;
-          select("", true);
-          event.currentTarget.focus();
+      <ProjectFileContextMenu
+        entry={menuEntry}
+        busy={creating || !!moving}
+        locked={!!menuEntry && locked(menuEntry.path)}
+        canMove={!!onMoveFile}
+        canDelete={!!onDeleteFile}
+        onAction={menuAction}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (renaming) focusRename();
+          else if (!skipMenuFocus.current)
+            (menuTrigger.current?.isConnected
+              ? menuTrigger.current
+              : treeRef.current
+            )?.focus();
         }}
-        onKeyDown={navigate}
       >
-        {search && creatingIn === null ? (
-          <>
-            {searchResult.loading && (
-              <p className="project-tree-note" role="status">
-                Поиск…
-              </p>
-            )}
-            {searchResult.error && (
-              <p className="project-tree-note" role="alert">
-                {searchResult.error}
-              </p>
-            )}
-            {searchResult.files.map((path) =>
-              fileRow(path, path.split("/").at(-1)!, 1, true),
-            )}
-            {!searchResult.loading &&
-              !searchResult.error &&
-              !searchResult.files.length && (
+        <div
+          ref={treeRef}
+          className={`project-file-tree${dropPath === "" ? " project-root-drop-active" : ""}`}
+          role="tree"
+          aria-label="Файлы проекта"
+          tabIndex={0}
+          {...dropTarget("")}
+          onClick={(event) => {
+            if (!isTreeBackground(event.target)) return;
+            select("", true);
+            event.currentTarget.focus();
+          }}
+          onContextMenu={(event) => {
+            if (isTreeBackground(event.target))
+              contextTarget(null, event.currentTarget);
+          }}
+          onKeyDown={navigate}
+        >
+          {search && creatingIn === null ? (
+            <>
+              {searchResult.loading && (
                 <p className="project-tree-note" role="status">
-                  Файлы не найдены
+                  Поиск…
                 </p>
               )}
-            {searchResult.truncated && (
-              <p className="project-tree-note">
-                Показана часть результатов. Уточните поиск.
-              </p>
-            )}
-          </>
-        ) : (
-          directory("", 1)
-        )}
-        {draggedFile?.includes("/") && (
-          <p className="project-root-drop-hint">Переместить в корень проекта</p>
-        )}
-      </div>
+              {searchResult.error && (
+                <p className="project-tree-note" role="alert">
+                  {searchResult.error}
+                </p>
+              )}
+              {searchResult.files.map((path) =>
+                fileRow(path, path.split("/").at(-1)!, 1, true),
+              )}
+              {!searchResult.loading &&
+                !searchResult.error &&
+                !searchResult.files.length && (
+                  <p className="project-tree-note" role="status">
+                    Файлы не найдены
+                  </p>
+                )}
+              {searchResult.truncated && (
+                <p className="project-tree-note">
+                  Показана часть результатов. Уточните поиск.
+                </p>
+              )}
+            </>
+          ) : (
+            directory("", 1)
+          )}
+          {draggedFile?.includes("/") && (
+            <p className="project-root-drop-hint">
+              Переместить в корень проекта
+            </p>
+          )}
+        </div>
+      </ProjectFileContextMenu>
+      {operation && (
+        <ProjectFileActionDialog
+          key={`${operation.action}:${operation.entry.path}`}
+          operation={operation}
+          onClose={() => setOperation(null)}
+          onConfirm={confirmOperation}
+          onRestoreFocus={restoreTreeFocus}
+        />
+      )}
     </>
   );
 }

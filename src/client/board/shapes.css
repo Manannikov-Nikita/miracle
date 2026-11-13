@@ -9,6 +9,23 @@
 .board-artifact-shape > .board-node-body {
   border-radius: 0;
 }
+.react-flow__node.board-flow-shape,
+.board-artifact-shape,
+.board-artifact-shape > .board-node-body,
+.board-artifact-shape .board-shape-content {
+  pointer-events: none;
+}
+.board-artifact-shape .board-shape-outline > :is(rect, ellipse, polygon),
+.board-artifact-shape .react-flow__handle,
+.board-artifact-shape .react-flow__resize-control {
+  pointer-events: auto;
+}
+/* The shape is its own visible container; keep manipulation handles without
+   painting an extra card rectangle around non-rectangular silhouettes. */
+.board-artifact-shape .board-resize-line::before,
+.board-artifact-shape .shape-transform-frame {
+  display: none;
+}
 .board-shape-content {
   position: relative;
   width: 100%;

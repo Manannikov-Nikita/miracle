@@ -68,7 +68,7 @@ vi.mock("@monaco-editor/react", async () => {
   };
 });
 vi.mock("monaco-editor/editor/editor.api.js", () => ({
-  editor: { defineTheme() {} },
+  editor: { defineTheme() {}, setModelLanguage() {} },
   KeyMod: { CtrlCmd: 1, Alt: 2 },
   KeyCode: { Enter: 3, KeyL: 4, KeyS: 5 },
   languages: {

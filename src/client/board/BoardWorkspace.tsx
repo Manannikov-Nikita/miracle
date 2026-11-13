@@ -1,4 +1,11 @@
 import CanvasDragOverlay from "./CanvasDragOverlay";
+import CanvasToolPreview from "./CanvasToolPreview";
+import {
+  createToolNode,
+  type CanvasTool,
+  type CanvasPoint,
+} from "./canvas-tools";
+import { useToolDrag } from "./useToolDrag";
 import {
   clipboardImageFiles,
   uploadBoardImage,
@@ -32,6 +39,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowCounterClockwise,
   ArrowClockwise,
+  Check,
   DotsThree,
   CornersOut,
   PresentationChart,
@@ -46,6 +54,7 @@ import {
   SlidersHorizontal,
   Trash,
   TextT,
+  Table,
 } from "@phosphor-icons/react";
 import "@xyflow/react/dist/style.css";
 import type {
@@ -97,7 +106,7 @@ import ArtifactNode, {
 import Inspector from "./Inspector";
 import ShapePicker from "./ShapePicker";
 import { presentationColors } from "./presentation-colors";
-import { SHAPE_OPTIONS, type ShapeKind } from "../../shared/shapes";
+import { type ShapeKind } from "../../shared/shapes";
 import BoardFlow from "./BoardFlow";
 import BoardEdgeView, {
   type BoardFlowEdge,
@@ -118,6 +127,7 @@ import {
 import { useBoard } from "./useBoard";
 import { readBoardViewport, saveBoardViewport } from "./viewport";
 import { applyBoardNodeChanges } from "./flow-nodes";
+import { getNodeVisualBounds } from "./shape-geometry";
 import { boardHandleSide } from "./connection-sides";
 import {
   alignBoardNodes,
@@ -173,7 +183,7 @@ function canvasFocusTarget(target: EventTarget | null): target is Element {
   return (
     target instanceof Element &&
     !target.closest(
-      "a[href],button,input,select,textarea,[contenteditable=true],[role=textbox],.cm-editor,.monaco-editor",
+      "a[href],button,input,select,textarea,[contenteditable=true],[role=textbox],.cm-editor,.monaco-editor,.board-sql-table",
     )
   );
 }
@@ -279,6 +289,21 @@ function Workspace({
   const imageInput = useRef<HTMLInputElement>(null);
   const [uploadingImages, setUploadingImages] = useState(false);
   const imageUploadPending = useRef(false);
+  const imagePlacement = useRef<{
+    boardId: string;
+    slideId?: string;
+    sequence: number;
+    point: CanvasPoint;
+  } | null>(null);
+  const [shapePickerOpen, setShapePickerOpen] = useState(false);
+  useEffect(() => {
+    const input = imageInput.current;
+    const cancel = () => {
+      imagePlacement.current = null;
+    };
+    input?.addEventListener("cancel", cancel);
+    return () => input?.removeEventListener("cancel", cancel);
+  }, [board?.id]);
   const [localFocus, setLocalFocus] = useState(false);
   const [show, setShow] = useState<{
     boardId: string;
@@ -548,6 +573,7 @@ function Workspace({
     slideId?: string;
     node: BoardNode;
     rotation: boolean;
+    direction: boolean;
     rectangle: boolean;
   } | null>(null);
   const shapeTransformStart = useCallback(
@@ -574,6 +600,7 @@ function Workspace({
         slideId: slideRef.current,
         node,
         rotation: false,
+        direction: false,
         rectangle: false,
       };
       gesture.current = current.document;
@@ -611,6 +638,16 @@ function Workspace({
             ...node.data.shape,
             rotation: normalizeRotation(patch.rotation),
           },
+        };
+      }
+      if (
+        node.data.shape.type === "line" &&
+        patch.lineDirection !== undefined
+      ) {
+        active.direction = true;
+        next.data = {
+          ...next.data,
+          shape: { ...next.data.shape!, lineDirection: patch.lineDirection },
         };
       }
       if (patch.rectangle) {
@@ -675,11 +712,18 @@ function Workspace({
             next.width = active.node.width;
             next.height = active.node.height;
           }
-          if (active.rotation) {
+          if (active.rotation || active.direction) {
             const shape = { ...node.data.shape };
-            if (active.node.data.shape?.rotation === undefined)
-              delete shape.rotation;
-            else shape.rotation = active.node.data.shape.rotation;
+            if (active.rotation) {
+              if (active.node.data.shape?.rotation === undefined)
+                delete shape.rotation;
+              else shape.rotation = active.node.data.shape.rotation;
+            }
+            if (active.direction) {
+              if (active.node.data.shape?.lineDirection === undefined)
+                delete shape.lineDirection;
+              else shape.lineDirection = active.node.data.shape.lineDirection;
+            }
             next.data = { ...node.data, shape };
           }
           return next;
@@ -1358,6 +1402,23 @@ function Workspace({
   };
   registryHandle.current = {
     openSearchResult,
+    acceptsToolPoint: (point) => {
+      const target = document.elementFromPoint?.(point.x, point.y);
+      return (
+        !target ||
+        (!!canvasRef.current?.contains(target) &&
+          !target.closest(
+            ".board-header,.board-tools-dock,.board-inspector,.board-alignment-toolbar,.react-flow__controls,.react-flow__minimap,[role=dialog],[role=menu]",
+          ))
+      );
+    },
+    toolAppearance: () => ({
+      zoom: flow.getZoom(),
+      presentation,
+      background: slide?.background,
+    }),
+    createTool: (tool, destination, point) =>
+      insertTool(tool, destination, point),
     destination: () => {
       const current = store.current.current;
       return current
@@ -1386,6 +1447,10 @@ function Workspace({
       registry?.register(kind, {
         openSearchResult: (...args) =>
           registryHandle.current!.openSearchResult!(...args),
+        acceptsToolPoint: (point) =>
+          registryHandle.current!.acceptsToolPoint!(point),
+        toolAppearance: () => registryHandle.current!.toolAppearance!(),
+        createTool: (...args) => registryHandle.current!.createTool!(...args),
         destination: () => registryHandle.current!.destination(),
         ready: () => registryHandle.current!.ready!(),
         visible: () => registryHandle.current!.visible!(),
@@ -1698,43 +1763,36 @@ function Workspace({
     },
     [editable, busy, change, store.save, notify],
   );
-  const addShape = (type: ShapeKind) => {
+  const toolTextColor = () => {
+    const color = workspaceRef.current
+      ? getComputedStyle(workspaceRef.current)
+          .getPropertyValue("--board-text")
+          .trim()
+      : "";
+    return slide
+      ? presentationColors(slide.background).text
+      : /^#[0-9a-f]{6}$/i.test(color)
+        ? color
+        : "#eeeff0";
+  };
+  const addShape = (type: ShapeKind, point?: CanvasPoint) => {
     const current = store.current.current;
-    if (!current || current.id !== board?.id || !editable || store.conflict)
+    if (
+      !current ||
+      current.id !== board?.id ||
+      !editableRef.current ||
+      conflictRef.current
+    )
       return;
-    const width =
-      type === "line"
-        ? 260
-        : type === "triangle" || type === "diamond"
-          ? 180
-          : 240;
-    const height =
-      type === "line"
-        ? 40
-        : type === "triangle" || type === "diamond"
-          ? 180
-          : 160;
-    const bounds = canvasRef.current?.getBoundingClientRect();
-    const center = slideId
-      ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
-      : flow.screenToFlowPosition({
-          x: bounds ? bounds.left + bounds.width / 2 : window.innerWidth / 2,
-          y: bounds ? bounds.top + bounds.height / 2 : window.innerHeight / 2,
-        });
-    const node: BoardNode = {
+    const center =
+      point ??
+      (slideId
+        ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
+        : canvasCenter());
+    const node = createToolNode({ kind: "shape", shape: type }, center, {
       id: crypto.randomUUID(),
-      type: "artifact",
       slideId,
-      position: { x: center.x - width / 2, y: center.y - height / 2 },
-      width,
-      height,
-      data: {
-        kind: "shape",
-        title: SHAPE_OPTIONS.find((option) => option.type === type)!.label,
-        text: "",
-        shape: { type },
-      },
-    };
+    })!;
     const document = {
       ...current.document,
       nodes: [...current.document.nodes, node],
@@ -1826,71 +1884,43 @@ function Workspace({
       if (mounted.current) setUploadingImages(false);
     }
   };
-  const addText = (kind: "note" | "markdown" | "text") => {
-    if (!board || !editable || store.conflict) return;
+  const addText = (
+    kind: "note" | "markdown" | "text" | "table",
+    point?: CanvasPoint,
+  ) => {
+    const current = store.current.current;
+    if (
+      !current ||
+      current.id !== board?.id ||
+      !editableRef.current ||
+      conflictRef.current
+    )
+      return;
     const plainText = kind === "text";
     const width = 360;
     const height = plainText ? 120 : 260;
-    const bounds = canvasRef.current?.getBoundingClientRect();
+    const fallback = flow.screenToFlowPosition({
+      x: window.innerWidth * 0.65,
+      y: window.innerHeight * 0.35,
+    });
     const center =
-      plainText && bounds
-        ? flow.screenToFlowPosition({
-            x: bounds.left + bounds.width / 2,
-            y: bounds.top + bounds.height / 2,
-          })
-        : null;
-    const boardText = workspaceRef.current
-      ? getComputedStyle(workspaceRef.current)
-          .getPropertyValue("--board-text")
-          .trim()
-      : "";
-    const node: BoardNode = {
+      point ??
+      (slideId
+        ? { x: PRESENTATION_WIDTH / 2, y: PRESENTATION_HEIGHT / 2 }
+        : plainText || kind === "table"
+          ? canvasCenter()
+          : { x: fallback.x + width / 2, y: fallback.y + height / 2 });
+    const node = createToolNode({ kind }, center, {
       id: crypto.randomUUID(),
-      type: "artifact",
       slideId,
-      position: slideId
-        ? {
-            x: (PRESENTATION_WIDTH - width) / 2,
-            y: (PRESENTATION_HEIGHT - height) / 2,
-          }
-        : center
-          ? { x: center.x - width / 2, y: center.y - height / 2 }
-          : flow.screenToFlowPosition({
-              x: window.innerWidth * 0.65,
-              y: window.innerHeight * 0.35,
-            }),
-      width,
-      height,
-      data: {
-        kind,
-        title: plainText ? "Текст" : kind === "note" ? "Заметка" : "Markdown",
-        text:
-          kind === "markdown"
-            ? "## Наблюдение\n\nДобавьте контекст к данным."
-            : plainText
-              ? "Текст"
-              : "",
-        ...(plainText && {
-          textStyle: {
-            fontFamily: "sans" as const,
-            fontSize: 32,
-            textAlign: "left" as const,
-            verticalAlign: "top" as const,
-            textColor: slide
-              ? presentationColors(slide.background).text
-              : /^#[0-9a-f]{6}$/i.test(boardText)
-                ? boardText
-                : "#eeeff0",
-          },
-        }),
-      },
-    };
+      textColor: toolTextColor(),
+    })!;
     const document = {
-      ...board.document,
-      nodes: [...board.document.nodes, node],
+      ...current.document,
+      nodes: [...current.document.nodes, node],
     };
     try {
-      if (presentation || plainText) validateCanvasInsertion(document);
+      validateCanvasInsertion(document);
       change(document);
     } catch (error) {
       notify((error as Error).message, "error");
@@ -1903,6 +1933,76 @@ function Workspace({
       setInspecting(true);
     }
   };
+  const chooseImage = (point?: CanvasPoint) => {
+    const current = store.current.current;
+    if (
+      !current ||
+      !editableRef.current ||
+      conflictRef.current ||
+      imageUploadPending.current
+    )
+      return;
+    imagePlacement.current = point
+      ? {
+          boardId: current.id,
+          slideId: slideRef.current,
+          sequence: store.selectionSequence(),
+          point,
+        }
+      : null;
+    imageInput.current?.click();
+  };
+  const insertTool = (
+    tool: CanvasTool,
+    destination: CanvasDestination,
+    point: CanvasPoint,
+  ) => {
+    const current = store.current.current;
+    if (
+      !current ||
+      current.id !== destination.boardId ||
+      slideRef.current !== destination.slideId ||
+      !store.ready ||
+      !editableRef.current ||
+      conflictRef.current
+    )
+      return;
+    if (tool.kind === "image") chooseImage(point);
+    else if (tool.kind === "shape") addShape(tool.shape, point);
+    else addText(tool.kind, point);
+    if (
+      store.current.current?.document.nodes.length !==
+      current.document.nodes.length
+    ) {
+      onActivate?.();
+      workspaceRef.current?.focus({ preventScroll: true });
+    }
+  };
+  const toolDrag = useToolDrag<CanvasTool>({
+    disabled: !editable || !!store.conflict,
+    resetKey: `${board?.id}:${slideId}`,
+    onStart: () => setShapePickerOpen(false),
+    onDrop: (tool, point) => {
+      if (registry) registry.createToolAt(tool, point);
+      else {
+        const handle = registryHandle.current;
+        const destination = handle?.destination();
+        if (
+          destination &&
+          handle?.containsPoint(point) &&
+          handle.acceptsToolPoint?.(point) !== false
+        )
+          handle.createTool?.(tool, destination, handle.screenToCanvas(point));
+      }
+    },
+  });
+  const toolPreviewAppearance = toolDrag.preview
+    ? (registry?.toolTarget(toolDrag.preview.point)?.toolAppearance?.() ?? {
+        zoom: flow.getZoom(),
+        presentation,
+        background: slide?.background,
+      })
+    : null;
   const onNodesChange = (incoming: NodeChange<BoardCanvasNode>[]) => {
     const current = store.current.current;
     if (!current || current.id !== board?.id) return;
@@ -1997,8 +2097,9 @@ function Workspace({
         nodes = snapped.nodes;
         if (!finished) setGuides(snapped.guides);
       }
-      if (finished) change({ ...current.document, nodes });
-      else setPreviewNodes(nodes);
+      if (finished) {
+        change({ ...current.document, nodes });
+      } else setPreviewNodes(nodes);
       return;
     }
     const ongoing = meaningful.some(
@@ -2026,10 +2127,9 @@ function Workspace({
       if (item.type !== "position" || !item.dragging || !item.position)
         return false;
       const node = current.document.nodes.find((node) => node.id === item.id);
+      const frame = node && getNodeVisualBounds(node);
       return (
-        node &&
-        (node.position.x !== item.position.x ||
-          node.position.y !== item.position.y)
+        frame && (frame.x !== item.position.x || frame.y !== item.position.y)
       );
     });
     let workingDocument = current.document;
@@ -2462,6 +2562,8 @@ function Workspace({
       nodeBusy,
     ],
   );
+  const saveState = editable ? store.state : "Только просмотр";
+  const saved = editable && store.state === "Сохранено";
   return (
     <section
       ref={workspaceRef}
@@ -2597,7 +2699,7 @@ function Workspace({
           !active ||
           !workspaceRef.current?.contains(e.target as Node) ||
           (e.target as HTMLElement).closest(
-            "input,textarea,[contenteditable=true]",
+            "input,textarea,select,[contenteditable=true],.board-sql-table",
           )
         )
           return;
@@ -2632,120 +2734,6 @@ function Workspace({
       className={`board-workspace${presentation ? " presentation-workspace" : ""}${hasSelection ? " board-has-selection" : ""}${copyDragging ? " board-copy-dragging" : ""}`}
       aria-label={presentation ? "Презентация" : "Аналитическая доска"}
     >
-      <div
-        className={`board-header${store.list.length ? "" : " board-header-empty"}`}
-      >
-        <span className="board-heading">{canvasName}</span>
-        <AgentWorkIndicator
-          work={board ? boardWork(agentLocks, board.id) : undefined}
-          compact
-        />
-        {store.list.length > 0 && (
-          <Select
-            aria-label={presentation ? "Выбрать презентацию" : "Выбрать доску"}
-            value={board?.id ?? ""}
-            placeholder={
-              presentation ? "Выберите презентацию" : "Выберите доску"
-            }
-            onValueChange={(selectedId) => {
-              void store.save().then(() => store.select(selectedId));
-            }}
-            options={store.list.map((b) => ({ value: b.id, label: b.name }))}
-          />
-        )}
-        {slide && (
-          <button
-            className="board-header-icon presentation-show-button"
-            title="Начать показ"
-            aria-label="Начать показ"
-            disabled={startingShow || store.loading || store.conflict}
-            onClick={(event) => void startShow(event.currentTarget)}
-          >
-            <ProjectorScreen size={18} aria-hidden="true" />
-          </button>
-        )}
-        {editable && store.list.length > 0 && (
-          <>
-            <button
-              onClick={() => openDialog("new")}
-              title={presentation ? "Создать презентацию" : "Создать доску"}
-              aria-label={
-                presentation ? "Создать презентацию" : "Создать доску"
-              }
-              className="board-header-icon"
-            >
-              <Plus size={17} aria-hidden="true" />
-            </button>
-            {board && (
-              <DropdownMenu.Root>
-                <DropdownMenu.Trigger asChild>
-                  <button
-                    ref={boardMenuTrigger}
-                    className="board-header-icon"
-                    title={
-                      presentation
-                        ? "Действия с презентацией"
-                        : "Действия с доской"
-                    }
-                    aria-label={
-                      presentation
-                        ? "Действия с презентацией"
-                        : "Действия с доской"
-                    }
-                  >
-                    <DotsThree size={19} weight="bold" aria-hidden="true" />
-                  </button>
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Portal>
-                  <DropdownMenu.Content
-                    className="dropdown-menu"
-                    align="end"
-                    sideOffset={6}
-                    collisionPadding={8}
-                    onCloseAutoFocus={(event) => {
-                      if (dialog) event.preventDefault();
-                    }}
-                    onKeyDown={(event) => event.stopPropagation()}
-                    onKeyUp={(event) => event.stopPropagation()}
-                  >
-                    <DropdownMenu.Item
-                      disabled={!store.canRename()}
-                      onSelect={() =>
-                        openDialog("rename", boardMenuTrigger.current)
-                      }
-                    >
-                      <PencilSimple size={16} aria-hidden="true" />
-                      {presentation
-                        ? "Переименовать презентацию"
-                        : "Переименовать доску"}
-                    </DropdownMenu.Item>
-                    <DropdownMenu.Separator />
-                    <DropdownMenu.Item
-                      className="board-menu-danger"
-                      disabled={!store.canDelete()}
-                      onSelect={() =>
-                        openDialog("delete", boardMenuTrigger.current)
-                      }
-                    >
-                      <Trash size={16} aria-hidden="true" />
-                      {presentation ? "Удалить презентацию" : "Удалить доску"}
-                    </DropdownMenu.Item>
-                  </DropdownMenu.Content>
-                </DropdownMenu.Portal>
-              </DropdownMenu.Root>
-            )}
-          </>
-        )}
-        {board && (
-          <span
-            className={`board-save-state${store.conflict ? " board-warning" : ""}`}
-            role="status"
-            title={editable ? store.state : "Только просмотр"}
-          >
-            {editable ? store.state : "Только просмотр"}
-          </span>
-        )}
-      </div>
       {store.parkedDrafts.length > 0 && (
         <div className="board-agent-recovery" role="status">
           <span>
@@ -2796,10 +2784,14 @@ function Workspace({
           </button>
         </div>
       )}
+      {toolDrag.preview && toolPreviewAppearance && (
+        <CanvasToolPreview {...toolDrag.preview} {...toolPreviewAppearance} />
+      )}
       {previewNodes &&
         transferDrag.current &&
         !transferDrag.current.cancelled && (
           <CanvasDragOverlay
+            source={canvasRef.current}
             nodes={previewNodes.filter((node) =>
               transferDrag.current!.ids.has(node.id),
             )}
@@ -2807,151 +2799,6 @@ function Workspace({
             viewport={transferDrag.current.viewport}
           />
         )}
-      {board && (
-        <div className="board-tools">
-          <ShapePicker disabled={!editable} onSelect={addShape} />
-          <input
-            ref={imageInput}
-            type="file"
-            hidden
-            accept={BOARD_IMAGE_MIME_TYPES.join(",")}
-            multiple
-            aria-label="Файлы изображений"
-            onChange={(event) => {
-              const files = Array.from(event.target.files ?? []);
-              event.target.value = "";
-              void addImages(files);
-            }}
-          />
-          <button
-            disabled={!editable || uploadingImages}
-            onClick={() => imageInput.current?.click()}
-            title={
-              uploadingImages
-                ? "Загрузка изображений…"
-                : "Добавить изображение из файла · Вставить из буфера: ⌘ / Ctrl + V"
-            }
-            aria-label="Добавить изображение"
-            aria-busy={uploadingImages || undefined}
-            className="board-tools-icon"
-          >
-            <ImageSquare size={18} aria-hidden="true" />
-          </button>
-          <button
-            disabled={!editable}
-            onClick={() => addText("text")}
-            title="Добавить текст"
-            aria-label="Добавить текст"
-            className="board-tools-icon"
-          >
-            <TextT size={18} aria-hidden="true" />
-          </button>
-          <button
-            disabled={!editable}
-            onClick={() => addText("note")}
-            title="Добавить заметку"
-            aria-label="Добавить заметку"
-            className="board-tools-icon"
-          >
-            <Note size={18} aria-hidden="true" />
-          </button>
-          <button
-            disabled={!editable}
-            onClick={() => addText("markdown")}
-            title="Добавить Markdown"
-            aria-label="Добавить Markdown"
-            className="board-tools-icon"
-          >
-            <FileMd size={18} aria-hidden="true" />
-          </button>
-          {slide && (
-            <button
-              className="board-tools-icon"
-              aria-label="Вписать слайд"
-              title="Вписать слайд в окно"
-              onClick={fitSlide}
-            >
-              <CornersOut size={17} aria-hidden="true" />
-            </button>
-          )}
-          {!presentation && registry && (
-            <button
-              className="board-tools-icon"
-              aria-label="Добавить в презентацию"
-              title="Добавить в презентацию"
-              disabled={!selectedIds.size}
-              onClick={() => {
-                const current = store.current.current;
-                const fragment =
-                  current &&
-                  createBoardFragment(
-                    current,
-                    workspaceId,
-                    selectionRef.current,
-                  );
-                if (fragment) registry.transfer(fragment);
-              }}
-            >
-              <PresentationChart size={18} aria-hidden="true" />
-            </button>
-          )}
-          <span className="board-tools-divider" />
-          <button
-            disabled={!editable || !store.canUndo}
-            onClick={store.undo}
-            className="board-tools-icon"
-            aria-label="Отменить изменение"
-            title="Отменить"
-          >
-            <ArrowCounterClockwise size={16} aria-hidden="true" />
-          </button>
-          <button
-            disabled={!editable || !store.canRedo}
-            onClick={store.redo}
-            className="board-tools-icon"
-            aria-label="Повторить изменение"
-            title="Повторить"
-          >
-            <ArrowClockwise size={16} aria-hidden="true" />
-          </button>
-          <button
-            disabled={!canInspectSelected}
-            onClick={() => setInspecting((value) => !value)}
-            className="board-tools-icon"
-            aria-label="Свойства"
-            aria-pressed={inspecting && canInspectSelected}
-            title="Свойства выбранного блока"
-          >
-            <SlidersHorizontal size={16} aria-hidden="true" />
-          </button>
-          {editable &&
-            selectedNode?.data.kind === "result" &&
-            store.canEditNode(selectedNode.id) && (
-              <button
-                disabled={
-                  !latestResult ||
-                  latestResult.id === selectedNode.data.resultSetId
-                }
-                title="Заменить источник выбранного блока последним добавленным SQL-результатом"
-                className="board-tools-icon"
-                aria-label="Перепривязать"
-                onClick={() => setRebind(latestResult)}
-              >
-                <LinkSimple size={16} aria-hidden="true" />
-              </button>
-            )}
-          {editable && store.state.includes("Не сохранено") && (
-            <button
-              onClick={() => void store.save()}
-              className="board-tools-icon"
-              aria-label="Повторить сохранение"
-              title="Повторить сохранение"
-            >
-              <FloppyDisk size={16} aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      )}
       {pendingRefreshes.some(
         (pending) =>
           pending.boardId === board?.id &&
@@ -3316,6 +3163,7 @@ function Workspace({
                 />
                 {!presentation && (
                   <MiniMap
+                    position="top-right"
                     style={{ width: 120, height: 75 }}
                     pannable
                     zoomable
@@ -3392,7 +3240,7 @@ function Workspace({
                   <strong>
                     {presentation ? "Выберите презентацию" : "Выберите доску"}
                   </strong>
-                  <p>Откройте нужный документ из списка вверху.</p>
+                  <p>Откройте нужный документ из списка вверху слева.</p>
                 </>
               ) : (
                 <>
@@ -3404,6 +3252,340 @@ function Workspace({
                   <p>Обновите страницу и попробуйте снова.</p>
                 </>
               )}
+            </div>
+          )}
+          <div
+            className={`board-header nodrag nopan nowheel nokey${store.list.length ? "" : " board-header-empty"}`}
+            role="group"
+            aria-label={
+              presentation ? "Презентация и сохранение" : "Доска и сохранение"
+            }
+          >
+            <span className="board-heading">{canvasName}</span>
+            <AgentWorkIndicator
+              work={board ? boardWork(agentLocks, board.id) : undefined}
+              compact
+            />
+            {store.list.length > 0 && (
+              <Select
+                side="bottom"
+                aria-label={
+                  presentation ? "Выбрать презентацию" : "Выбрать доску"
+                }
+                value={board?.id ?? ""}
+                placeholder={
+                  presentation ? "Выберите презентацию" : "Выберите доску"
+                }
+                onValueChange={(selectedId) => {
+                  void store.save().then(() => store.select(selectedId));
+                }}
+                options={store.list.map((b) => ({
+                  value: b.id,
+                  label: b.name,
+                }))}
+              />
+            )}
+            {slide && (
+              <button
+                className="board-header-icon presentation-show-button"
+                title="Начать показ"
+                aria-label="Начать показ"
+                disabled={startingShow || store.loading || store.conflict}
+                onClick={(event) => void startShow(event.currentTarget)}
+              >
+                <ProjectorScreen size={18} aria-hidden="true" />
+              </button>
+            )}
+            {editable && store.list.length > 0 && (
+              <>
+                <button
+                  onClick={() => openDialog("new")}
+                  title={presentation ? "Создать презентацию" : "Создать доску"}
+                  aria-label={
+                    presentation ? "Создать презентацию" : "Создать доску"
+                  }
+                  className="board-header-icon"
+                >
+                  <Plus size={17} aria-hidden="true" />
+                </button>
+                {board && (
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger asChild>
+                      <button
+                        ref={boardMenuTrigger}
+                        className="board-header-icon"
+                        title={
+                          presentation
+                            ? "Действия с презентацией"
+                            : "Действия с доской"
+                        }
+                        aria-label={
+                          presentation
+                            ? "Действия с презентацией"
+                            : "Действия с доской"
+                        }
+                      >
+                        <DotsThree size={19} weight="bold" aria-hidden="true" />
+                      </button>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content
+                        className="dropdown-menu"
+                        align="end"
+                        side="bottom"
+                        sideOffset={12}
+                        collisionPadding={8}
+                        onCloseAutoFocus={(event) => {
+                          if (dialog) event.preventDefault();
+                        }}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onKeyUp={(event) => event.stopPropagation()}
+                      >
+                        <DropdownMenu.Item
+                          disabled={!store.canRename()}
+                          onSelect={() =>
+                            openDialog("rename", boardMenuTrigger.current)
+                          }
+                        >
+                          <PencilSimple size={16} aria-hidden="true" />
+                          {presentation
+                            ? "Переименовать презентацию"
+                            : "Переименовать доску"}
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Separator />
+                        <DropdownMenu.Item
+                          className="board-menu-danger"
+                          disabled={!store.canDelete()}
+                          onSelect={() =>
+                            openDialog("delete", boardMenuTrigger.current)
+                          }
+                        >
+                          <Trash size={16} aria-hidden="true" />
+                          {presentation
+                            ? "Удалить презентацию"
+                            : "Удалить доску"}
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
+                )}
+              </>
+            )}
+            {board && (
+              <span
+                className={`board-save-state${saved ? " board-save-state-saved" : ""}${store.conflict ? " board-warning" : ""}`}
+                role="status"
+                title={saveState}
+              >
+                {saved ? (
+                  <>
+                    <Check size={16} aria-hidden="true" />
+                    <span className="board-save-state-label">{saveState}</span>
+                  </>
+                ) : (
+                  saveState
+                )}
+              </span>
+            )}
+          </div>
+          {board && (
+            <div className="board-tools-dock nodrag nopan nowheel nokey">
+              <div
+                className="board-tools"
+                role="toolbar"
+                aria-label={
+                  presentation ? "Инструменты презентации" : "Инструменты доски"
+                }
+                onDragStart={(event) => event.preventDefault()}
+                onFocusCapture={(event) =>
+                  event.target.scrollIntoView?.({
+                    block: "nearest",
+                    inline: "nearest",
+                  })
+                }
+              >
+                <ShapePicker
+                  disabled={!editable}
+                  open={shapePickerOpen}
+                  onOpenChange={setShapePickerOpen}
+                  dragging={toolDrag.dragging}
+                  onPointerDown={(event, shape) =>
+                    toolDrag.begin(event, { kind: "shape", shape })
+                  }
+                  suppressClick={toolDrag.suppressClick}
+                  onSelect={addShape}
+                />
+                <input
+                  ref={imageInput}
+                  type="file"
+                  hidden
+                  accept={BOARD_IMAGE_MIME_TYPES.join(",")}
+                  multiple
+                  aria-label="Файлы изображений"
+                  onChange={(event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = "";
+                    const placement = imagePlacement.current;
+                    imagePlacement.current = null;
+                    if (
+                      placement &&
+                      (store.current.current?.id !== placement.boardId ||
+                        slideRef.current !== placement.slideId ||
+                        store.selectionSequence() !== placement.sequence)
+                    ) {
+                      if (files.length)
+                        notify(
+                          "Документ изменился. Добавьте изображение ещё раз.",
+                          "error",
+                        );
+                      return;
+                    }
+                    void addImages(files, placement?.point);
+                  }}
+                />
+                <button
+                  disabled={!editable || uploadingImages}
+                  onPointerDown={(event) =>
+                    toolDrag.begin(event, { kind: "image" })
+                  }
+                  onClick={(event) => {
+                    if (!toolDrag.suppressClick(event)) chooseImage();
+                  }}
+                  title={
+                    uploadingImages
+                      ? "Загрузка изображений…"
+                      : "Добавить изображение из файла · Вставить из буфера: ⌘ / Ctrl + V"
+                  }
+                  aria-label="Добавить изображение"
+                  aria-busy={uploadingImages || undefined}
+                  className="board-tools-icon"
+                >
+                  <ImageSquare size={18} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={!editable}
+                  onPointerDown={(event) =>
+                    toolDrag.begin(event, { kind: "text" })
+                  }
+                  onClick={(event) => {
+                    if (!toolDrag.suppressClick(event)) addText("text");
+                  }}
+                  title="Добавить текст"
+                  aria-label="Добавить текст"
+                  className="board-tools-icon"
+                >
+                  <TextT size={18} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={!editable}
+                  onPointerDown={(event) =>
+                    toolDrag.begin(event, { kind: "note" })
+                  }
+                  onClick={(event) => {
+                    if (!toolDrag.suppressClick(event)) addText("note");
+                  }}
+                  title="Добавить заметку"
+                  aria-label="Добавить заметку"
+                  className="board-tools-icon"
+                >
+                  <Note size={18} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={!editable}
+                  onPointerDown={(event) =>
+                    toolDrag.begin(event, { kind: "markdown" })
+                  }
+                  onClick={(event) => {
+                    if (!toolDrag.suppressClick(event)) addText("markdown");
+                  }}
+                  title="Добавить Markdown"
+                  aria-label="Добавить Markdown"
+                  className="board-tools-icon"
+                >
+                  <FileMd size={18} aria-hidden="true" />
+                </button>
+                {!presentation && (
+                  <button
+                    disabled={!editable}
+                    onPointerDown={(event) =>
+                      toolDrag.begin(event, { kind: "table" })
+                    }
+                    onClick={(event) => {
+                      if (!toolDrag.suppressClick(event)) addText("table");
+                    }}
+                    title="Добавить таблицу"
+                    aria-label="Добавить таблицу"
+                    className="board-tools-icon"
+                  >
+                    <Table size={18} aria-hidden="true" />
+                  </button>
+                )}
+                {slide && (
+                  <button
+                    className="board-tools-icon"
+                    aria-label="Вписать слайд"
+                    title="Вписать слайд в окно"
+                    onClick={fitSlide}
+                  >
+                    <CornersOut size={17} aria-hidden="true" />
+                  </button>
+                )}
+                <span className="board-tools-divider" />
+                <button
+                  disabled={!editable || !store.canUndo}
+                  onClick={store.undo}
+                  className="board-tools-icon"
+                  aria-label="Отменить изменение"
+                  title="Отменить"
+                >
+                  <ArrowCounterClockwise size={16} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={!editable || !store.canRedo}
+                  onClick={store.redo}
+                  className="board-tools-icon"
+                  aria-label="Повторить изменение"
+                  title="Повторить"
+                >
+                  <ArrowClockwise size={16} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={!canInspectSelected}
+                  onClick={() => setInspecting((value) => !value)}
+                  className="board-tools-icon"
+                  aria-label="Свойства"
+                  aria-pressed={inspecting && canInspectSelected}
+                  title="Свойства выбранного блока"
+                >
+                  <SlidersHorizontal size={16} aria-hidden="true" />
+                </button>
+                {editable &&
+                  selectedNode?.data.kind === "result" &&
+                  store.canEditNode(selectedNode.id) && (
+                    <button
+                      disabled={
+                        !latestResult ||
+                        latestResult.id === selectedNode.data.resultSetId
+                      }
+                      title="Заменить источник выбранного блока последним добавленным SQL-результатом"
+                      className="board-tools-icon"
+                      aria-label="Перепривязать"
+                      onClick={() => setRebind(latestResult)}
+                    >
+                      <LinkSimple size={16} aria-hidden="true" />
+                    </button>
+                  )}
+                {editable && store.state.includes("Не сохранено") && (
+                  <button
+                    onClick={() => void store.save()}
+                    className="board-tools-icon"
+                    aria-label="Повторить сохранение"
+                    title="Повторить сохранение"
+                  >
+                    <FloppyDisk size={16} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </div>
           )}
           {editable && selectedIds.size >= 2 && (

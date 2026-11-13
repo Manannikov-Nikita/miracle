@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { startAgentTurn } from "../src/server/agents/adapter";
@@ -14,8 +21,9 @@ function setup(scenario = "normal", extra = "") {
   const events = () =>
     existsSync(trace)
       ? readFileSync(trace, "utf8")
-          .trim()
           .split("\n")
+          // The CLI may be creating the file or still appending its last record.
+          .slice(0, -1)
           .map((line) => JSON.parse(line))
       : [];
   const start = (
@@ -37,6 +45,31 @@ function setup(scenario = "normal", extra = "") {
 afterEach(() => {
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
+});
+
+describe("Codex fixture trace polling", () => {
+  it("waits for complete records while the CLI appends its trace", () => {
+    const f = setup();
+    const trace = join(f.cwd, "trace.jsonl");
+    expect(f.events()).toEqual([]);
+    // appendFileSync creates the file before its first write is visible.
+    writeFileSync(trace, "");
+    expect(f.events()).toEqual([]);
+    writeFileSync(trace, '{"pid":123}\n{"wire":');
+    expect(f.events()).toEqual([{ pid: 123 }]);
+    appendFileSync(trace, '{"method":"model/list"}}');
+    expect(f.events()).toEqual([{ pid: 123 }]);
+    appendFileSync(trace, "\n");
+    expect(f.events()).toEqual([
+      { pid: 123 },
+      { wire: { method: "model/list" } },
+    ]);
+  });
+  it("still rejects malformed completed records", () => {
+    const f = setup();
+    writeFileSync(join(f.cwd, "trace.jsonl"), '{"wire":\n');
+    expect(() => f.events()).toThrow(SyntaxError);
+  });
 });
 
 describe("Codex per-chat models", () => {

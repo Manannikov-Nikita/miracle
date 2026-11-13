@@ -176,6 +176,49 @@ try {
       body: JSON.stringify(payload),
     });
   }
+  // Exercise the bundled native addon through the real authenticated API;
+  // an HTTP-only startup check would not detect a missing DuckDB platform binary.
+  const visualTable = await post("/api/visual-table/evaluate", {
+    table: {
+      version: 1,
+      columns: [
+        { id: "qty", name: "Количество", type: "number" },
+        { id: "price", name: "Цена", type: "number" },
+        {
+          id: "amount",
+          name: "Сумма",
+          type: "number",
+          formula: "Количество * Цена",
+          summary: "sum",
+        },
+      ],
+      rows: [
+        { id: "native-first", values: { qty: "12", price: "250" } },
+        { id: "native-second", values: { qty: "2", price: "18000" } },
+      ],
+      edits: [{ rowId: "native-first", columnId: "qty", value: "20" }],
+    },
+  });
+  assert.equal(visualTable.status, 200, await visualTable.clone().text());
+  const computedTable = await visualTable.json();
+  assert.equal(computedTable.totalRowCount, 2);
+  assert.equal(
+    Number(
+      computedTable.rows.find((row) => row.id === "native-first").values.amount,
+    ),
+    5000,
+  );
+  assert.equal(
+    Number(
+      computedTable.rows.find((row) => row.id === "native-second").values
+        .amount,
+    ),
+    36000,
+  );
+  assert.equal(Number(computedTable.summaries.amount), 41000);
+  console.log(
+    "Bundled DuckDB: formulas, local cell overrides and aggregates verified",
+  );
   const untrusted = await post("/api/connections/test", trinoInput);
   assert.equal(untrusted.status, 400);
   assert.match((await untrusted.json()).error, /CA|сертификат/i);

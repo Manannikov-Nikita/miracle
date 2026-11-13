@@ -3,6 +3,9 @@
   width: 100%;
   height: 100%;
 }
+.board-line-hit {
+  stroke-width: calc(8 * var(--board-resize-unit, 1px));
+}
 .board-artifact-shape.agent-work-active .board-shape-line .board-line-shaft {
   stroke: var(--agent-shape-stroke);
 }

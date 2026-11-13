@@ -258,21 +258,30 @@ export default function Inspector({
                 }}
               />
             )}
-            {(!node.data.view || node.data.view === "table") && result && (
-              <TableSettings
-                key={node.id}
-                result={result}
-                spec={
-                  node.data.table ??
-                  createTableSpec(result.columns, node.data.visibleColumns)
-                }
-                disabled={!editable}
-                onChange={(table) => {
-                  if (editable)
-                    change({ ...node, data: { ...node.data, table } });
-                }}
-              />
-            )}
+            {(!node.data.view || node.data.view === "table") &&
+              node.data.visualTableEnabled && (
+                <p className="board-inspector-hint">
+                  Формулы, типы столбцов и итоги редактируются прямо в таблице.
+                  График использует исходный снимок и настройки обычной таблицы.
+                </p>
+              )}
+            {(!node.data.view || node.data.view === "table") &&
+              !node.data.visualTableEnabled &&
+              result && (
+                <TableSettings
+                  key={node.id}
+                  result={result}
+                  spec={
+                    node.data.table ??
+                    createTableSpec(result.columns, node.data.visibleColumns)
+                  }
+                  disabled={!editable}
+                  onChange={(table) => {
+                    if (editable)
+                      change({ ...node, data: { ...node.data, table } });
+                  }}
+                />
+              )}
             <details key={`source:${node.id}`} className="board-source-details">
               <summary>Источник</summary>
               <div className="board-source-content">

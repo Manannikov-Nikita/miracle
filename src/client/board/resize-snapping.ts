@@ -1,5 +1,6 @@
 import type { BoardNode } from "../../shared/types";
 import type { AlignmentGuide, SnapFrame } from "./alignment";
+import { getNodeVisualBounds } from "./shape-geometry";
 
 export type ResizeSides = {
   left?: boolean;
@@ -33,8 +34,9 @@ function nearestSnap(
 ): Snap | undefined {
   let best: Snap | undefined;
   for (const target of stationary) {
-    const start = target.position[axis];
-    const length = size(target, axis);
+    const box = getNodeVisualBounds(target);
+    const start = box[axis];
+    const length = box[axis === "x" ? "right" : "bottom"] - start;
     for (const coordinate of [start, start + length / 2, start + length]) {
       const delta = coordinate - edge;
       const nextSize = isStart ? opposite - coordinate : coordinate - opposite;
@@ -50,11 +52,7 @@ function nearestSnap(
         best = {
           coordinate,
           delta,
-          target: {
-            ...target.position,
-            right: target.position.x + size(target, "x"),
-            bottom: target.position.y + size(target, "y"),
-          },
+          target: box,
           id: target.id,
         };
       }

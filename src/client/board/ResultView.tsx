@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, lazy, Suspense } from "react";
+import {
+  createResultVisualTable,
+  type VisualTableSpec,
+} from "../../shared/visual-table";
 import type { Cell, ChartSpec, ResultSet, TableSpec } from "../../shared/types";
 import { getResultRows } from "../api";
 import { Select } from "../components/Select";
@@ -15,6 +19,7 @@ import LegendPositionPicker from "./LegendPositionPicker";
 import { normalizeChartSpec, tableChartSeries } from "./chartTableModel";
 import { useChartTableData } from "./useChartTableData";
 import { createTableSpec } from "./tableModel";
+const SqlTableView = lazy(() => import("./SqlTableView"));
 
 function Chart({
   result,
@@ -441,6 +446,10 @@ export default function ResultView({
   reportChartStatus,
   presentationBackground,
   onTableChange,
+  visualTable,
+  visualTableEnabled,
+  onVisualTableChange,
+  onVisualTableToggle,
 }: {
   boardId?: string;
   nodeId?: string;
@@ -454,12 +463,17 @@ export default function ResultView({
   presentationBackground?: string;
   onMetadata?: (result: ResultSet) => void;
   onTableChange?: (table: TableSpec) => void;
+  visualTable?: VisualTableSpec;
+  visualTableEnabled?: boolean;
+  onVisualTableChange?: (table: VisualTableSpec) => void;
+  onVisualTableToggle?: (enabled: boolean, table?: VisualTableSpec) => void;
 }) {
   const [result, setResult] = useState<ResultSet | null>(null);
   const [rows, setRows] = useState<Cell[][]>([]);
   const [error, setError] = useState<Error | null>(null);
   const [retry, setRetry] = useState(0);
   const [showCustomTable, setShowCustomTable] = useState(false);
+  const [visualError, setVisualError] = useState("");
   useEffect(() => setShowCustomTable(false), [id, view, boardId, nodeId]);
   useEffect(() => {
     setRows([]);
@@ -534,15 +548,53 @@ export default function ResultView({
       visibleColumns={visibleColumns}
       presentationBackground={presentationBackground}
     />
+  ) : view === "table" && visualTableEnabled && visualTable ? (
+    <Suspense fallback={<div className="board-loading">Загрузка таблицы…</div>}>
+      <SqlTableView
+        key={`${boardId}:${nodeId}`}
+        spec={visualTable}
+        result={result}
+        editable={!!onVisualTableChange}
+        onChange={onVisualTableChange}
+        presentationBackground={presentationBackground}
+        onExit={
+          onVisualTableToggle ? () => onVisualTableToggle(false) : undefined
+        }
+      />
+    </Suspense>
   ) : (
-    <TableView
-      key={id}
-      result={result}
-      initialRows={rows}
-      spec={table}
-      visibleColumns={visibleColumns}
-      onChange={onTableChange}
-    />
+    <div className="board-table-with-formulas">
+      {view === "table" && onVisualTableToggle && (
+        <div className="board-table-formulas-toggle">
+          {visualError && <span role="alert">{visualError}</span>}
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                onVisualTableToggle(
+                  true,
+                  visualTable ?? createResultVisualTable(result),
+                );
+                setVisualError("");
+              } catch (error) {
+                setVisualError((error as Error).message);
+              }
+            }}
+            title="Редактировать значения и формулы над исходным снимком SQL"
+          >
+            ƒ Формулы
+          </button>
+        </div>
+      )}
+      <TableView
+        key={id}
+        result={result}
+        initialRows={rows}
+        spec={table}
+        visibleColumns={visibleColumns}
+        onChange={onTableChange}
+      />
+    </div>
   );
   return view === "custom" ? (
     <div className="board-custom-table-preview">

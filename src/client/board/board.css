@@ -91,24 +91,36 @@
   accent-color: var(--board-accent);
 }
 .board-header {
-  height: 43px;
-  min-height: 43px;
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  z-index: 7;
+  width: max-content;
+  max-width: min(330px, calc(100% - 32px));
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--board-border-subtle);
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--board-border);
+  border-radius: 12px;
   background: var(--board-surface);
+  box-shadow:
+    0 8px 24px #0003,
+    0 2px 6px #0002;
 }
 .board-heading {
+  display: none;
   font-size: 12px;
   color: var(--board-muted);
   margin-right: 2px;
   flex-shrink: 0;
 }
 .board-header .select-trigger {
-  max-width: 210px;
-  flex: 1;
+  width: 180px;
+  max-width: 180px;
+  min-width: 0;
+  flex: 1 1 180px;
 }
 .board-header .select-trigger > span:first-child {
   overflow: hidden;
@@ -124,12 +136,28 @@
 .board-save-state {
   font-size: 12px;
   color: var(--board-muted);
-  margin-left: auto;
+  flex: 0 1 auto;
+  padding: 0 4px;
   white-space: nowrap;
   min-width: 0;
-  max-width: 140px;
+  max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.board-save-state-saved {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.board-save-state-saved .board-save-state-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .board-warning {
   color: var(--board-warning);
@@ -137,26 +165,45 @@
 .dropdown-menu .board-menu-danger {
   color: var(--danger, #e6a0a5);
 }
+.board-tools-dock {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 7;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
 .board-tools {
-  min-height: 40px;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--board-border-subtle);
-  flex-shrink: 0;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--board-border);
+  border-radius: 12px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: 6px;
   scrollbar-width: thin;
   background: var(--board-surface);
+  box-shadow:
+    0 8px 24px #0003,
+    0 2px 6px #0002;
+  pointer-events: auto;
 }
 .board-tools > button,
 .board-tools-divider {
   flex-shrink: 0;
 }
 .board-workspace .board-tools-icon {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   padding: 0;
+  border-radius: 7px;
 }
 .board-workspace .board-tools button:focus-visible {
   outline-offset: -2px;
@@ -172,6 +219,7 @@
   margin: 0 6px;
 }
 .board-canvas {
+  container: board-canvas / inline-size;
   flex: 1;
   position: relative;
   min-height: 0;
@@ -190,6 +238,9 @@
   stroke: var(--board-accent);
   stroke-width: 1;
   stroke-dasharray: 4 3;
+}
+.board-alignment-guides .board-spacing-guide line {
+  stroke-dasharray: none;
 }
 .board-alignment-toolbar {
   position: absolute;
@@ -413,6 +464,48 @@
   min-height: 0;
   overflow: hidden;
   border-radius: 0 0 6px 6px;
+}
+.board-table-with-formulas {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.board-table-with-formulas > .board-table {
+  flex: 1;
+  min-height: 0;
+}
+.board-table-formulas-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--board-border-subtle);
+}
+.board-table-formulas-toggle > span {
+  font-size: 11px;
+  color: var(--board-text);
+}
+.board-table-formulas-toggle button {
+  border: 1px solid var(--board-border);
+  border-radius: 4px;
+  color: var(--board-text);
+  background: var(--board-raised);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.board-table-tool-preview {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--board-text);
+}
+.board-table-tool-preview th,
+.board-table-tool-preview td {
+  padding: 14px;
+  border: 1px solid var(--board-border);
+  text-align: left;
 }
 .board-artifact-note {
   --board-artifact-fill: #f4df88;
@@ -642,19 +735,29 @@ textarea.board-inspector-content-editor {
   font-size: 12px;
 }
 .board-inspector {
+  --board-inspector-top: 16px;
+  --board-inspector-bottom: 80px;
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: min(304px, 92%);
+  right: 16px;
+  top: var(--board-inspector-top);
+  width: min(304px, calc(100% - 32px));
+  height: max-content;
+  max-height: calc(
+    100% - var(--board-inspector-top) - var(--board-inspector-bottom)
+  );
+  overflow: hidden;
   background: var(--board-surface);
-  border-left: 1px solid var(--board-border);
+  border: 1px solid var(--board-border);
+  border-radius: 12px;
   z-index: 6;
   display: flex;
   flex-direction: column;
-  box-shadow: -6px 0 12px #0002;
+  box-shadow:
+    0 8px 24px #0003,
+    0 2px 6px #0002;
 }
 .board-inspector > header {
+  flex-shrink: 0;
   padding: 8px 10px;
   border-bottom: 1px solid var(--board-border);
   display: flex;
@@ -671,6 +774,7 @@ textarea.board-inspector-content-editor {
   padding: 0;
 }
 .board-inspector-body {
+  min-height: 0;
   padding: 12px;
   overflow: auto;
   display: flex;
@@ -1082,6 +1186,9 @@ textarea.board-inspector-content-editor {
   color: var(--board-bg);
 }
 .board-workspace .react-flow__controls {
+  left: 16px;
+  bottom: 16px;
+  margin: 0;
   background: var(--board-raised);
   border: 1px solid var(--board-border);
   border-radius: 4px;
@@ -1096,11 +1203,16 @@ textarea.board-inspector-content-editor {
   border-radius: 0;
 }
 .board-workspace .react-flow__minimap {
-  /* Keep the viewport corner clear for the floating chat launcher. */
-  bottom: 56px;
+  top: 16px;
+  right: 16px;
+  bottom: auto;
+  margin: 0;
   box-sizing: content-box;
   background: var(--board-surface);
   border: 1px solid var(--board-border);
+}
+.board-canvas:has(.board-inspector) .react-flow__minimap {
+  visibility: hidden;
 }
 .board-workspace .react-flow__handle {
   /* Preserve handle geometry for attached edges and connection snapping. */
@@ -1217,25 +1329,6 @@ textarea.board-inspector-content-editor {
     animation: none;
   }
 }
-@media (max-width: 800px) {
-  .board-save-state {
-    max-width: 110px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .board-inspector {
-    width: min(304px, 92%);
-  }
-  .board-heading {
-    display: none;
-  }
-  .board-header {
-    padding: 0 6px;
-  }
-  .board-header > button:not(.select-trigger) {
-    padding: 3px 5px;
-  }
-}
 .board-refresh-notices {
   flex-shrink: 0;
   max-height: 280px;
@@ -1284,6 +1377,77 @@ textarea.board-inspector-content-editor {
 }
 .board-body > .board-canvas {
   min-width: 0;
+}
+@container board-canvas (max-width: 1100px) {
+  .board-alignment-toolbar {
+    top: 72px;
+  }
+  /* Properties and group actions share this row; closing properties restores actions. */
+  .board-canvas:has(.board-inspector) .board-alignment-toolbar {
+    display: none;
+  }
+}
+@container board-canvas (max-width: 680px) {
+  /* Keep properties below the document panel when they cannot share the top row. */
+  .board-inspector {
+    --board-inspector-top: 72px;
+  }
+  .board-canvas:has(.board-alignment-toolbar) .react-flow__minimap {
+    visibility: hidden;
+  }
+}
+@container board-canvas (max-width: 500px) {
+  .board-workspace .react-flow__minimap {
+    top: 72px;
+  }
+}
+@container board-canvas (max-width: 600px) {
+  .board-tools-dock {
+    left: 64px;
+    right: 64px;
+  }
+}
+@container board-canvas (max-width: 460px) {
+  .board-header {
+    left: 12px;
+    max-width: min(330px, calc(100% - 24px));
+    top: 12px;
+    padding: 4px;
+    border-radius: 10px;
+  }
+  .board-tools-dock {
+    left: 52px;
+    right: 52px;
+    /* Clear the chat corner when space allows; retain controls in short panes. */
+    bottom: clamp(12px, calc(100% - 320px), 76px);
+  }
+  .board-tools {
+    gap: 2px;
+    padding: 4px;
+    border-radius: 10px;
+  }
+  .board-workspace .board-tools-icon {
+    width: 30px;
+    height: 30px;
+  }
+  .board-inspector {
+    --board-inspector-top: 62px;
+    --board-inspector-bottom: clamp(72px, calc(100% - 260px), 136px);
+    right: 12px;
+    width: min(304px, calc(100% - 24px));
+    border-radius: 10px;
+  }
+  .board-alignment-toolbar {
+    top: 62px;
+  }
+  .board-workspace .react-flow__controls {
+    left: 12px;
+    bottom: 12px;
+  }
+  .board-workspace .react-flow__minimap {
+    top: 62px;
+    right: 12px;
+  }
 }
 .presentation-workspace {
   container-type: inline-size;

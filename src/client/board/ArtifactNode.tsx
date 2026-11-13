@@ -6,6 +6,8 @@ import {
   useContext,
   useLayoutEffect,
   useRef,
+  lazy,
+  Suspense,
   type CSSProperties,
 } from "react";
 import {
@@ -46,13 +48,19 @@ import ShapeTransformControls, {
   type ShapeTransformPatch,
 } from "./ShapeTransformControls";
 import { normalizeRotation } from "./shape-rotation";
+import LineTransformControls from "./LineTransformControls";
 const handlePositions = {
   top: Position.Top,
   right: Position.Right,
   bottom: Position.Bottom,
   left: Position.Left,
 };
-export type ArtifactFlowNode = Node<BoardNodeData, "artifact"> & {
+export type ArtifactFlowNode = Node<
+  BoardNodeData & {
+    shapeFrame?: { x: number; y: number; width: number; height: number };
+  },
+  "artifact"
+> & {
   slideId?: string;
 };
 export const BoardActions = createContext<{
@@ -90,6 +98,7 @@ export const BoardActions = createContext<{
   busy: {},
 });
 const selectZoom = (state: ReactFlowState) => state.transform[2];
+const SqlTableView = lazy(() => import("./SqlTableView"));
 
 function ArtifactNode({
   id,
@@ -114,6 +123,13 @@ function ArtifactNode({
   const content = useRef<HTMLDivElement>(null);
   const updateNodeInternals = useUpdateNodeInternals();
   const shapeType = data.kind === "shape" ? data.shape?.type : undefined;
+  const shapeFrame = data.kind === "shape" ? data.shapeFrame : undefined;
+  const rectangle = {
+    x: positionAbsoluteX + (shapeFrame?.x ?? 0),
+    y: positionAbsoluteY + (shapeFrame?.y ?? 0),
+    width: shapeFrame?.width ?? width ?? 480,
+    height: shapeFrame?.height ?? height ?? 300,
+  };
   const rotation =
     data.kind === "shape" ? normalizeRotation(data.shape?.rotation ?? 0) : 0;
   const anchorGeometry = `${shapeType}:${rotation}:${width}:${height}`;
@@ -179,6 +195,13 @@ function ArtifactNode({
         {
           "--board-resize-unit": `${1 / zoom}px`,
           ...(data.kind === "shape" && {
+            ...(shapeFrame && {
+              position: "absolute",
+              left: shapeFrame.x,
+              top: shapeFrame.y,
+              width: shapeFrame.width,
+              height: shapeFrame.height,
+            }),
             transform: `rotate(${rotation}deg)`,
             transformOrigin: "center",
           }),
@@ -196,7 +219,9 @@ function ArtifactNode({
       <NodeResizer
         minWidth={freeform ? 40 : data.kind === "markdown" ? 240 : 280}
         minHeight={freeform ? 40 : data.kind === "markdown" ? 140 : 180}
-        isVisible={selected && editable && rotation === 0}
+        isVisible={
+          selected && editable && rotation === 0 && shapeType !== "line"
+        }
         lineClassName="board-resize-line"
         handleClassName="board-resize-handle"
         autoScale={false}
@@ -209,22 +234,28 @@ function ArtifactNode({
         data.kind === "shape" &&
         actions.shapeTransformStart &&
         actions.shapeTransform &&
-        actions.shapeTransformEnd && (
-          <ShapeTransformControls
+        actions.shapeTransformEnd &&
+        (shapeType === "line" ? (
+          <LineTransformControls
             key={`${actions.boardId}:${id}`}
-            rotation={rotation}
+            shape={data.shape!}
             zoom={zoom}
-            rectangle={{
-              x: positionAbsoluteX,
-              y: positionAbsoluteY,
-              width: width ?? 480,
-              height: height ?? 300,
-            }}
+            rectangle={rectangle}
             onStart={() => actions.shapeTransformStart!(id)}
             onChange={(patch) => actions.shapeTransform!(id, patch)}
             onEnd={(cancelled) => actions.shapeTransformEnd!(id, cancelled)}
           />
-        )}
+        ) : (
+          <ShapeTransformControls
+            key={`${actions.boardId}:${id}`}
+            rotation={rotation}
+            zoom={zoom}
+            rectangle={rectangle}
+            onStart={() => actions.shapeTransformStart!(id)}
+            onChange={(patch) => actions.shapeTransform!(id, patch)}
+            onEnd={(cancelled) => actions.shapeTransformEnd!(id, cancelled)}
+          />
+        ))}
       {/* Retain measured anchors for existing edges when a shape becomes a line. */}
       {boardHandleOptions.map(({ value, label }, index) => (
         <Handle
@@ -360,6 +391,27 @@ function ArtifactNode({
         ref={content}
         className={`board-node-body${presentation ? " presentation-node-content" : freeform ? "" : " nodrag nopan"}${freeform || (data.kind === "result" && data.view === "chart") ? "" : " nowheel"}`}
       >
+        {data.kind === "table" && data.visualTable && (
+          <Suspense
+            fallback={<div className="board-loading">Загрузка таблицы…</div>}
+          >
+            <SqlTableView
+              key={`${actions.boardId}:${id}`}
+              spec={data.visualTable}
+              editable={inlineEditable}
+              presentationBackground={
+                presentation
+                  ? (actions.slideBackground ?? "#ffffff")
+                  : undefined
+              }
+              onChange={
+                inlineEditable
+                  ? (visualTable) => actions.update(id, { visualTable })
+                  : undefined
+              }
+            />
+          </Suspense>
+        )}
         {data.kind === "result" && data.resultSetId && (
           <ResultView
             boardId={actions.boardId}
@@ -370,6 +422,22 @@ function ArtifactNode({
             customChart={data.customChart}
             visibleColumns={data.visibleColumns}
             table={data.table}
+            visualTable={data.visualTable}
+            visualTableEnabled={data.visualTableEnabled}
+            onVisualTableChange={
+              inlineEditable
+                ? (visualTable) => actions.update(id, { visualTable })
+                : undefined
+            }
+            onVisualTableToggle={
+              inlineEditable
+                ? (enabled, visualTable) =>
+                    actions.update(id, {
+                      visualTableEnabled: enabled,
+                      ...(visualTable ? { visualTable } : {}),
+                    })
+                : undefined
+            }
             onMetadata={actions.metadata}
             reportChartStatus={actions.reportChartStatus}
             presentationBackground={

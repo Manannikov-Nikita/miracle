@@ -16,7 +16,10 @@ import type {
   ResultSet,
 } from "../shared/types";
 import type { ProjectTextFile } from "../shared/project-files";
-import type { ProjectFileMover } from "./project-file-drafts";
+import type {
+  ProjectFileDeleter,
+  ProjectFileMover,
+} from "./project-file-drafts";
 import { api, openLocalSession } from "./api";
 import { createMetadataStore } from "./metadata-store";
 import { Brand, ErrorBox, Modal, Spinner, Toasts } from "./components/UI";
@@ -103,6 +106,20 @@ export default function App() {
         "Редактор ещё загружается. Повторите перемещение через несколько секунд.",
       );
     return fileMover.current(input);
+  }, []);
+  const fileDeleter = useRef<ProjectFileDeleter | null>(null);
+  const registerFileDeleter = useCallback(
+    (remove: ProjectFileDeleter | null) => {
+      fileDeleter.current = remove;
+    },
+    [],
+  );
+  const deleteProjectFile = useCallback<ProjectFileDeleter>((input) => {
+    if (!fileDeleter.current)
+      throw new Error(
+        "Редактор ещё загружается. Повторите удаление через несколько секунд.",
+      );
+    return fileDeleter.current(input);
   }, []);
   const [gitEditorState, setGitEditorState] =
     useState<ProjectGitEditorState | null>(null);
@@ -395,6 +412,7 @@ export default function App() {
                 }}
                 fileRevision={fileRevision}
                 onMoveFile={moveProjectFile}
+                onDeleteFile={deleteProjectFile}
                 onOpenSource={(q, run) => {
                   setExplorerDrawer(false);
                   setSourceToOpen({ source: q, run });
@@ -491,6 +509,7 @@ export default function App() {
                               <SqlWorkspace
                                 workspaceId={workspaceId}
                                 key={workspaceId}
+                                visible={visible}
                                 connections={connections}
                                 activeConnectionId={connectionId}
                                 onConnectionChange={setConnectionId}
@@ -509,6 +528,7 @@ export default function App() {
                                 onFileConsumed={() => setFileToOpen(null)}
                                 onProjectFileSaved={projectFilesChanged}
                                 onFileMoverChange={registerFileMover}
+                                onFileDeleterChange={registerFileDeleter}
                                 onGitEditorStateChange={setGitEditorState}
                                 onSourceConsumed={() => setSourceToOpen(null)}
                                 onSavedConsumed={() => setSavedToOpen(null)}

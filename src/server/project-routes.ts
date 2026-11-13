@@ -4,6 +4,7 @@ import { ProjectStore, problem } from "./project-store.js";
 import {
   createProjectFile,
   createProjectDirectory,
+  deleteProjectEntry,
   listProjectTree,
   moveProjectFile,
   readProjectFile,
@@ -80,13 +81,21 @@ export function registerProjectRoutes(
       .object({
         path: z.string().min(1).max(4096),
         directory: z.string().max(4096),
+        name: z.string().max(255).optional(),
       })
       .parse(req.body);
-    return moveProjectFile(store.context, input, (from, to) =>
-      store.work.check([
-        { kind: "file", id: from },
-        { kind: "file", id: to },
-      ]),
+    return moveProjectFile(store.context, input, (from, to, descendants) =>
+      store.work.checkProjectFileEntries([from, to], descendants),
+    );
+  });
+  app.delete("/api/project/entry", async (req) => {
+    need(req);
+    assertProjectGitIdle(store.context);
+    const input = z
+      .object({ path: z.string().min(1).max(4096) })
+      .parse(req.query);
+    return deleteProjectEntry(store.context, input, (path, descendants) =>
+      store.work.checkProjectFileEntries([path], descendants),
     );
   });
   app.put(

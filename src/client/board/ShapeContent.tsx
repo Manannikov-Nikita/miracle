@@ -14,13 +14,10 @@ import {
 } from "../../shared/shapes";
 import "./shapes.css";
 import LineShapeContent from "./LineShapeContent";
+import { SHAPE_POLYGON_POINTS } from "./shape-geometry";
 
-const polygons: Partial<Record<ShapeKind, string>> = {
-  triangle: "50,0 100,100 0,100",
-  diamond: "50,0 100,50 50,100 0,50",
-  hexagon: "25,0 75,0 100,50 75,100 25,100 0,50",
-  arrow: "0,30 62,30 62,0 100,50 62,100 62,70 0,70",
-};
+const polygonPoints = (type: ShapeKind) =>
+  SHAPE_POLYGON_POINTS[type]?.map(({ x, y }) => `${x},${y}`).join(" ");
 const fontFamilies = {
   sans: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   serif: 'Georgia, "Times New Roman", serif',
@@ -38,7 +35,7 @@ function Geometry({
     return <ellipse cx="50" cy="50" rx="50" ry="50" {...appearance} />;
   if (type === "rectangle" || type === "rounded-rectangle")
     return <rect width="100" height="100" rx={cornerRadius} {...appearance} />;
-  return <polygon points={polygons[type]} {...appearance} />;
+  return <polygon points={polygonPoints(type)} {...appearance} />;
 }
 
 export function ShapeGlyph({
@@ -75,14 +72,9 @@ function clipPath(type: ShapeKind, cornerRadius: number) {
   if (type === "ellipse") return "ellipse(50% 50% at 50% 50%)";
   if (type === "rectangle" || type === "rounded-rectangle")
     return `inset(0 round ${cornerRadius}%)`;
-  return `polygon(${polygons[type]!.split(" ")
-    .map((point) =>
-      point
-        .split(",")
-        .map((value) => `${value}%`)
-        .join(" "),
-    )
-    .join(", ")})`;
+  return `polygon(${SHAPE_POLYGON_POINTS[type]!.map(
+    ({ x, y }) => `${x}% ${y}%`,
+  ).join(", ")})`;
 }
 
 const stopPropagation = (event: SyntheticEvent) => event.stopPropagation();

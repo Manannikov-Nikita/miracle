@@ -6,24 +6,11 @@ import {
   type CSSProperties,
 } from "react";
 import { resolveShape, type ShapeSpec } from "../../shared/shapes";
+import { getLineGeometry, type Point } from "./shape-geometry";
 import "./LineShapeContent.css";
 
-type Point = { x: number; y: number };
-
-function arrowPoints(tip: Point, toward: Point, length: number) {
-  const distance = Math.hypot(toward.x - tip.x, toward.y - tip.y);
-  const dx = (toward.x - tip.x) / (distance || 1);
-  const dy = (toward.y - tip.y) / (distance || 1);
-  const halfWidth = length * 0.45;
-  const base = { x: tip.x + dx * length, y: tip.y + dy * length };
-  return [
-    tip,
-    { x: base.x - dy * halfWidth, y: base.y + dx * halfWidth },
-    { x: base.x + dy * halfWidth, y: base.y - dx * halfWidth },
-  ]
-    .map(({ x, y }) => `${x},${y}`)
-    .join(" ");
-}
+const pointsAttribute = (points: Point[]) =>
+  points.map(({ x, y }) => `${x},${y}`).join(" ");
 
 export default function LineShapeContent({ shape }: { shape: ShapeSpec }) {
   const spec = resolveShape(shape);
@@ -51,50 +38,8 @@ export default function LineShapeContent({ shape }: { shape: ShapeSpec }) {
     return () => observer.disconnect();
   }, []);
 
-  const startArrow = spec.lineStart === "arrow" && spec.strokeWidth > 0;
-  const endArrow = spec.lineEnd === "arrow" && spec.strokeWidth > 0;
-  const desiredHead = Math.min(
-    Math.max(8, spec.strokeWidth * 4),
-    Math.min(size.width, size.height) * 0.35,
-  );
-  const padding = Math.min(
-    spec.strokeWidth / 2 +
-      1 +
-      (startArrow || endArrow ? desiredHead * 0.45 : 0),
-    size.width / 3,
-    size.height / 3,
-  );
-  let start: Point;
-  let end: Point;
-  if (spec.lineDirection === "vertical") {
-    start = { x: size.width / 2, y: padding };
-    end = { x: size.width / 2, y: size.height - padding };
-  } else if (spec.lineDirection === "diagonal-down") {
-    start = { x: padding, y: padding };
-    end = { x: size.width - padding, y: size.height - padding };
-  } else if (spec.lineDirection === "diagonal-up") {
-    start = { x: padding, y: size.height - padding };
-    end = { x: size.width - padding, y: padding };
-  } else {
-    start = { x: padding, y: size.height / 2 };
-    end = { x: size.width - padding, y: size.height / 2 };
-  }
-  const headLength = Math.min(
-    desiredHead,
-    Math.hypot(end.x - start.x, end.y - start.y) /
-      (startArrow && endArrow ? 3 : 2),
-  );
-  const distance = Math.hypot(end.x - start.x, end.y - start.y) || 1;
-  const dx = (end.x - start.x) / distance;
-  const dy = (end.y - start.y) / distance;
-  // Stop at the heads' bases: a full-width shaft reaching the point would
-  // protrude beside its tip and make the arrow look blunt.
-  const shaftStart = startArrow
-    ? { x: start.x + dx * headLength, y: start.y + dy * headLength }
-    : start;
-  const shaftEnd = endArrow
-    ? { x: end.x - dx * headLength, y: end.y - dy * headLength }
-    : end;
+  const { start, end, shaftStart, shaftEnd, startHead, endHead } =
+    getLineGeometry(spec, size.width, size.height);
   const dash =
     spec.strokeStyle === "dashed"
       ? `${spec.strokeWidth * 4} ${spec.strokeWidth * 2}`
@@ -138,6 +83,15 @@ export default function LineShapeContent({ shape }: { shape: ShapeSpec }) {
           </linearGradient>
         </defs>
         <line
+          className="board-line-hit"
+          x1={start.x}
+          y1={start.y}
+          x2={end.x}
+          y2={end.y}
+          stroke="transparent"
+          pointerEvents="stroke"
+        />
+        <line
           className="board-line-shaft"
           x1={shaftStart.x}
           y1={shaftStart.y}
@@ -149,23 +103,26 @@ export default function LineShapeContent({ shape }: { shape: ShapeSpec }) {
           strokeDasharray={dash}
           strokeLinecap={spec.strokeStyle === "dotted" ? "round" : "butt"}
           vectorEffect="non-scaling-stroke"
+          pointerEvents="visiblePainted"
           style={workStyle}
         />
-        {startArrow && (
+        {startHead && (
           <polygon
             className="board-line-arrow board-line-arrow-start"
-            points={arrowPoints(start, end, headLength)}
+            points={pointsAttribute(startHead)}
             fill={spec.stroke}
             stroke="none"
+            pointerEvents="visiblePainted"
             style={workStyle}
           />
         )}
-        {endArrow && (
+        {endHead && (
           <polygon
             className="board-line-arrow board-line-arrow-end"
-            points={arrowPoints(end, start, headLength)}
+            points={pointsAttribute(endHead)}
             fill={spec.stroke}
             stroke="none"
+            pointerEvents="visiblePainted"
             style={workStyle}
           />
         )}

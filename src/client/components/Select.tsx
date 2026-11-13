@@ -20,6 +20,7 @@ interface SelectProps {
   id?: string;
   "aria-label"?: string;
   className?: string;
+  side?: SelectPrimitive.SelectContentProps["side"];
 }
 
 export function Select({
@@ -34,6 +35,7 @@ export function Select({
   id,
   "aria-label": ariaLabel,
   className = "",
+  side = "bottom",
 }: SelectProps) {
   const [localValue, setLocalValue] = useState(
     defaultValue ?? options.find((option) => !option.disabled)?.value ?? "",
@@ -74,6 +76,7 @@ export function Select({
           <SelectPrimitive.Content
             className="select-content menu-surface nodrag nopan nowheel nokey"
             position="popper"
+            side={side}
             sideOffset={6}
             collisionPadding={8}
             onKeyDown={(event) => event.stopPropagation()}

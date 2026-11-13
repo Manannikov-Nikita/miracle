@@ -1,7 +1,7 @@
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 
-// Uses the locked dependency graph, including optional platform binaries. No network.
+// Uses the locked dependency graph, including DuckDB's optional platform binaries. No network.
 const root = resolve(import.meta.dirname, "..");
 const lock = JSON.parse(
   await readFile(join(root, "package-lock.json"), "utf8"),
@@ -41,6 +41,12 @@ function visit(name, from = "") {
   const info = lock.packages[path];
   for (const dependency of Object.keys(info.dependencies || {}))
     visit(dependency, path);
+  // Release archives install the host-specific native package. Include every
+  // locked DuckDB target, without pulling unrelated optional build tools in.
+  if (name === "@duckdb/node-bindings")
+    for (const dependency of Object.keys(info.optionalDependencies || {}))
+      if (dependency.startsWith("@duckdb/node-bindings-"))
+        visit(dependency, path);
   for (const dependency of Object.keys(info.peerDependencies || {})) {
     if (!dependency.startsWith("@types/")) visit(dependency, path);
   }
@@ -59,6 +65,36 @@ for (const [path, info] of entries.sort(([a], [b]) => a.localeCompare(b))) {
   let source = join(root, path);
   if (name.startsWith("@node-rs/argon2-"))
     source = join(root, "node_modules/@node-rs/argon2");
+  if (name.startsWith("@duckdb/node-bindings-")) {
+    const common = join(root, "node_modules/@duckdb/node-bindings");
+    const parent = JSON.parse(
+      await readFile(join(common, "package.json"), "utf8"),
+    );
+    if (info.version !== parent.version || info.license !== parent.license)
+      throw new Error(`Review the native DuckDB license for ${name}.`);
+    let installed;
+    try {
+      installed = JSON.parse(
+        await readFile(join(source, "package.json"), "utf8"),
+      );
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    // Native tarballs and the bindings package share this upstream license.
+    // Verify the installed target on each release host before using the common
+    // text for the other locked, intentionally uninstalled platforms.
+    if (
+      installed &&
+      (installed.version !== parent.version ||
+        installed.license !== parent.license ||
+        (await readFile(join(source, "LICENSE"), "utf8")) !==
+          (await readFile(join(common, "LICENSE"), "utf8")))
+    )
+      throw new Error(
+        `Native DuckDB license differs for ${name}; review before release.`,
+      );
+    source = common;
+  }
   const pkg = JSON.parse(await readFile(join(source, "package.json"), "utf8"));
   const names = await readdir(source);
   let legal = names.filter((n) =>

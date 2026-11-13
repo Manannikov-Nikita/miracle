@@ -8,9 +8,11 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -30,7 +32,9 @@ import type { ProjectContext } from "../shared/agents.js";
 import {
   MAX_PROJECT_FILE_BYTES,
   type CreateProjectFile,
+  type DeleteProjectFile,
   type MoveProjectFile,
+  type ProjectFileDeletion,
   type ProjectFileMove,
   type ProjectTextFile,
   type ProjectTree,
@@ -71,10 +75,10 @@ const validRelativePath = (path: string) =>
   !/[\\\u0000-\u001f\u007f]/.test(path) &&
   path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 function scope(context: FileContext) {
-  const root = realpathSync(context.projectRoot);
+  const root = realpathSync.native(context.projectRoot);
   let data = resolve(context.dataDir);
   try {
-    data = realpathSync(data);
+    data = realpathSync.native(data);
   } catch {}
   const allowed = (path: string) =>
     inside(root, path) &&
@@ -234,8 +238,12 @@ function fileError(error: unknown): never {
 }
 
 /** Reject symbolic links in the selected path, including parent directories. */
-function explorerPath(context: FileContext, path: string, directory = false) {
-  if (!(directory && path === "") && !validRelativePath(path))
+function explorerPath(
+  context: FileContext,
+  path: string,
+  kind: boolean | "entry" = false,
+) {
+  if (!(kind === true && path === "") && !validRelativePath(path))
     throw problem(
       400,
       "Нужен относительный путь внутри проекта",
@@ -281,10 +289,18 @@ function explorerPath(context: FileContext, path: string, directory = false) {
       "INVALID_FILE_PATH",
     );
   const info = lstatSync(absolute);
-  if (directory ? !info.isDirectory() : !info.isFile())
+  if (
+    kind === true
+      ? !info.isDirectory()
+      : !info.isFile() && !(kind === "entry" && info.isDirectory())
+  )
     throw problem(
       400,
-      directory ? "Нужна папка проекта" : "Нужен обычный файл проекта",
+      kind === true
+        ? "Нужна папка проекта"
+        : kind === "entry"
+          ? "Нужен обычный файл или папка проекта"
+          : "Нужен обычный файл проекта",
       "INVALID_FILE_PATH",
     );
   return absolute;
@@ -295,16 +311,22 @@ export function projectFileWorkPath(
   context: FileContext,
   path: string,
 ): string {
+  return projectWorkPath(context, path);
+}
+
+function projectWorkPath(context: FileContext, path: string, entry = false) {
   try {
     let absolute: string;
     try {
-      absolute = realpathSync(explorerPath(context, path));
+      absolute = realpathSync.native(
+        explorerPath(context, path, entry ? "entry" : false),
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (!validRelativePath(path)) throw error;
       const parent = dirname(path) === "." ? "" : dirname(path);
       absolute = join(
-        realpathSync(explorerPath(context, parent, true)),
+        realpathSync.native(explorerPath(context, parent, true)),
         basename(path),
       );
       const { allowed } = scope(context);
@@ -315,6 +337,54 @@ export function projectFileWorkPath(
   } catch (error) {
     return fileError(error);
   }
+}
+
+/** Case aliases of missing names have no realpath; check the existing parent. */
+function caseInsensitiveAt(path: string): boolean {
+  let directory = path;
+  while (dirname(directory) !== directory) {
+    const parent = dirname(directory);
+    const name = basename(directory);
+    const alternate = name.replace(/[a-z]/i, (letter) =>
+      letter === letter.toLowerCase()
+        ? letter.toUpperCase()
+        : letter.toLowerCase(),
+    );
+    if (alternate !== name) {
+      try {
+        return realpathSync.native(join(parent, alternate)) === directory;
+      } catch {
+        return false;
+      }
+    }
+    directory = parent;
+  }
+  return false;
+}
+
+/** Match a canonical file claim against an entry, including a missing destination. */
+export function projectEntryWorkMatcher(
+  context: FileContext,
+  path: string,
+  descendants: boolean,
+) {
+  const canonical = projectWorkPath(context, path, true);
+  const slash = canonical.lastIndexOf("/");
+  const parent = canonical.slice(0, slash + 1);
+  const name = canonical.slice(slash + 1);
+  const absoluteParent = join(scope(context).root, parent);
+  let caseInsensitive: boolean | undefined;
+  return (file: string) => {
+    if (!file.startsWith(parent)) return false;
+    const rest = file.slice(parent.length);
+    const claimed = descendants ? rest.split("/", 1)[0] : rest;
+    if (claimed === name) return true;
+    const fold = (part: string) => part.normalize("NFC").toLowerCase();
+    return (
+      fold(claimed) === fold(name) &&
+      (caseInsensitive ??= caseInsensitiveAt(absoluteParent))
+    );
+  };
 }
 
 export async function listProjectTree(
@@ -623,7 +693,7 @@ function createEntryPath(
       "Введите имя файла без пути и недопустимых символов (до 255 байт)",
       "INVALID_FILE_NAME",
     );
-  const parent = explorerPath(context, directory, true);
+  const parent = realpathSync.native(explorerPath(context, directory, true));
   const path = directory ? `${directory}/${name}` : name;
   if (!validRelativePath(path))
     throw problem(400, "Слишком длинный путь к файлу", "INVALID_FILE_PATH");
@@ -653,7 +723,64 @@ const alreadyExists = () =>
 function mutationFileError(error: unknown): never {
   if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
     throw alreadyExists();
+  if ((error as NodeJS.ErrnoException)?.code === "ENOTEMPTY")
+    throw entryChanged();
   return fileError(error);
+}
+
+const entryChanged = () =>
+  problem(409, "Файл или папка изменились на диске", "FILE_ENTRY_CHANGED");
+type EntryStat = ReturnType<typeof lstatSync>;
+const sameEntry = (a: EntryStat | undefined, b: EntryStat | undefined) =>
+  !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+
+function inspectMutationEntry(context: FileContext, path: string) {
+  const absolute = explorerPath(context, path, "entry");
+  return { path, absolute, info: lstatSync(absolute) };
+}
+
+/** Do not filter or cap this walk: any protected descendant blocks the action. */
+function inspectMutationTree(
+  context: FileContext,
+  path: string,
+  original: EntryStat,
+) {
+  const source = inspectMutationEntry(context, path);
+  if (!sameEntry(source.info, original)) throw entryChanged();
+  const { data } = scope(context);
+  if (source.info.isDirectory()) {
+    if (inside(realpathSync.native(source.absolute), data))
+      throw problem(
+        403,
+        "Папка содержит служебные файлы Miracle",
+        "INVALID_FILE_PATH",
+      );
+    if (source.info.dev !== lstatSync(dirname(source.absolute)).dev)
+      throw problem(403, "Папка находится на другом томе", "INVALID_FILE_PATH");
+  }
+  const entries = [source];
+  for (let cursor = 0; cursor < entries.length; cursor++) {
+    const entry = entries[cursor];
+    if (!entry.info.isDirectory()) continue;
+    if (
+      !sameEntry(lstatSync(explorerPath(context, entry.path, true)), entry.info)
+    )
+      throw entryChanged();
+    for (const bytes of readdirSync(entry.absolute, { encoding: "buffer" })) {
+      const name = bytes.toString("utf8");
+      if (!Buffer.from(name, "utf8").equals(bytes))
+        throw problem(
+          403,
+          "Папка содержит недоступный путь",
+          "INVALID_FILE_PATH",
+        );
+      const child = inspectMutationEntry(context, `${entry.path}/${name}`);
+      if (child.info.dev !== entry.info.dev)
+        throw problem(403, "Папка содержит другой том", "INVALID_FILE_PATH");
+      entries.push(child);
+    }
+  }
+  return entries;
 }
 
 export function createProjectDirectory(
@@ -675,34 +802,98 @@ export function createProjectDirectory(
 export function moveProjectFile(
   context: FileContext,
   input: MoveProjectFile,
-  beforeWrite?: (from: string, to: string) => void,
+  beforeWrite?: (from: string, to: string, descendants: boolean) => void,
 ): ProjectFileMove {
-  let destination: string | undefined;
-  let linked: ReturnType<typeof lstatSync> | undefined;
+  let destination: ReturnType<typeof createEntryPath> | undefined;
+  let reserved: EntryStat | undefined;
   try {
-    const source = explorerPath(context, input.path);
-    const original = lstatSync(source);
-    const name = basename(input.path);
-    const target = createEntryPath(context, {
-      directory: input.directory,
-      name,
-    });
+    const { absolute, info: original } = inspectMutationEntry(
+      context,
+      input.path,
+    );
+    const source = realpathSync.native(absolute);
+    const folder = original.isDirectory();
+    const name = input.name ?? basename(source);
+    const target = createEntryPath(
+      context,
+      { directory: input.directory, name },
+      folder,
+    );
+    const parent = dirname(target.absolute);
+    const originalParent = lstatSync(parent);
     const result = { from: input.path, path: target.path, name };
-    if (source === target.absolute) return result;
-    beforeWrite?.(input.path, target.path);
+    if (source === target.absolute || (folder && inside(source, parent)))
+      throw problem(
+        400,
+        "Нельзя переместить объект в тот же путь или в его подпапку",
+        "INVALID_FILE_MOVE",
+      );
+    if (folder && inside(target.absolute, scope(context).data))
+      throw problem(
+        403,
+        "Служебный путь недоступен в проводнике",
+        "INVALID_FILE_PATH",
+      );
+    const existing = lstatSync(target.absolute, { throwIfNoEntry: false });
+    // A casing change may resolve to the source. A different hard link to
+    // the same inode has its own realpath and remains a collision.
+    const renameAlias =
+      !!existing &&
+      sameEntry(existing, original) &&
+      realpathSync.native(target.absolute) === source;
+    if (existing && !renameAlias) throw alreadyExists();
+    beforeWrite?.(input.path, target.path, folder);
+    if (folder) inspectMutationTree(context, input.path, original);
+    if (
+      !sameEntry(
+        lstatSync(explorerPath(context, input.directory, true)),
+        originalParent,
+      ) ||
+      !sameEntry(inspectMutationEntry(context, input.path).info, original)
+    )
+      throw entryChanged();
+    if (renameAlias) {
+      if (
+        !sameEntry(lstatSync(target.absolute), original) ||
+        realpathSync.native(target.absolute) !== source
+      )
+        throw entryChanged();
+      renameSync(source, target.absolute);
+      return result;
+    }
+    if (folder) {
+      // On supported POSIX platforms, rename can replace an empty directory.
+      // Reserve the destination against normal concurrent creation. Node has no
+      // no-replace directory rename: an equal-privilege external process can
+      // still replace this empty placeholder after the final identity check.
+      mkdirSync(target.absolute, { mode: 0o700 });
+      destination = target;
+      const placeholder = lstatSync(target.absolute);
+      if (!placeholder.isDirectory()) throw entryChanged();
+      reserved = placeholder;
+      if (
+        !sameEntry(
+          lstatSync(explorerPath(context, target.path, true)),
+          reserved,
+        )
+      )
+        throw entryChanged();
+      renameSync(source, target.absolute);
+      destination = undefined;
+      return result;
+    }
     // link is exclusive even if another process creates the destination now.
     // Unlike rename, it never overwrites an existing file, folder or symlink.
     linkSync(source, target.absolute);
-    destination = target.absolute;
-    linked = lstatSync(destination);
+    destination = target;
+    reserved = original;
+    const linked = lstatSync(target.absolute);
     const current = lstatSync(explorerPath(context, input.path));
     explorerPath(context, target.path);
     if (
       !linked.isFile() ||
-      original.dev !== linked.dev ||
-      original.ino !== linked.ino ||
-      current.dev !== original.dev ||
-      current.ino !== original.ino
+      !sameEntry(original, linked) ||
+      !sameEntry(current, original)
     )
       throw conflict();
     unlinkSync(source);
@@ -711,14 +902,42 @@ export function moveProjectFile(
   } catch (error) {
     return mutationFileError(error);
   } finally {
-    // If removing the source fails, retain it and undo only our own new link.
-    if (destination && linked) {
+    // Undo only our empty directory reservation or our newly created hard link.
+    if (destination && reserved) {
       try {
-        const current = lstatSync(destination);
-        if (current.dev === linked.dev && current.ino === linked.ino)
-          unlinkSync(destination);
+        const current = lstatSync(
+          explorerPath(context, destination.path, "entry"),
+        );
+        if (sameEntry(current, reserved)) {
+          if (reserved.isDirectory()) rmdirSync(destination.absolute);
+          else unlinkSync(destination.absolute);
+        }
       } catch {}
     }
+  }
+}
+
+export function deleteProjectEntry(
+  context: FileContext,
+  input: DeleteProjectFile,
+  beforeWrite?: (path: string, descendants: boolean) => void,
+): ProjectFileDeletion {
+  try {
+    const { path } = input;
+    const { info } = inspectMutationEntry(context, path);
+    beforeWrite?.(path, info.isDirectory());
+    const entries = inspectMutationTree(context, path, info);
+    // Remove only preflighted entries, children first. A late addition makes
+    // rmdir fail instead of recursively deleting anything not inspected.
+    for (const entry of entries.reverse()) {
+      const current = inspectMutationEntry(context, entry.path);
+      if (!sameEntry(current.info, entry.info)) throw entryChanged();
+      if (entry.info.isDirectory()) rmdirSync(current.absolute);
+      else unlinkSync(current.absolute);
+    }
+    return { path };
+  } catch (error) {
+    return mutationFileError(error);
   }
 }
 

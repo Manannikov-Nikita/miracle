@@ -10,6 +10,7 @@ import type { TableSpec } from "./tableTypes.js";
 import type { CustomChartSpec } from "./custom-charts.js";
 import type { ShapeSpec } from "./shapes.js";
 import type { TextStyleSpec } from "./text-style.js";
+import type { VisualTableSpec } from "./visual-table.js";
 export type { ShapeKind, ShapeSpec } from "./shapes.js";
 export type { TextStyleSpec } from "./text-style.js";
 export type { TableSpec, TableColumnOptions } from "./tableTypes.js";
@@ -169,7 +170,9 @@ export interface ChartSpec {
 }
 export interface BoardNodeData {
   title: string;
-  kind: "result" | "note" | "markdown" | "shape" | "text" | "image";
+  kind: "result" | "note" | "markdown" | "shape" | "text" | "image" | "table";
+  visualTable?: VisualTableSpec;
+  visualTableEnabled?: boolean;
   image?: BoardImage;
   text?: string;
   textStyle?: TextStyleSpec;

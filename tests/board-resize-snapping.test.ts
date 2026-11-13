@@ -143,6 +143,45 @@ function node(
 }
 
 describe("board resize snapping", () => {
+  it("snaps a card edge to a line arrowhead instead of its empty container", () => {
+    const moving = node("a", 400, -100, 400, 212);
+    const arrow: BoardNode = {
+      ...node("b", 0, 100, 260, 40),
+      data: {
+        title: "Arrow",
+        kind: "shape",
+        shape: { type: "line", lineEnd: "arrow" },
+      },
+    };
+    const result = snapResizedNode([moving, arrow], "a", { bottom: true }, 1);
+    expect(result.nodes[0].height).toBeCloseTo(216.4);
+    expect(result.nodes[0].position).toEqual(moving.position);
+    expect(result.nodes[1]).toBe(arrow);
+    expect(result.guides).toHaveLength(1);
+    expect(result.guides[0].coordinate).toBeCloseTo(116.4);
+    expect(result.guides[0].from).toBeCloseTo(-2.4);
+    expect(result.guides[0].to).toBe(808);
+  });
+
+  it("snaps a resizing card to the world edge of a rotated ellipse", () => {
+    const moving = node("a", 0, 500, 556, 300);
+    const ellipse: BoardNode = {
+      ...node("b", 500, 0, 200, 80),
+      data: {
+        title: "Ellipse",
+        kind: "shape",
+        shape: { type: "ellipse", rotation: 90, strokeWidth: 0 },
+      },
+    };
+    const result = snapResizedNode([moving, ellipse], "a", { right: true }, 1);
+    expect(result.nodes[0].width).toBeCloseTo(560);
+    expect(result.nodes[0].position).toEqual(moving.position);
+    expect(result.guides).toHaveLength(1);
+    expect(result.guides[0].coordinate).toBeCloseTo(560);
+    expect(result.guides[0].from).toBeCloseTo(-68);
+    expect(result.guides[0].to).toBe(808);
+  });
+
   it.each<
     [ResizeSides, BoardNode, BoardNode, BoardNode["position"], number, number]
   >([

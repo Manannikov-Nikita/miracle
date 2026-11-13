@@ -71,6 +71,22 @@ describe("standalone line shape rendering", () => {
     );
   });
 
+  it("provides a narrow stroke hit target without making the whole frame clickable", async () => {
+    await render({ type: "line", lineEnd: "arrow" });
+    const hit = host.querySelector(".board-line-hit")!;
+    expect(hit).not.toBeNull();
+    expect(Number(hit.getAttribute("x1"))).toBeCloseTo(5.6);
+    expect(Number(hit.getAttribute("x2"))).toBeCloseTo(254.4);
+    expect(hit.getAttribute("stroke")).toBe("transparent");
+    expect(hit.getAttribute("pointer-events")).toBe("stroke");
+    expect(
+      host.querySelector(".board-line-shaft")!.getAttribute("pointer-events"),
+    ).toBe("visiblePainted");
+    expect(
+      host.querySelector(".board-line-arrow")!.getAttribute("pointer-events"),
+    ).toBe("visiblePainted");
+  });
+
   it.each([
     ["vertical", 0, 1],
     ["diagonal-down", 1, 1],

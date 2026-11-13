@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardNode } from "../src/shared/types";
+import type { ShapeSpec } from "../src/shared/shapes";
 import {
   alignBoardNodes,
   snapBoardNodes,
@@ -93,6 +94,127 @@ function node(
 }
 
 const selected = new Set(["a", "b", "c"]);
+
+function shape(
+  id: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  spec: ShapeSpec,
+): BoardNode {
+  return {
+    ...node(id, x, y, width, height),
+    data: { title: id, kind: "shape", shape: spec },
+  };
+}
+
+describe("alignment by the painted shape", () => {
+  it("aligns a rotated ellipse edge while preserving its saved layout offset", () => {
+    const ellipse = shape("a", 100, 200, 200, 80, {
+      type: "ellipse",
+      rotation: 90,
+      strokeWidth: 0,
+    });
+    const card = node("b", 20, 60, 80, 60);
+    const result = alignBoardNodes(
+      [ellipse, card],
+      new Set(["a", "b"]),
+      "left",
+    );
+    // The visible ellipse begins 60 units to the right of its saved layout x.
+    expect(result[0].position.x).toBeCloseTo(-40);
+    expect(result[0].position.y).toBe(200);
+    expect(result[0].width).toBe(200);
+    expect(result[0].height).toBe(80);
+    expect(result[0].data).toBe(ellipse.data);
+    expect(result[1]).toBe(card);
+    expect(alignBoardNodes(result, new Set(["a", "b"]), "left")).toBe(result);
+  });
+
+  it("aligns a rotated triangle's actual vertex rather than its rotated rectangular frame", () => {
+    const triangle = shape("a", 300, 200, 200, 100, {
+      type: "triangle",
+      rotation: 45,
+      strokeWidth: 0,
+    });
+    const result = alignBoardNodes(
+      [triangle, node("b", 20, 60, 80, 60)],
+      new Set(["a", "b"]),
+      "top",
+    );
+    const visibleTopOffset = 50 - 50 / Math.SQRT2;
+    expect(result[0].position.y).toBeCloseTo(60 - visibleTopOffset);
+    expect(result[0].position.x).toBe(300);
+    expect(alignBoardNodes(result, new Set(["a", "b"]), "top")).toBe(result);
+  });
+
+  it("aligns the arrowhead bottom to a card rather than the empty line container", () => {
+    const arrow = shape("a", 10, 100, 260, 40, {
+      type: "line",
+      lineEnd: "arrow",
+    });
+    const result = alignBoardNodes(
+      [arrow, node("b", 400, 0, 80, 200)],
+      new Set(["a", "b"]),
+      "bottom",
+    );
+    // The 8-unit arrowhead is 7.2 units tall, centered at local y=20.
+    expect(result[0].position.y).toBeCloseTo(200 - 23.6);
+    expect(result[0].position.x).toBe(10);
+    expect(result[0].height).toBe(40);
+  });
+
+  it("distributes cards from a line anchor with equal visible gaps and fixed outer anchors", () => {
+    const first = shape("a", 0, 0, 260, 40, { type: "line" });
+    const middle = node("b", 0, 80, 80, 20);
+    const last = node("c", 0, 200, 80, 20);
+    const result = alignBoardNodes(
+      [first, middle, last],
+      selected,
+      "distribute-y",
+    );
+    // Visible span is 220 - 19, and occupied height is 2 + 20 + 20.
+    expect(result[1].position.y).toBeCloseTo(100.5);
+    expect(result[1].position.y - 21).toBeCloseTo(79.5);
+    expect(200 - (result[1].position.y + 20)).toBeCloseTo(79.5);
+    expect(result[0]).toBe(first);
+    expect(result[2]).toBe(last);
+  });
+
+  it("snaps a card to the top of an arrowhead and spans only painted bounds", () => {
+    const card = node("a", 400, 112, 80, 80);
+    const arrow = shape("b", 0, 100, 260, 40, {
+      type: "line",
+      lineEnd: "arrow",
+    });
+    const result = snapBoardNodes([card, arrow], new Set(["a"]), 1);
+    expect(result.nodes[0].position.y).toBeCloseTo(116.4);
+    expect(result.guides).toHaveLength(1);
+    expect(result.guides[0].axis).toBe("y");
+    expect(result.guides[0].coordinate).toBeCloseTo(116.4);
+    expect(result.guides[0].from).toBeCloseTo(-2.4);
+    expect(result.guides[0].to).toBe(488);
+    expect(result.nodes[1]).toBe(arrow);
+  });
+
+  it("moves a group uniformly when its thin line edge snaps to the slide frame", () => {
+    const line = shape("a", 100, -16, 260, 40, { type: "line" });
+    const card = node("b", 500, 100, 100, 80);
+    const result = snapBoardNodes(
+      [line, card],
+      new Set(["a", "b"]),
+      1,
+      slideFrame,
+    );
+    // The first painted row is at y=3, despite the saved container starting at -16.
+    expect(result.nodes[0].position.y).toBeCloseTo(-19);
+    expect(result.nodes[1].position.y).toBeCloseTo(97);
+    expect(result.guides).toEqual([
+      { axis: "y", coordinate: 0, from: 0, to: 1600 },
+    ]);
+  });
+});
 
 describe("board alignment", () => {
   it.each<[AlignmentAction, number[], number[]]>([
@@ -266,4 +388,250 @@ describe("board drag snapping", () => {
       240,
     );
   });
+});
+
+describe("equal spacing while dragging", () => {
+  const moving = new Set(["moving"]);
+  const spacingGuides = (result: ReturnType<typeof snapBoardNodes>) =>
+    result.guides.filter(
+      (guide) => "kind" in guide && guide.kind === "spacing",
+    );
+  const gap = (
+    axis: "x" | "y",
+    coordinate: number,
+    from: number,
+    to: number,
+  ) => ({
+    kind: "spacing",
+    axis,
+    coordinate,
+    from,
+    to,
+    distance: to - from,
+  });
+
+  it.each(["x", "y"] as const)(
+    "centers the dragged node between unequal painted edges on the %s axis",
+    (axis) => {
+      const make = (
+        id: string,
+        main: number,
+        cross: number,
+        size: number,
+        depth: number,
+      ) =>
+        axis === "x"
+          ? node(id, main, cross, size, depth)
+          : node(id, cross, main, depth, size);
+      const dragged = make("moving", 23, 13, 60, 20);
+      const first = make("before", -180, 0, 80, 80);
+      const last = make("after", 200, 0, 100, 80);
+      const result = snapBoardNodes([dragged, first, last], moving, 1);
+      expect(result.nodes[0].position[axis]).toBe(20);
+      expect(result.nodes[0].data).toBe(dragged.data);
+      expect(result.nodes[1]).toBe(first);
+      expect(result.nodes[2]).toBe(last);
+      expect(spacingGuides(result)).toEqual([
+        gap(axis, 23, -100, 20),
+        gap(axis, 23, 80, 200),
+      ]);
+    },
+  );
+
+  it.each([
+    {
+      start: 179,
+      expected: 175,
+      gaps: [
+        [-15, 30],
+        [130, 175],
+      ],
+    },
+    {
+      start: -201,
+      expected: -205,
+      gaps: [
+        [-125, -80],
+        [-15, 30],
+      ],
+    },
+  ])(
+    "continues the neighboring row at $expected",
+    ({ start, expected, gaps }) => {
+      const nodes = [
+        node("first", -80, 0, 65),
+        node("moving", start, 0, 80),
+        node("second", 30, 0, 100),
+      ];
+      const result = snapBoardNodes(nodes, moving, 1);
+      expect(result.nodes[1].position.x).toBe(expected);
+      expect(spacingGuides(result)).toEqual(
+        gaps.map(([from, to]) => gap("x", 40, from, to)),
+      );
+    },
+  );
+
+  it.each([
+    [2, 3, true],
+    [2, 3.01, false],
+    [0.5, 12, true],
+    [0.5, 12.01, false],
+  ])(
+    "uses a six-screen-pixel spacing threshold at zoom %s and offset %s",
+    (zoom, offset, snaps) => {
+      const nodes = [
+        node("first", 0, 0),
+        node("moving", 200 + offset, 0),
+        node("second", 400, 0),
+      ];
+      const result = snapBoardNodes(nodes, moving, zoom);
+      expect(result.nodes[1].position.x).toBe(snaps ? 200 : 200 + offset);
+      expect(spacingGuides(result)).toHaveLength(snaps ? 2 : 0);
+    },
+  );
+
+  it("moves a selection by one offset using its unified visible bounds", () => {
+    const nodes = [
+      node("first", 0, 0),
+      node("a", 203, 0, 40),
+      node("b", 253, 0, 50),
+      node("last", 400, 0),
+    ];
+    const result = snapBoardNodes(nodes, new Set(["a", "b"]), 1);
+    expect(result.nodes.map((item) => item.position.x)).toEqual([
+      0, 200, 250, 400,
+    ]);
+    expect(spacingGuides(result)).toEqual([
+      gap("x", 40, 100, 200),
+      gap("x", 40, 300, 400),
+    ]);
+  });
+
+  it("measures a rotated ellipse from its visible horizontal edge", () => {
+    const nodes = [
+      shape("ellipse", 0, 0, 200, 80, {
+        type: "ellipse",
+        rotation: 90,
+        strokeWidth: 0,
+      }),
+      node("moving", 243, 20, 60, 40),
+      node("last", 400, 0),
+    ];
+    const result = snapBoardNodes(nodes, moving, 1);
+    expect(result.nodes[1].position.x).toBeCloseTo(240);
+    expect(spacingGuides(result)).toEqual([
+      gap("x", 40, 140, 240),
+      gap("x", 40, 300, 400),
+    ]);
+  });
+
+  it("measures a thin line from the painted stroke instead of its container", () => {
+    const nodes = [
+      shape("line", 0, -20, 260, 40, { type: "line" }),
+      node("moving", 50, 82, 80, 40),
+      node("last", 50, 200),
+    ];
+    const result = snapBoardNodes(nodes, moving, 1);
+    expect(result.nodes[1].position.y).toBeCloseTo(80.5);
+    expect(spacingGuides(result)).toEqual([
+      gap("y", 90, 1, 80.5),
+      gap("y", 90, 120.5, 200),
+    ]);
+  });
+
+  it.each([100, 190])(
+    "does not measure through a blocker at x=%s",
+    (blocker) => {
+      const nodes = [
+        node("first", 0, 0, 80),
+        node("moving", 165, 0, 80),
+        node("last", 320, 0, 80),
+        node("blocker", blocker, 0, 30),
+      ];
+      expect(spacingGuides(snapBoardNodes(nodes, moving, 1))).toEqual([]);
+    },
+  );
+
+  it("does not pair objects on separate rows even if both overlap the moving object", () => {
+    const nodes = [
+      node("first", 0, 0, 80, 30),
+      node("moving", 163, 10, 80, 60),
+      node("last", 320, 50, 80, 30),
+    ];
+    const result = snapBoardNodes(nodes, moving, 1);
+    expect(result.nodes[1].position.x).toBe(163);
+    expect(spacingGuides(result)).toEqual([]);
+  });
+
+  it("drops spacing when the final orthogonal anchor snap removes the common overlap", () => {
+    const nodes = [
+      node("first", 0, 9, 80, 40),
+      node("moving", 163, 0, 80, 10),
+      node("last", 320, 9, 80, 40),
+    ];
+    const result = snapBoardNodes(nodes, moving, 1);
+    expect(result.nodes[1].position).toEqual({ x: 163, y: -1 });
+    expect(spacingGuides(result)).toEqual([]);
+  });
+
+  it.each([
+    [164, 168, 168, 0],
+    [163, 167, 160, 2],
+  ])(
+    "compares spacing with the nearest alignment anchor, preferring alignment on a tie",
+    (start, anchor, expected, count) => {
+      const nodes = [
+        node("first", 0, 0, 80),
+        node("moving", start, 0, 80),
+        node("last", 320, 0, 80),
+        node("anchor", anchor, 200, 80),
+      ];
+      const result = snapBoardNodes(nodes, moving, 1);
+      expect(result.nodes[1].position.x).toBe(expected);
+      expect(spacingGuides(result)).toHaveLength(count);
+    },
+  );
+
+  it("breaks ties between separate spacing candidates independently of document order", () => {
+    const dragged = node("moving", 164, 0, 80, 200);
+    const fixed = [
+      node("first-top", 0, 0, 80, 40),
+      node("last-top", 320, 0, 80, 40),
+      node("first-bottom", 0, 160, 96, 40),
+      node("last-bottom", 320, 160, 80, 40),
+    ];
+    const result = snapBoardNodes([dragged, ...fixed], moving, 1);
+    const reversed = snapBoardNodes(
+      [dragged, ...fixed.toReversed()],
+      moving,
+      1,
+    );
+    expect(result.nodes[0].position.x).toBe(160);
+    expect(reversed.nodes[0].position).toEqual(result.nodes[0].position);
+    expect(spacingGuides(reversed)).toEqual(spacingGuides(result));
+  });
+
+  it.each([160, 163])(
+    "shows both hints when spacing and alignment meet at the same position (from %s)",
+    (start) => {
+      const nodes = [
+        node("first", 0, 0, 80),
+        node("moving", start, 0, 80),
+        node("last", 320, 0, 80),
+        node("anchor", 160, 200, 80),
+      ];
+      const result = snapBoardNodes(nodes, moving, 1);
+      expect(result.nodes[1].position.x).toBe(160);
+      expect(result.guides).toContainEqual({
+        axis: "x",
+        coordinate: 160,
+        from: -8,
+        to: 288,
+      });
+      expect(spacingGuides(result)).toEqual([
+        gap("x", 40, 80, 160),
+        gap("x", 40, 240, 320),
+      ]);
+    },
+  );
 });

@@ -6,6 +6,7 @@ import {
 } from "react";
 import type { ResizeRectangle } from "./resize-aspect";
 import type { ResizeSides } from "./resize-snapping";
+import type { ShapeSpec } from "../../shared/shapes";
 import {
   normalizeRotation,
   pointerRotation,
@@ -17,6 +18,7 @@ import "./ShapeTransformControls.css";
 export type ShapeTransformPatch = {
   rotation?: number;
   rectangle?: ResizeRectangle;
+  lineDirection?: ShapeSpec["lineDirection"];
 };
 
 type Props = {

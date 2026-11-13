@@ -6,6 +6,10 @@ import {
   preparedCustomChartData,
 } from "./custom-chart-data.js";
 import { tableSpecSchema } from "../shared/table-schema.js";
+import {
+  visualTableSpecSchema,
+  VISUAL_TABLE_LIMITS,
+} from "../shared/visual-table.js";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
@@ -1268,6 +1272,72 @@ export async function buildApp(
           "Снимок неполный. Повторите исходный SQL перед преобразованием таблицы.",
         );
       return { result, rows: data };
+    });
+    let pendingVisualTableEvaluations = 0;
+    app.post("/api/visual-table/evaluate", async (req) => {
+      need(req);
+      const input = z
+        .object({
+          table: visualTableSpecSchema,
+          resultSetId: z.uuid().optional(),
+          offset: z
+            .number()
+            .int()
+            .min(0)
+            .max(VISUAL_TABLE_LIMITS.sourceRows)
+            .optional(),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(VISUAL_TABLE_LIMITS.maxPageSize)
+            .optional(),
+        })
+        .strict()
+        .parse(req.body);
+      if (input.resultSetId !== input.table.sourceResultSetId)
+        throw err(
+          422,
+          "Снимок изменился. Выберите новый снимок в таблице; старые правки не будут перенесены автоматически.",
+        );
+      if (pendingVisualTableEvaluations >= 10)
+        throw err(
+          429,
+          "Слишком много таблиц пересчитываются. Повторите через несколько секунд.",
+        );
+      pendingVisualTableEvaluations++;
+      try {
+        let source;
+        if (input.resultSetId) {
+          const result = await getResult(input.resultSetId);
+          checkTableSourceMetadata(
+            result.rowCount,
+            result.columns.length,
+            result.byteCount,
+          );
+          const data = result.rowCount
+            ? await rows(result.id, 0, result.rowCount)
+            : [];
+          if (data.length !== result.rowCount)
+            throw err(422, "Снимок неполный. Повторите исходный SQL.");
+          source = { result, rows: data };
+        }
+        const { evaluateVisualTable } = await import("./visual-table.js");
+        return await evaluateVisualTable({
+          table: input.table,
+          source,
+          offset: input.offset,
+          limit: input.limit,
+        });
+      } catch (error) {
+        const status = (error as { statusCode?: number }).statusCode;
+        throw err(
+          status && [404, 408, 422, 429].includes(status) ? status : 422,
+          (error as Error).message,
+        );
+      } finally {
+        pendingVisualTableEvaluations--;
+      }
     });
     app.get("/api/boards", async (req) => {
       need(req);

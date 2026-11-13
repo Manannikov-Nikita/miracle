@@ -38,6 +38,7 @@ export function Modal({
   wide = false,
   dismissible = true,
   className = "",
+  onOpenAutoFocus,
   onCloseAutoFocus,
 }: {
   open: boolean;
@@ -48,6 +49,7 @@ export function Modal({
   wide?: boolean;
   dismissible?: boolean;
   className?: string;
+  onOpenAutoFocus?: (event: Event) => void;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   return (
@@ -60,6 +62,7 @@ export function Modal({
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop" />
         <Dialog.Content
+          onOpenAutoFocus={onOpenAutoFocus}
           onCloseAutoFocus={onCloseAutoFocus}
           className={`modal ${wide ? "modal-wide" : ""} ${className}`}
           aria-describedby={description ? "modal-description" : undefined}

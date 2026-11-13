@@ -13,7 +13,13 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ReactFlowProps, Viewport } from "@xyflow/react";
 import type { Board, BoardNode } from "../src/shared/types";
 import BoardWorkspace from "../src/client/board/BoardWorkspace";
-import { BoardActions } from "../src/client/board/ArtifactNode";
+import {
+  BoardActions,
+  type ArtifactFlowNode,
+} from "../src/client/board/ArtifactNode";
+import { lineEndpointPatch } from "../src/client/board/LineTransformControls";
+import { getLineGeometry } from "../src/client/board/shape-geometry";
+import { rotatePoint } from "../src/client/board/shape-rotation";
 import type { Select } from "../src/client/components/Select";
 import {
   ProjectSync,
@@ -291,6 +297,94 @@ describe("shape transform gestures in the board workspace", () => {
     expect(redo().disabled).toBe(true);
   });
 
+  it("keeps line endpoint direction changes in the same cancellable undo step", async () => {
+    boards[0].document.nodes[0].data.shape = {
+      type: "line",
+      lineDirection: "vertical",
+      rotation: 30,
+    };
+    await open();
+    expect(await start()).toBe(true);
+    await act(async () =>
+      flow.actions!.shapeTransform!("shape", {
+        lineDirection: "horizontal",
+        rotation: 120,
+        rectangle: { x: 15, y: 25, width: 220, height: 100 },
+      }),
+    );
+    expect(node().data.shape!.lineDirection).toBe("horizontal");
+    await end(true);
+    expect(node().data.shape!.lineDirection).toBe("vertical");
+    expect(node().data.shape!.rotation).toBe(30);
+    expect(undo().disabled).toBe(true);
+    expect(await start()).toBe(true);
+    await act(async () =>
+      flow.actions!.shapeTransform!("shape", {
+        lineDirection: "horizontal",
+        rotation: 120,
+        rectangle: { x: 15, y: 25, width: 220, height: 100 },
+      }),
+    );
+    await end();
+    await act(async () => undo().click());
+    expect(node().data.shape!.lineDirection).toBe("vertical");
+    await act(async () => redo().click());
+    expect(node().data.shape!.lineDirection).toBe("horizontal");
+    await act(async () => project.prepare());
+    expect(boards[0].document.nodes[0].data.shape!.lineDirection).toBe(
+      "horizontal",
+    );
+  });
+
+  it.each(["vertical", "diagonal-up", "diagonal-down"] as const)(
+    "restores a %s line when its endpoint is dragged away and back",
+    async (lineDirection) => {
+      boards[0].document.nodes[0].data.shape = {
+        type: "line",
+        lineDirection,
+        rotation: 30,
+      };
+      const original = structuredClone(boards[0].document.nodes[0]);
+      const shape = original.data.shape!;
+      const rectangle = {
+        ...original.position,
+        width: original.width!,
+        height: original.height!,
+      };
+      const localEnd = getLineGeometry(
+        shape,
+        rectangle.width,
+        rectangle.height,
+      ).end;
+      const rotatedEnd = rotatePoint(
+        localEnd,
+        { x: rectangle.width / 2, y: rectangle.height / 2 },
+        shape.rotation!,
+      );
+      const originalEnd = {
+        x: rectangle.x + rotatedEnd.x,
+        y: rectangle.y + rotatedEnd.y,
+      };
+      await open();
+      expect(await start()).toBe(true);
+      for (const requested of [
+        { x: originalEnd.x + 30, y: originalEnd.y + 20 },
+        originalEnd,
+      ]) {
+        await act(async () =>
+          flow.actions!.shapeTransform!(
+            "shape",
+            lineEndpointPatch(shape, rectangle, "end", requested),
+          ),
+        );
+      }
+      await end();
+      await act(async () => project.prepare());
+      expect(boards[0].document.nodes[0]).toEqual(original);
+      expect(undo().disabled).toBe(true);
+    },
+  );
+
   it("undoes the transform without reverting edits made during its preview", async () => {
     await open();
     expect(await start()).toBe(true);
@@ -338,9 +432,12 @@ describe("shape transform gestures in the board workspace", () => {
     expect(node().height).toBe(original.height);
     expect(undo().disabled).toBe(true);
     await act(async () => redo().click());
-    expect(node().position).toEqual({ x: -15, y: 45 });
-    expect(node().width).toBe(320);
-    expect(node().height).toBe(160);
+    const rendered = node() as ArtifactFlowNode;
+    const frame = rendered.data.shapeFrame!;
+    expect(rendered.position.x + frame.x).toBeCloseTo(-15);
+    expect(rendered.position.y + frame.y).toBeCloseTo(45);
+    expect(frame.width).toBe(320);
+    expect(frame.height).toBe(160);
     expect(node().data.shape!.rotation).toBe(30);
   });
 

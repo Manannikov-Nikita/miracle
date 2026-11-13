@@ -16,6 +16,7 @@ import type { BoardFragment } from "./board/clipboard";
 import { api, json } from "./api";
 import { ErrorBox, Modal, Spinner } from "./components/UI";
 import type { CanvasSearchTarget } from "../shared/canvas-search-text";
+import type { CanvasTool } from "./board/canvas-tools";
 
 export type CanvasDestination = {
   kind: BoardKind;
@@ -24,6 +25,17 @@ export type CanvasDestination = {
 };
 type Point = { x: number; y: number };
 export interface CanvasHandle {
+  acceptsToolPoint?(point: Point): boolean;
+  toolAppearance?(): {
+    zoom: number;
+    presentation: boolean;
+    background?: string;
+  };
+  createTool?(
+    tool: CanvasTool,
+    destination: CanvasDestination,
+    point: Point,
+  ): void;
   openSearchResult?(
     target: CanvasSearchTarget,
     options?: { signal?: AbortSignal },
@@ -65,6 +77,28 @@ export class CanvasWorkspace {
   }
   getCanvas(kind: BoardKind) {
     return this.canvases.get(kind);
+  }
+  toolTarget(point: Point) {
+    return [...this.canvases.values()].find(
+      (handle) =>
+        handle.createTool &&
+        handle.ready?.() !== false &&
+        handle.visible?.() !== false &&
+        handle.containsPoint(point) &&
+        handle.acceptsToolPoint?.(point) !== false,
+    );
+  }
+  createToolAt(tool: CanvasTool, point: Point): boolean {
+    const handle = this.toolTarget(point);
+    const destination = handle?.destination();
+    if (!handle || !destination) return false;
+    // Keep this synchronous: the image picker requires the pointer-up activation.
+    handle.createTool!(
+      tool,
+      structuredClone(destination),
+      handle.screenToCanvas(point),
+    );
+    return true;
   }
   open(kind: BoardKind) {
     this.callbacks.onOpen(kind);

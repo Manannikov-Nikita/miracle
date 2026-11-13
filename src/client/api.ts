@@ -130,6 +130,24 @@ export async function api<T>(
     return request<T>(path, options);
   }
 }
+export function evaluateVisualTable(
+  input: {
+    table: import("../shared/visual-table").VisualTableSpec;
+    resultSetId?: string;
+    offset?: number;
+    limit?: number;
+  },
+  signal?: AbortSignal,
+) {
+  return api<import("../shared/visual-table").VisualTableResult>(
+    "/api/visual-table/evaluate",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      signal,
+    },
+  );
+}
 export function getResultRows(id: string, offset = 0, limit = 500) {
   return api<ResultPage>(
     `/api/result-sets/${encodeURIComponent(id)}/rows?offset=${offset}&limit=${limit}`,
