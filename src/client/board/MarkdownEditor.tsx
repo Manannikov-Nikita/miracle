@@ -22,7 +22,13 @@ import {
   WidgetType,
   type DecorationSet,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyField,
+  historyKeymap,
+  isolateHistory,
+} from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
 import type { Tree } from "@lezer/common";
@@ -42,6 +48,7 @@ import {
 
 const focusPreview = StateEffect.define<boolean>();
 const externalUpdate = Annotation.define<boolean>();
+const snapshotFields = { history: historyField };
 
 /** Widgets only replace syntax; their source ranges always remain in the CM document. */
 class MarkerWidget extends WidgetType {
@@ -318,6 +325,12 @@ const previewField = StateField.define<{
     EditorView.decorations.from(field, (value) => value.decorations),
 });
 
+export interface MarkdownEditorSnapshot {
+  doc: string;
+  selection: unknown;
+  history: unknown;
+}
+
 export type MarkdownEditorProps = {
   value: string;
   onChange: (value: string) => void;
@@ -328,6 +341,8 @@ export type MarkdownEditorProps = {
   maxLength?: number;
   revealRequest?: TextSearchRevealRequest;
   onRevealComplete?: (requestId: string, found: boolean) => void;
+  initialSnapshot?: MarkdownEditorSnapshot;
+  onSnapshot?: (snapshot: MarkdownEditorSnapshot) => void;
 };
 
 export default function MarkdownEditor({
@@ -340,6 +355,8 @@ export default function MarkdownEditor({
   maxLength = MAX_MARKDOWN_LENGTH,
   revealRequest,
   onRevealComplete,
+  initialSnapshot,
+  onSnapshot,
 }: MarkdownEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -364,85 +381,98 @@ export default function MarkdownEditor({
   };
   useLayoutEffect(() => {
     if (!host.current) return;
+    const config = {
+      doc: value,
+      extensions: [
+        EditorState.lineSeparator.of("\n"),
+        readOnlyCompartment.current.of([
+          EditorState.readOnly.of(readOnly),
+          EditorView.editable.of(!readOnly),
+        ]),
+        EditorState.allowMultipleSelections.of(true),
+        markdown({ extensions: GFM }),
+        history(),
+        keymap.of([
+          {
+            key: "Mod-s",
+            run: () => {
+              if (!onSaveRef.current) return false;
+              onSaveRef.current();
+              return true;
+            },
+          },
+          ...historyKeymap,
+          ...defaultKeymap,
+        ]),
+        EditorState.transactionFilter.of((transaction) =>
+          transaction.docChanged &&
+          transaction.newDoc.length > maxLengthRef.current
+            ? []
+            : transaction,
+        ),
+        previewField,
+        EditorView.lineWrapping,
+        labelCompartment.current.of(
+          EditorView.contentAttributes.of({
+            "aria-label": ariaLabel,
+            role: "textbox",
+            "aria-multiline": "true",
+            spellcheck: "true",
+          }),
+        ),
+        EditorView.domEventHandlers({
+          focus: (_event, editor) => {
+            // CM computes the clicked selection during mousedown. Revealing the old
+            // cursor line synchronously would change layout before that computation.
+            queueMicrotask(() => {
+              if (editor.hasFocus && editor.dom.isConnected)
+                editor.dispatch({ effects: focusPreview.of(true) });
+            });
+          },
+          blur: (_event, editor) => {
+            editor.dispatch({ effects: focusPreview.of(false) });
+          },
+          click: (event, editor) => {
+            if (
+              !editor.state.readOnly &&
+              (event.target as HTMLElement).closest("a")
+            )
+              event.preventDefault();
+          },
+        }),
+        EditorView.updateListener.of((update) => {
+          if (
+            update.docChanged &&
+            !update.transactions.every((transaction) =>
+              transaction.annotation(externalUpdate),
+            )
+          )
+            onChangeRef.current(update.state.doc.toString());
+          if (update.docChanged || update.selectionSet)
+            reportCursor(update.state);
+        }),
+      ],
+    };
+    let state = initialSnapshot
+      ? EditorState.fromJSON(initialSnapshot, config, snapshotFields)
+      : EditorState.create(config);
+    if (initialSnapshot && initialSnapshot.doc !== value) {
+      // Import edits made in the other editor as a separate undo step.
+      state = state.update({
+        changes: externalDocumentChange(initialSnapshot.doc, value),
+        annotations: isolateHistory.of("full"),
+        filter: false,
+      }).state;
+    }
     const view = new EditorView({
       parent: host.current,
-      state: EditorState.create({
-        doc: value,
-        extensions: [
-          EditorState.lineSeparator.of("\n"),
-          readOnlyCompartment.current.of([
-            EditorState.readOnly.of(readOnly),
-            EditorView.editable.of(!readOnly),
-          ]),
-          EditorState.allowMultipleSelections.of(true),
-          markdown({ extensions: GFM }),
-          history(),
-          keymap.of([
-            {
-              key: "Mod-s",
-              run: () => {
-                if (!onSaveRef.current) return false;
-                onSaveRef.current();
-                return true;
-              },
-            },
-            ...historyKeymap,
-            ...defaultKeymap,
-          ]),
-          EditorState.transactionFilter.of((transaction) =>
-            transaction.docChanged &&
-            transaction.newDoc.length > maxLengthRef.current
-              ? []
-              : transaction,
-          ),
-          previewField,
-          EditorView.lineWrapping,
-          labelCompartment.current.of(
-            EditorView.contentAttributes.of({
-              "aria-label": ariaLabel,
-              role: "textbox",
-              "aria-multiline": "true",
-              spellcheck: "true",
-            }),
-          ),
-          EditorView.domEventHandlers({
-            focus: (_event, editor) => {
-              // CM computes the clicked selection during mousedown. Revealing the old
-              // cursor line synchronously would change layout before that computation.
-              queueMicrotask(() => {
-                if (editor.hasFocus && editor.dom.isConnected)
-                  editor.dispatch({ effects: focusPreview.of(true) });
-              });
-            },
-            blur: (_event, editor) => {
-              editor.dispatch({ effects: focusPreview.of(false) });
-            },
-            click: (event, editor) => {
-              if (
-                !editor.state.readOnly &&
-                (event.target as HTMLElement).closest("a")
-              )
-                event.preventDefault();
-            },
-          }),
-          EditorView.updateListener.of((update) => {
-            if (
-              update.docChanged &&
-              !update.transactions.every((transaction) =>
-                transaction.annotation(externalUpdate),
-              )
-            )
-              onChangeRef.current(update.state.doc.toString());
-            if (update.docChanged || update.selectionSet)
-              reportCursor(update.state);
-          }),
-        ],
-      }),
+      state,
     });
     viewRef.current = view;
     reportCursor(view.state);
     return () => {
       viewRef.current = null;
+      if (onSnapshot) onSnapshot(view.state.toJSON(snapshotFields));
       view.destroy();
     };
     // A mounted card owns one editor. Current callbacks and external values are synced separately.

@@ -1,6 +1,7 @@
 import { boardImageSchema } from "./board-images.js";
 import { z } from "zod";
 import { tableSpecSchema } from "./table-schema.js";
+import { visualTableSpecSchema } from "./visual-table.js";
 import { dateRangeDates } from "./date-batch.js";
 import { customChartSchema } from "./custom-chart-schema.js";
 import { boardKind, PRESENTATION_MAX_SLIDES } from "./presentation.js";
@@ -120,6 +121,7 @@ export const boardDocumentSchema = z
                 "shape",
                 "text",
                 "image",
+                "table",
               ]),
               image: boardImageSchema.optional(),
               text: z.string().max(200000).optional(),
@@ -134,9 +136,36 @@ export const boardDocumentSchema = z
               customChart: customChartSchema.optional(),
               visibleColumns: z.array(z.string().max(200)).max(2000).optional(),
               table: tableSpecSchema.optional(),
+              visualTable: visualTableSpecSchema.optional(),
+              visualTableEnabled: z.boolean().optional(),
             })
             .passthrough()
             .superRefine((data, context) => {
+              if (
+                data.kind === "table" &&
+                (!data.visualTable || data.visualTable.sourceResultSetId)
+              )
+                context.addIssue({
+                  code: "custom",
+                  path: ["visualTable"],
+                  message: "Для таблицы нужны собственные строки и настройки",
+                });
+              if (data.visualTable && !["table", "result"].includes(data.kind))
+                context.addIssue({
+                  code: "custom",
+                  path: ["visualTable"],
+                  message: "Вычисления доступны только таблицам",
+                });
+              if (
+                data.kind === "result" &&
+                data.visualTable &&
+                !data.visualTable.sourceResultSetId
+              )
+                context.addIssue({
+                  code: "custom",
+                  path: ["visualTable"],
+                  message: "Для таблицы результата нужен снимок SQL",
+                });
               if (data.kind === "image" && !data.image)
                 context.addIssue({
                   code: "custom",

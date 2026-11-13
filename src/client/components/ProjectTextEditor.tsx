@@ -3,9 +3,15 @@ import Editor from "@monaco-editor/react";
 import * as monaco from "monaco-editor/editor/editor.api.js";
 import { FloppyDisk } from "@phosphor-icons/react";
 import { ensureFileLanguage } from "../file-highlighting";
-import { fileLanguage, type ProjectFileDraft } from "../project-file-drafts";
+import {
+  editorModelPath,
+  fileLanguage,
+  type ProjectFileDraft,
+} from "../project-file-drafts";
 import { IconButton, Spinner } from "./UI";
-import MarkdownEditor from "../board/MarkdownEditor";
+import MarkdownEditor, {
+  type MarkdownEditorSnapshot,
+} from "../board/MarkdownEditor";
 import { MAX_PROJECT_FILE_BYTES } from "../../shared/project-files";
 import "./project-text-editor.css";
 import {
@@ -24,39 +30,70 @@ export default function ProjectTextEditor({
   workspaceId,
   file,
   saving,
+  readOnly = false,
   onChange,
   onSave,
   revealRequest,
   onRevealComplete,
+  markdownSnapshots,
 }: {
   workspaceId: string;
   file: ProjectFileDraft;
   saving: boolean;
+  readOnly?: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
   revealRequest?: TextSearchRevealRequest;
   onRevealComplete?: (requestId: string, found: boolean) => void;
+  markdownSnapshots?: Map<string, MarkdownEditorSnapshot>;
 }) {
   const project = useProjectSync();
-  const work = useAgentWork({ kind: "file", id: file.path });
+  const work = useAgentWork(
+    file.deleted ? null : { kind: "file", id: file.path },
+  );
+  const applyingDraft = useRef(false);
   const locked = () =>
+    readOnly ||
     Boolean(
+      !file.deleted &&
       findAgentWork(currentAgentWork(project), { kind: "file", id: file.path }),
     );
   const change = (value: string) => {
-    if (!locked()) onChange(value);
+    if (!applyingDraft.current && !locked()) onChange(value);
   };
   const saveFile = () => {
-    if (!locked()) onSave();
+    if (!file.deleted && !locked()) onSave();
   };
   const save = useRef(onSave);
   save.current = saveFile;
   const language = fileLanguage(file.path);
   const isMarkdown = language === "markdown";
   const [ready, setReady] = useState(false);
+  const modelLanguage = ready ? language : "plaintext";
   const [cursor, setCursor] = useState({ lineNumber: 1, column: 1 });
   const [editor, setEditor] =
     useState<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const syncModel = useRef<
+    (editor: monaco.editor.IStandaloneCodeEditor) => void
+  >(() => {});
+  syncModel.current = (editor) => {
+    const model = editor.getModel();
+    if (!model) return;
+    monaco.editor.setModelLanguage(model, modelLanguage);
+    if (model.getValue() === file.content) return;
+    applyingDraft.current = true;
+    try {
+      model.pushStackElement();
+      model.pushEditOperations(
+        null,
+        [{ range: model.getFullModelRange(), text: file.content }],
+        () => null,
+      );
+      model.pushStackElement();
+    } finally {
+      applyingDraft.current = false;
+    }
+  };
   const revealedRequest = useRef<string | null>(null);
   useEffect(() => {
     const model = editor?.getModel();
@@ -67,9 +104,7 @@ export default function ProjectTextEditor({
       !revealRequest ||
       revealedRequest.current === revealRequest.requestId ||
       model.uri.toString() !==
-        monaco.Uri.parse(
-          `miracle-file://${workspaceId}/${encodeURIComponent(file.id)}`,
-        ).toString()
+        monaco.Uri.parse(editorModelPath(workspaceId, file.id)).toString()
     )
       return;
     revealedRequest.current = revealRequest.requestId;
@@ -108,7 +143,10 @@ export default function ProjectTextEditor({
     updateCursor();
     const listeners = [
       editor.onDidChangeCursorPosition(updateCursor),
-      editor.onDidChangeModel(updateCursor),
+      editor.onDidChangeModel(() => {
+        syncModel.current(editor);
+        updateCursor();
+      }),
     ];
     return () => listeners.forEach((listener) => listener.dispose());
   }, [editor]);
@@ -145,7 +183,7 @@ export default function ProjectTextEditor({
         <AgentWorkIndicator work={work} />
         <IconButton
           label="Сохранить файл (⌘S / Ctrl+S)"
-          disabled={saving || Boolean(work)}
+          disabled={file.deleted || saving || Boolean(work)}
           onClick={saveFile}
         >
           {saving ? <Spinner /> : <FloppyDisk size={16} />}
@@ -160,24 +198,32 @@ export default function ProjectTextEditor({
               key={`${workspaceId}:${file.id}`}
               value={file.content}
               onChange={change}
-              readOnly={Boolean(work)}
+              readOnly={readOnly || Boolean(work)}
               ariaLabel={`Редактор файла ${file.path}`}
               onSave={saveFile}
               onCursorChange={setCursor}
               maxLength={MAX_PROJECT_FILE_BYTES}
               revealRequest={revealRequest}
               onRevealComplete={onRevealComplete}
+              initialSnapshot={markdownSnapshots?.get(file.id)}
+              onSnapshot={
+                markdownSnapshots
+                  ? (snapshot) => markdownSnapshots.set(file.id, snapshot)
+                  : undefined
+              }
             />
           </div>
         ) : (
           <Editor
-            path={`miracle-file://${workspaceId}/${encodeURIComponent(file.id)}`}
+            path={editorModelPath(workspaceId, file.id)}
             value={file.content}
-            language={ready ? language : "plaintext"}
+            language={modelLanguage}
             theme="miracle-dark"
             onChange={(value) => change(value ?? "")}
             saveViewState
+            keepCurrentModel
             onMount={(editor) => {
+              syncModel.current(editor);
               setEditor(editor);
               editor.addCommand(
                 monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
@@ -190,7 +236,7 @@ export default function ProjectTextEditor({
               </div>
             }
             options={{
-              readOnly: Boolean(work),
+              readOnly: readOnly || Boolean(work),
               fontSize: 13,
               fontFamily:
                 '"JetBrains Mono", "SFMono-Regular", Consolas, monospace',
@@ -214,9 +260,11 @@ export default function ProjectTextEditor({
                 : language}
           </span>
           <span>
-            {file.content !== file.savedContent
-              ? "Есть изменения · "
-              : "Сохранён · "}
+            {file.deleted
+              ? "Черновик · "
+              : file.content !== file.savedContent
+                ? "Есть изменения · "
+                : "Сохранён · "}
             Стр {cursor.lineNumber}, стлб {cursor.column}
             <span className="footer-divider" />
             UTF-8

@@ -1,8 +1,10 @@
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -20,6 +22,7 @@ import { registerProjectRoutes } from "../src/server/project-routes";
 import { problem, ProjectStore } from "../src/server/project-store";
 import { Database, migrate } from "../src/server/db";
 import { SecretBox } from "../src/server/secrets";
+import { ProjectGit } from "../src/server/project-git";
 
 let root: string, project: string, dataDir: string;
 beforeEach(() => {
@@ -94,6 +97,252 @@ it("moves regular files between folders and root without changing bytes or permi
   expect(statSync(join(project, "image.bin")).mode & 0o777).toBe(0o640);
   files.moveProjectFile(context(), { path: "image.bin", directory: "docs" });
   expect(readFileSync(original)).toEqual(bytes);
+});
+
+it("renames a file through the move API without changing its bytes", async () => {
+  file("notes.txt", "keep");
+  const app = Fastify();
+  registerProjectRoutes(app, routeStore(app), () => {});
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/project/file/move",
+      payload: { path: "notes.txt", directory: "", name: "report.md" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      from: "notes.txt",
+      path: "report.md",
+      name: "report.md",
+    });
+    expect(existsSync(join(project, "notes.txt"))).toBe(false);
+    expect(readFileSync(join(project, "report.md"), "utf8")).toBe("keep");
+  } finally {
+    await app.close();
+  }
+});
+
+it("renames letter casing without replacing a different directory entry", () => {
+  file("Report.md", "keep");
+  const input = { path: "Report.md", directory: "", name: "report.md" };
+  if (!existsSync(join(project, "report.md"))) {
+    // Even a second name for the same inode is an existing directory entry.
+    linkSync(join(project, "Report.md"), join(project, "report.md"));
+    expect(() => files.moveProjectFile(context(), input)).toThrow(
+      expect.objectContaining({ statusCode: 409, code: "FILE_ALREADY_EXISTS" }),
+    );
+    expect(readdirSync(project)).toContain("Report.md");
+    rmSync(join(project, "report.md"));
+  }
+  expect(files.moveProjectFile(context(), input)).toEqual({
+    from: "Report.md",
+    path: "report.md",
+    name: "report.md",
+  });
+  expect(readdirSync(project)).not.toContain("Report.md");
+  expect(readFileSync(join(project, "report.md"), "utf8")).toBe("keep");
+});
+
+it("moves and renames a folder as one entry, retaining nested files and permissions", () => {
+  const original = file("source/nested/.notes.md", "keep");
+  mkdirSync(join(project, "target"));
+  chmodSync(join(project, "source"), 0o750);
+  const moved = files.moveProjectFile(context(), {
+    path: "source",
+    directory: "target",
+    name: "archive",
+  });
+  expect(moved).toEqual({
+    from: "source",
+    path: "target/archive",
+    name: "archive",
+  });
+  expect(existsSync(original)).toBe(false);
+  expect(
+    readFileSync(join(project, "target/archive/nested/.notes.md"), "utf8"),
+  ).toBe("keep");
+  expect(statSync(join(project, "target/archive")).mode & 0o777).toBe(0o750);
+});
+
+it("rejects a move to the same path, project root as a source, and a folder's own subtree", () => {
+  const original = file("source/nested/keep.txt", "keep");
+  for (const input of [
+    { path: "", directory: "source" },
+    { path: "source/nested/keep.txt", directory: "source/nested" },
+    { path: "source", directory: "" },
+    { path: "source", directory: "source" },
+    { path: "source", directory: "source/nested" },
+  ]) {
+    expect(() => files.moveProjectFile(context(), input)).toThrow(
+      expect.objectContaining({ statusCode: 400 }),
+    );
+    expect(readFileSync(original, "utf8")).toBe("keep");
+    expect(existsSync(join(project, "source/nested/source"))).toBe(false);
+  }
+});
+
+it("does not replace an empty folder created at the move destination during preflight", () => {
+  const original = file("source/keep.txt", "keep");
+  mkdirSync(join(project, "target"));
+  const target = join(project, "target/source");
+  let otherInode: number | undefined;
+  expect(() =>
+    files.moveProjectFile(
+      context(),
+      {
+        path: "source",
+        directory: "target",
+      },
+      () => {
+        mkdirSync(target);
+        otherInode = statSync(target).ino;
+      },
+    ),
+  ).toThrow(
+    expect.objectContaining({ statusCode: 409, code: "FILE_ALREADY_EXISTS" }),
+  );
+  expect(statSync(target).ino).toBe(otherInode);
+  expect(readFileSync(original, "utf8")).toBe("keep");
+});
+
+it("authenticates file and recursive folder deletion and returns the deleted path", async () => {
+  file("notes.txt", "delete me");
+  file("source/nested/.notes.md", "delete me");
+  const app = Fastify();
+  registerProjectRoutes(app, routeStore(app), (request) => {
+    if (request.headers["x-test-session"] !== "allowed")
+      throw problem(401, "Session required");
+  });
+  try {
+    for (const path of ["notes.txt", "source"]) {
+      const request = {
+        method: "DELETE" as const,
+        url: `/api/project/entry?path=${path}`,
+      };
+      expect((await app.inject(request)).statusCode).toBe(401);
+      expect(existsSync(join(project, path))).toBe(true);
+      const response = await app.inject({
+        ...request,
+        headers: { "x-test-session": "allowed" },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ path });
+      expect(existsSync(join(project, path))).toBe(false);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+it.each([".git", ".miracle", ".codegraph", "node_modules", "private", "alias"])(
+  "keeps the entire subtree when a nested %s entry is protected",
+  async (protectedName) => {
+    const prefix = "source/nested";
+    const kept = file(`${prefix}/notes.txt`, "keep");
+    const privatePath = `${prefix}/${protectedName}`;
+    if (protectedName === "alias")
+      symlinkSync(dataDir, join(project, privatePath), "dir");
+    else file(`${privatePath}/sentinel`, "private");
+    const app = Fastify();
+    const store = routeStore(app);
+    if (protectedName === "private")
+      store.context.dataDir = join(project, privatePath);
+    registerProjectRoutes(app, store, () => {});
+    try {
+      const moved = await app.inject({
+        method: "POST",
+        url: "/api/project/file/move",
+        payload: { path: "source", directory: "", name: "archive" },
+      });
+      expect(moved.statusCode).toBe(403);
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: "/api/project/entry?path=source",
+      });
+      expect(deleted.statusCode).toBe(403);
+      expect(readFileSync(kept, "utf8")).toBe("keep");
+      expect(existsSync(join(project, privatePath))).toBe(true);
+      expect(existsSync(join(project, "archive"))).toBe(false);
+    } finally {
+      await app.close();
+    }
+  },
+);
+
+it("blocks moves and deletes during a Git mutation", async () => {
+  file("source/notes.txt");
+  const app = Fastify();
+  const store = routeStore(app);
+  registerProjectRoutes(app, store, () => {});
+  const git = new ProjectGit(store.context);
+  await app.ready();
+  const pending = git
+    .switchBranch({ branch: "other", revision: "stale" })
+    .catch(() => {});
+  try {
+    const actions = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/api/project/file/move",
+        payload: { path: "source", directory: "", name: "archive" },
+      }),
+      app.inject({ method: "DELETE", url: "/api/project/entry?path=source" }),
+    ]);
+    for (const response of actions) {
+      expect(response.statusCode).toBe(409);
+      expect(response.json().code).toBe("GIT_BUSY");
+    }
+    expect(existsSync(join(project, "source/notes.txt"))).toBe(true);
+  } finally {
+    await pending;
+    await app.close();
+  }
+});
+
+it("blocks locked descendants in the source and in a missing destination subtree", async () => {
+  file("Source/nested/notes.txt");
+  file("Source-other/notes.txt");
+  const app = Fastify();
+  const store = routeStore(app);
+  registerProjectRoutes(app, store, () => {});
+  const lock = (id: string) =>
+    store.work.runAs(
+      { turnId: id, chatId: "test-chat", isActive: () => true },
+      () => store.work.begin([{ kind: "file", id }]),
+    );
+  const inputPath = existsSync(join(project, "SOURCE")) ? "SOURCE" : "Source";
+  const outputName = inputPath === "SOURCE" ? "ARCHIVE" : "Archive";
+  const move = {
+    method: "POST" as const,
+    url: "/api/project/file/move",
+    payload: { path: inputPath, directory: "", name: outputName },
+  };
+  const remove = {
+    method: "DELETE" as const,
+    url: `/api/project/entry?path=${inputPath}`,
+  };
+  try {
+    for (const id of ["Source/nested/notes.txt", "Source/nested/future.sql"]) {
+      lock(id);
+      for (const request of [move, remove]) {
+        const response = await app.inject(request);
+        expect(response.statusCode).toBe(423);
+        expect(response.json().code).toBe("ENTITY_AGENT_LOCKED");
+      }
+      store.work.releaseTurn(id);
+    }
+    file("Archive/nested/fixture.txt");
+    lock("Archive/nested/future.sql");
+    rmSync(join(project, "Archive"), { recursive: true });
+    expect((await app.inject(move)).statusCode).toBe(423);
+    expect(existsSync(join(project, "Source/nested/notes.txt"))).toBe(true);
+    store.work.releaseTurn("Archive/nested/future.sql");
+    lock("Source-other/notes.txt");
+    expect((await app.inject(move)).statusCode).toBe(200);
+    expect(existsSync(join(project, "Source-other/notes.txt"))).toBe(true);
+  } finally {
+    await app.close();
+  }
 });
 
 it("keeps both paths intact when a move destination already exists", () => {

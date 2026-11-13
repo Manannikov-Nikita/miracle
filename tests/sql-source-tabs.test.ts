@@ -4,13 +4,18 @@ import { setImmediate as yieldIO } from "node:timers/promises";
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { EditorView } from "@codemirror/view";
+import { undo } from "@codemirror/commands";
 import SqlWorkspace, {
   type SqlSourceRequest,
 } from "../src/client/components/SqlWorkspace";
 import { editorApi } from "./helpers/editor-api";
 import type { Connection, QuerySource } from "../src/shared/types";
 import { createMetadataStore } from "../src/client/metadata-store";
-import type { ProjectFileMover } from "../src/client/project-file-drafts";
+import type {
+  ProjectFileDeleter,
+  ProjectFileDraft,
+  ProjectFileMover,
+} from "../src/client/project-file-drafts";
 import {
   ProjectSync,
   ProjectSyncContext,
@@ -21,6 +26,7 @@ import {
 vi.mock("@monaco-editor/react", () => ({
   loader: { config() {} },
   default: (p: {
+    path?: string;
     value?: string;
     defaultValue?: string;
     onChange: (value: string) => void;
@@ -28,6 +34,7 @@ vi.mock("@monaco-editor/react", () => ({
   }) =>
     createElement("textarea", {
       "aria-label": "Test SQL editor",
+      "data-model-path": p.path,
       value: p.value ?? p.defaultValue ?? "",
       readOnly: p.options?.readOnly,
       onChange: (event: { target: { value: string } }) =>
@@ -164,11 +171,233 @@ describe("chart source SQL tabs", () => {
     Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
     vi.unstubAllGlobals();
   });
+  async function renderPane(sync?: ProjectSync) {
+    await act(async () => {
+      const workspace = createElement(SqlWorkspace, props);
+      root.render(
+        sync
+          ? createElement(
+              ProjectSyncContext.Provider,
+              { value: sync },
+              workspace,
+            )
+          : workspace,
+      );
+    });
+  }
   async function render(request?: SqlSourceRequest) {
     props = { ...props, sourceToOpen: request ?? null };
-    await act(async () => root.render(createElement(SqlWorkspace, props)));
+    await renderPane();
     await readyEditor();
   }
+  function closeButton(name: string) {
+    return container.querySelector<HTMLButtonElement>(
+      `[aria-label="Закрыть вкладку ${name}"]`,
+    )!;
+  }
+
+  it("collapses after closing the only tab and opens a fresh blank SQL tab", async () => {
+    await render();
+    await editSql("select old_draft");
+    const oldModel = editor().dataset.modelPath;
+    await act(async () => closeButton("query_1.sql").click());
+    expect(props.onCollapse).toHaveBeenCalledOnce();
+    expect(tabs()).toHaveLength(0);
+    expect(editor()).toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem("miracle:sql-recovery:source-tab-test")!),
+    ).toEqual([]);
+    props.visible = false;
+    await renderPane();
+    expect(tabs()).toHaveLength(0);
+    props.visible = true;
+    await render();
+    expect(tabs()).toHaveLength(1);
+    expect(activeTab()).toBe("query_1.sql");
+    expect(editorValue()).toBe("");
+    expect(editor().dataset.modelPath).not.toBe(oldModel);
+  });
+
+  it("keeps documents and their drafts when the pane is collapsed manually", async () => {
+    await render();
+    await editSql("select keep_me");
+    const model = editor().dataset.modelPath;
+    props.visible = false;
+    await renderPane();
+    props.visible = true;
+    await render();
+    expect(tabs()).toHaveLength(1);
+    expect(editorValue()).toBe("select keep_me");
+    expect(editor().dataset.modelPath).toBe(model);
+    expect(props.onCollapse).not.toHaveBeenCalled();
+  });
+
+  it("selects the remaining Markdown tab after closing SQL and confirms discarding its dirty draft", async () => {
+    await render();
+    await openProjectFile("notes.md", "# Saved");
+    await editSql("# Draft");
+    await clickTab("query_1.sql");
+    await act(async () => closeButton("query_1.sql").click());
+    expect(tabs()).toHaveLength(1);
+    expect(activeTab()).toBe("notes.md");
+    expect(editorValue()).toBe("# Draft");
+    expect(props.onCollapse).not.toHaveBeenCalled();
+
+    await act(async () => closeButton("notes.md").click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const buttons = [...dialog.querySelectorAll("button")];
+    await act(async () =>
+      buttons.find((button) => button.textContent === "Отмена")!.click(),
+    );
+    expect(editorValue()).toBe("# Draft");
+    expect(props.onCollapse).not.toHaveBeenCalled();
+    await act(async () => closeButton("notes.md").click());
+    const discard = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+    ].find((button) => button.textContent === "Закрыть без сохранения");
+    await act(async () => discard!.click());
+    expect(tabs()).toHaveLength(0);
+    expect(props.onCollapse).toHaveBeenCalledOnce();
+  });
+
+  it.each(["source", "saved query", "file", "search hit"])(
+    "reopens a hidden empty editor directly to a %s",
+    async (kind) => {
+      props.visible = false;
+      const sync = new ProjectSync();
+      await renderPane(sync);
+      expect(tabs()).toHaveLength(0);
+      expect(sync.context()).toEqual({});
+      expect(sync.editorTabs()).toEqual([]);
+      const name = "requested.sql";
+      if (kind === "source") props.sourceToOpen = { source, name };
+      if (kind === "saved query") {
+        props.savedToOpen = {
+          ...source,
+          name,
+          id: "saved-query",
+          revision: 1,
+          updatedAt: "now",
+        };
+      }
+      if (kind === "file" || kind === "search hit") {
+        props.fileToOpen = projectFile(name, source.sql);
+        if (kind === "search hit")
+          props.searchNavigation = {
+            requestId: "file-hit",
+            target: { kind: "file", path: name, revision: "disk-v1" },
+          };
+      }
+      props.visible = true;
+      await renderPane(sync);
+      await readyEditor();
+      expect(tabs().map((tab) => tab.textContent)).toEqual([name]);
+      expect(editorValue()).toBe(source.sql);
+      expect(props.onCollapse).not.toHaveBeenCalled();
+    },
+  );
+  it("reopens the requested query when a double close is still deleting that tab", async () => {
+    const requested = {
+      ...source,
+      name: "requested.sql",
+      id: "saved-query",
+      revision: 1,
+      updatedAt: "now",
+    };
+    props.savedToOpen = requested;
+    const sync = new ProjectSync();
+    await renderPane(sync);
+    await readyEditor();
+    await act(async () => {
+      await sync.prepare();
+    });
+    const oldId = sync.context().editorDocumentId;
+    const backend = vi.mocked(fetch).getMockImplementation()!;
+    let finishClose!: () => void;
+    const closing = new Promise<void>((resolve) => {
+      finishClose = resolve;
+    });
+    let deletes = 0;
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      if (
+        url === `/api/editor-documents/${oldId}` &&
+        options?.method === "DELETE"
+      ) {
+        deletes++;
+        await closing;
+      }
+      return backend(url, options);
+    });
+    props.savedToOpen = null;
+    await renderPane(sync);
+    await act(async () => {
+      closeButton(requested.name).click();
+      closeButton(requested.name).click();
+    });
+    expect(deletes).toBe(1);
+    props.visible = false;
+    await renderPane(sync);
+    props.visible = true;
+    props.savedToOpen = { ...requested };
+    await renderPane(sync);
+    await act(async () => finishClose());
+    expect(tabs().map((tab) => tab.textContent)).toEqual([requested.name]);
+    expect(editorValue()).toBe(source.sql);
+    expect(props.onSavedConsumed).toHaveBeenCalledTimes(2);
+    expect(props.onNotify).not.toHaveBeenCalled();
+    expect(props.onCollapse).not.toHaveBeenCalled();
+  });
+
+  it("keeps the dirty last native SQL tab open after a failed close", async () => {
+    props.fileToOpen = projectFile("notes.sql", "select saved");
+    const sync = new ProjectSync();
+    await renderPane(sync);
+    await readyEditor();
+    await act(async () => {
+      await sync.prepare();
+    });
+    await editSql("select dirty");
+    const backend = vi.mocked(fetch).getMockImplementation()!;
+    let rejectClose = true;
+    vi.mocked(fetch).mockImplementation(async (url, options) =>
+      rejectClose &&
+      String(url).startsWith("/api/editor-documents/") &&
+      options?.method === "DELETE"
+        ? Response.json({ error: "Close conflict" }, { status: 409 })
+        : backend(url, options),
+    );
+    await act(async () => closeButton("notes.sql").click());
+    const discard = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+    ].find((button) => button.textContent === "Закрыть без сохранения");
+    await act(async () => discard!.click());
+    expect(props.onNotify).toHaveBeenCalledWith("Close conflict", "error");
+    expect(tabs().map((tab) => tab.textContent)).toEqual(["notes.sql"]);
+    expect(editorValue()).toBe("select dirty");
+    expect(props.onCollapse).not.toHaveBeenCalled();
+    rejectClose = false;
+    await act(async () => discard!.click());
+    expect(tabs()).toHaveLength(0);
+    expect(projectDrafts()).toEqual([]);
+    expect(props.onCollapse).toHaveBeenCalledOnce();
+  });
+
+  it("collapses an empty pane when the requested file cannot be opened", async () => {
+    props.visible = false;
+    await renderPane();
+    props.visible = true;
+    props.fileToOpen = projectFile("oversized.sql", "x".repeat(1_000_001));
+    props.onFileConsumed = vi.fn();
+    await renderPane();
+    expect(props.onFileConsumed).toHaveBeenCalledOnce();
+    expect(props.onNotify).toHaveBeenCalledWith(
+      expect.stringContaining("превышает лимит"),
+      "error",
+    );
+    expect(props.onCollapse).toHaveBeenCalledOnce();
+    expect(tabs()).toHaveLength(0);
+  });
+
   it("locks a linked saved query without blocking navigation to another SQL tab", async () => {
     seed("draft.sql", { queryId: "saved-query", revision: 1 });
     const sync = new ProjectSync();
@@ -702,67 +931,604 @@ describe("chart source SQL tabs", () => {
     expect(editorValue()).toBe("select 2");
   });
 
-  it("keeps edits typed while moving and prevents saves to the old path", async () => {
-    let move: ProjectFileMover | null = null;
+  it.each(["sql", "txt", "md"])(
+    "keeps %s edits typed while moving and prevents saves to the old path",
+    async (extension) => {
+      let move: ProjectFileMover | null = null;
+      props.onFileMoverChange = (handler) => {
+        move = handler;
+      };
+      let finishMove!: (response: Response) => void;
+      const writes: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          editorApi(
+            async (url, options) => {
+              if (url === "/api/project/file/move")
+                return new Promise<Response>((resolve) => {
+                  finishMove = resolve;
+                });
+              if (
+                url.startsWith("/api/project/file?") &&
+                options.method === "PUT"
+              )
+                writes.push(url);
+              return new Response("[]");
+            },
+            () => props.workspaceId,
+          ),
+        ),
+      );
+      const from = `draft.${extension}`,
+        path = `docs/draft.${extension}`;
+      await openProjectFile(from, "select 1");
+      let moving!: ReturnType<ProjectFileMover>;
+      await act(async () => {
+        moving = move!({ path: from, directory: "docs" });
+      });
+      await editSql("select latest draft");
+      const save = container.querySelector<HTMLButtonElement>(
+        `[aria-label="${extension === "sql" ? "Сохранить SQL-файл" : "Сохранить файл"} (⌘S / Ctrl+S)"]`,
+      )!;
+      expect(save.disabled).toBe(true);
+      await act(async () => save.click());
+      expect(writes).toEqual([]);
+      await act(async () => {
+        finishMove(
+          new Response(
+            JSON.stringify({
+              from,
+              path,
+              name: `draft.${extension}`,
+            }),
+          ),
+        );
+        await moving;
+      });
+      expect(editorValue()).toBe("select latest draft");
+      const stored = JSON.parse(
+        localStorage.getItem("miracle:project-files:source-tab-test")!,
+      )[0];
+      expect(stored).toMatchObject({
+        path,
+        content: "select latest draft",
+        savedContent: "select 1",
+      });
+    },
+  );
+  function projectDrafts(): ProjectFileDraft[] {
+    return JSON.parse(
+      localStorage.getItem("miracle:project-files:source-tab-test")!,
+    );
+  }
+
+  it("rebinds open descendants when moving a folder and leaves sibling paths alone", async () => {
+    let move!: ProjectFileMover;
     props.onFileMoverChange = (handler) => {
-      move = handler;
+      if (handler) move = handler;
     };
-    let finishMove!: (response: Response) => void;
-    const writes: string[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
+    vi.mocked(fetch).mockImplementation(
+      editorApi(
+        async (url) => {
+          if (url === "/api/project/file/move")
+            return Response.json({
+              from: "reports",
+              path: "archive/reports",
+              name: "reports",
+            });
+          return Response.json([]);
+        },
+        () => props.workspaceId,
+      ),
+    );
+    await openProjectFile("reports/monthly/query.sql", "select 1");
+    await editSql("select draft_sql");
+    await openProjectFile("reports-old/query.sql", "select 2");
+    await openProjectFile("reports/notes.md", "# Saved");
+    await editSql("# Draft notes");
+    const before = projectDrafts();
+    await act(async () => {
+      await move({ path: "reports", directory: "archive" });
+    });
+    expect(projectDrafts()).toMatchObject([
+      {
+        id: before[0].id,
+        path: "archive/reports/monthly/query.sql",
+        content: "select draft_sql",
+      },
+      { id: before[1].id, path: "reports-old/query.sql", content: "select 2" },
+      {
+        id: before[2].id,
+        path: "archive/reports/notes.md",
+        content: "# Draft notes",
+      },
+    ]);
+    await act(async () => {
+      expect(undo(markdownView()!)).toBe(true);
+    });
+    expect(editorValue()).toBe("# Saved");
+  });
+
+  it.each([
+    ["sql", "md"],
+    ["md", "sql"],
+    ["sql", "txt"],
+    ["txt", "sql"],
+  ])(
+    "keeps current text and identity when renaming from %s to %s",
+    async (beforeExtension, afterExtension) => {
+      let move!: ProjectFileMover;
+      props.onFileMoverChange = (handler) => {
+        if (handler) move = handler;
+      };
+      const from = `reports/query.${beforeExtension}`;
+      const path = `reports/renamed.${afterExtension}`;
+      vi.mocked(fetch).mockImplementation(
         editorApi(
-          async (url, options) => {
+          async (url) => {
+            if (url === "/api/project/file/move")
+              return Response.json({
+                from,
+                path,
+                name: `renamed.${afterExtension}`,
+              });
+            return Response.json([]);
+          },
+          () => props.workspaceId,
+        ),
+      );
+      await openProjectFile(from, "select 1");
+      await editSql("select dirty");
+      const originalModel = editor().dataset.modelPath;
+      const [{ id }] = projectDrafts();
+      await act(async () => {
+        await move({
+          path: from,
+          directory: "reports",
+          name: `renamed.${afterExtension}`,
+        });
+      });
+      await readyEditor();
+      expect(
+        tabs()
+          .filter((tab) => tab.title.startsWith("reports/"))
+          .map((tab) => tab.title),
+      ).toEqual([path]);
+      expect(activeTab()).toBe(`renamed.${afterExtension}`);
+      expect(editorValue()).toBe("select dirty");
+      if (originalModel && afterExtension !== "md")
+        expect(editor().dataset.modelPath).toBe(originalModel);
+      expect(projectDrafts()).toMatchObject([
+        { id, path, content: "select dirty", savedContent: "select 1" },
+      ]);
+      await editSql("select after_rename");
+      expect(projectDrafts()[0].content).toBe("select after_rename");
+    },
+  );
+
+  it.each([false, true])(
+    "rejects an oversized text-to-SQL rename before moving the file (dirty: %s)",
+    async (dirty) => {
+      let move!: ProjectFileMover;
+      props.onFileMoverChange = (handler) => {
+        if (handler) move = handler;
+      };
+      const content = "-".repeat(1_000_001);
+      const savedContent = dirty ? "saved content" : content;
+      const requests: string[] = [];
+      vi.mocked(fetch).mockImplementation(
+        editorApi(
+          async (url) => {
+            requests.push(url);
+            if (url === "/api/project/file/move")
+              return Response.json({
+                from: "large.txt",
+                path: "large.sql",
+                name: "large.sql",
+              });
+            return Response.json([]);
+          },
+          () => props.workspaceId,
+        ),
+      );
+      await openProjectFile("large.txt", savedContent);
+      if (dirty) await editSql(content);
+      const [{ id }] = projectDrafts();
+      await act(async () => {
+        await expect(
+          move({ path: "large.txt", directory: "", name: "large.sql" }),
+        ).rejects.toThrow("1 000 000");
+      });
+      expect(requests).not.toContain("/api/project/file/move");
+      expect(tabs().map((tab) => tab.title)).toEqual(["large.txt"]);
+      expect(projectDrafts()).toMatchObject([
+        { id, path: "large.txt", content, savedContent },
+      ]);
+      expect(editorValue()).toBe(content);
+      expect(
+        JSON.parse(
+          localStorage.getItem("miracle:sql-recovery:source-tab-test")!,
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["txt", false],
+    ["md", false],
+    ["txt", true],
+    ["md", true],
+  ])(
+    "locks only the %s draft while its text-to-SQL rename is pending (failure: %s)",
+    async (extension, failure) => {
+      let move!: ProjectFileMover;
+      props.onFileMoverChange = (handler) => {
+        if (handler) move = handler;
+      };
+      let finishMove!: (response: Response) => void;
+      vi.mocked(fetch).mockImplementation(
+        editorApi(
+          async (url) => {
             if (url === "/api/project/file/move")
               return new Promise<Response>((resolve) => {
                 finishMove = resolve;
               });
-            if (
-              url.startsWith("/api/project/file?") &&
-              options.method === "PUT"
-            )
-              writes.push(url);
-            return new Response("[]");
+            return Response.json([]);
           },
           () => props.workspaceId,
         ),
+      );
+      const from = `draft.${extension}`;
+      await openProjectFile("other.txt", "other draft");
+      await openProjectFile(from, "select saved");
+      await editSql("select draft");
+      let moving!: ReturnType<ProjectFileMover>;
+      await act(async () => {
+        moving = move({ path: from, directory: "", name: "draft.sql" });
+      });
+      expect(
+        markdownView()?.state.readOnly ??
+          (editor() as HTMLTextAreaElement).readOnly,
+      ).toBe(true);
+      // A queued change callback must also respect the lock, before rebinding.
+      await editSql("-".repeat(1_000_001));
+      expect(projectDrafts().find((file) => file.path === from)?.content).toBe(
+        "select draft",
+      );
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>('[role=tab][title="other.txt"]')!
+          .click();
+      });
+      expect((editor() as HTMLTextAreaElement).readOnly).toBe(false);
+      await editSql("other updated draft");
+      await act(async () => {
+        finishMove(
+          failure
+            ? Response.json({ error: "Destination exists" }, { status: 409 })
+            : Response.json({ from, path: "draft.sql", name: "draft.sql" }),
+        );
+        if (failure) await expect(moving).rejects.toThrow("Destination exists");
+        else await moving;
+      });
+      const path = failure ? from : "draft.sql";
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(`[role=tab][title="${path}"]`)!
+          .click();
+      });
+      expect(
+        markdownView()?.state.readOnly ??
+          (editor() as HTMLTextAreaElement).readOnly,
+      ).toBe(false);
+      expect(editorValue()).toBe("select draft");
+      expect(projectDrafts()).toMatchObject([
+        { path: "other.txt", content: "other updated draft" },
+        { path, content: "select draft" },
+      ]);
+      await editSql("select after rename");
+      expect(projectDrafts()[1].content).toBe("select after rename");
+    },
+  );
+
+  it("accepts a text-to-SQL rename at the SQL character limit", async () => {
+    let move!: ProjectFileMover;
+    props.onFileMoverChange = (handler) => {
+      if (handler) move = handler;
+    };
+    vi.mocked(fetch).mockImplementation(
+      editorApi(
+        async (url) => {
+          if (url === "/api/project/file/move")
+            return Response.json({
+              from: "large.txt",
+              path: "large.sql",
+              name: "large.sql",
+            });
+          return Response.json([]);
+        },
+        () => props.workspaceId,
       ),
     );
-    await openProjectFile("draft.sql", "select 1");
-    let moving!: ReturnType<ProjectFileMover>;
+    const content = "-".repeat(1_000_000);
+    await openProjectFile("large.txt", content);
     await act(async () => {
-      moving = move!({ path: "draft.sql", directory: "docs" });
+      await move({ path: "large.txt", directory: "", name: "large.sql" });
     });
-    await editSql("select latest draft");
+    expect(tabs().map((tab) => tab.title)).toEqual(["large.sql"]);
+    expect(projectDrafts()[0]).toMatchObject({ path: "large.sql", content });
+    expect(editorValue()).toBe(content);
+  });
+
+  it.each(["sql", "txt"])(
+    "restores Markdown undo after a rename through %s and intervening edits",
+    async (extension) => {
+      let move!: ProjectFileMover;
+      props.onFileMoverChange = (handler) => {
+        if (handler) move = handler;
+      };
+      vi.mocked(fetch).mockImplementation(
+        editorApi(
+          async (url, options) => {
+            if (url === "/api/project/file/move") {
+              const { path: from, name } = JSON.parse(String(options.body));
+              return Response.json({ from, path: `reports/${name}`, name });
+            }
+            return Response.json([]);
+          },
+          () => props.workspaceId,
+        ),
+      );
+      await openProjectFile("reports/notes.md", "# Saved");
+      await editSql("# Markdown draft");
+      await act(async () => {
+        await move({
+          path: "reports/notes.md",
+          directory: "reports",
+          name: `notes.${extension}`,
+        });
+      });
+      await readyEditor();
+      await editSql("# Edited in the other editor");
+      await act(async () => {
+        await move({
+          path: `reports/notes.${extension}`,
+          directory: "reports",
+          name: "notes.md",
+        });
+      });
+      expect(editorValue()).toBe("# Edited in the other editor");
+      await act(async () => {
+        expect(undo(markdownView()!)).toBe(true);
+      });
+      expect(editorValue()).toBe("# Markdown draft");
+      await act(async () => {
+        expect(undo(markdownView()!)).toBe(true);
+      });
+      expect(editorValue()).toBe("# Saved");
+    },
+  );
+
+  it("retains deleted folder drafts on reload and opens a replacement as a distinct document", async () => {
+    let remove: ProjectFileDeleter | null = null;
+    props.onFileDeleterChange = (handler) => {
+      remove = handler;
+    };
+    const requests: string[] = [];
+    vi.mocked(fetch).mockImplementation(
+      editorApi(
+        async (url, options) => {
+          if (
+            url === "/api/project/entry?path=reports" &&
+            options.method === "DELETE"
+          )
+            return Response.json({ path: "reports" });
+          if (url.startsWith("/api/project/file?")) requests.push(url);
+          return Response.json([]);
+        },
+        () => props.workspaceId,
+      ),
+    );
+    const path = "reports/query.sql";
+    await openProjectFile("reports/docs/notes.md", "# Saved");
+    await editSql("# Unsaved notes");
+    await openProjectFile(path, "select 1");
+    await editSql("select dirty");
+    const before = projectDrafts();
+    expect(remove).toBeTypeOf("function");
+    await act(async () => {
+      await remove!({ path: "reports" });
+    });
+    expect(projectDrafts()).toMatchObject([
+      { id: before[0].id, deleted: true, content: "# Unsaved notes" },
+      { id: before[1].id, deleted: true, content: "select dirty" },
+    ]);
+    expect(container.textContent).toContain("Скачать мой черновик");
+    expect(container.textContent).not.toContain("Загрузить с диска");
     const save = container.querySelector<HTMLButtonElement>(
       '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
     )!;
     expect(save.disabled).toBe(true);
     await act(async () => save.click());
-    expect(writes).toEqual([]);
-    await act(async () => {
-      finishMove(
-        new Response(
-          JSON.stringify({
-            from: "draft.sql",
-            path: "docs/draft.sql",
-            name: "draft.sql",
-          }),
-        ),
-      );
-      await moving;
+    await clickTab("notes.md (черновик)");
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[aria-label="Сохранить файл (⌘S / Ctrl+S)"]',
+      )?.disabled,
+    ).toBe(true);
+    await act(async () =>
+      markdownView()!.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "s",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    await clickTab("query.sql (черновик)");
+    expect(requests).toEqual([]);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    props.fileToOpen = null;
+    await render();
+    expect(editorValue()).toBe("select dirty");
+    expect(container.textContent).toContain("Скачать мой черновик");
+    await openProjectFile(path, "select replacement");
+    expect(editorValue()).toBe("select replacement");
+    expect(projectDrafts()[2]).toMatchObject({
+      path,
+      content: "select replacement",
     });
-    expect(editorValue()).toBe("select latest draft");
-    const stored = JSON.parse(
-      localStorage.getItem("miracle:project-files:source-tab-test")!,
-    )[0];
-    expect(stored).toMatchObject({
-      path: "docs/draft.sql",
-      content: "select latest draft",
-      savedContent: "select 1",
+    expect(projectDrafts()[2].id).not.toBe(before[1].id);
+    expect(projectDrafts()[1]).toMatchObject({
+      path,
+      deleted: true,
+      content: "select dirty",
     });
   });
+
+  it("blocks a folder move for a locked descendant even when its tab is closed", async () => {
+    let move!: ProjectFileMover;
+    props.onFileMoverChange = (handler) => {
+      if (handler) move = handler;
+    };
+    const sync = new ProjectSync();
+    await openProjectFile("unrelated.sql", "select 1", sync);
+    await act(async () =>
+      sync.receiveWorkSnapshot({
+        revision: 1,
+        locks: [
+          {
+            target: { kind: "file", id: "reports/monthly/query.sql" },
+            turnId: "turn",
+            chatId: "chat",
+            startedAt: "now",
+          },
+        ],
+      }),
+    );
+    await expect(
+      move({ path: "reports", directory: "archive" }),
+    ).rejects.toThrow(/Дождитесь/);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => url === "/api/project/file/move"),
+    ).toBe(false);
+  });
+
+  it("ignores a pending reload after deleting the file it was reading", async () => {
+    let remove!: ProjectFileDeleter;
+    let finishReload!: (reply: Response) => void;
+    const path = "reports/report.sql";
+    props.onFileDeleterChange = (handler) => {
+      if (handler) remove = handler;
+    };
+    vi.mocked(fetch).mockImplementation(
+      editorApi(
+        async (url, options) => {
+          if (
+            url === "/api/project/entry?path=reports" &&
+            options.method === "DELETE"
+          )
+            return Response.json({ path: "reports" });
+          if (url.startsWith("/api/project/file?")) {
+            if (options.method === "PUT")
+              return Response.json({ error: "conflict" }, { status: 409 });
+            return new Promise<Response>((done) => {
+              finishReload = done;
+            });
+          }
+          return Response.json([]);
+        },
+        () => props.workspaceId,
+      ),
+    );
+    await openProjectFile(path, "select saved");
+    await editSql("select draft");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Сохранить SQL-файл (⌘S / Ctrl+S)"]',
+        )!
+        .click(),
+    );
+    const reload = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Загрузить с диска",
+    );
+    expect(reload).toBeDefined();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      await act(async () => reload!.click());
+    } finally {
+      confirm.mockRestore();
+    }
+    expect(finishReload).toBeTypeOf("function");
+    await act(async () => {
+      await remove({ path: "reports" });
+    });
+    await act(async () =>
+      finishReload(Response.json(projectFile(path, "select stale"))),
+    );
+    expect(editorValue()).toBe("select draft");
+    expect(projectDrafts()[0]).toMatchObject({
+      content: "select draft",
+      deleted: true,
+    });
+  });
+
+  it("blocks folder deletion while restoring a query run for an open descendant", async () => {
+    let remove!: ProjectFileDeleter;
+    props.onFileDeleterChange = (handler) => {
+      if (handler) remove = handler;
+    };
+    const file = {
+      ...projectFile("reports/report.sql", "select saved"),
+      id: "report-editor",
+      savedContent: "select saved",
+    };
+    localStorage.setItem(
+      "miracle:project-files:source-tab-test",
+      JSON.stringify([file]),
+    );
+    localStorage.setItem(
+      "miracle:sql-recovery:source-tab-test",
+      JSON.stringify([
+        {
+          id: file.id,
+          name: file.name,
+          sql: file.content,
+          connectionId: "trino",
+          runId: "running-report",
+        },
+      ]),
+    );
+    vi.mocked(fetch).mockImplementation(
+      editorApi(
+        async (url) => {
+          if (url === "/api/query-runs/running-report")
+            return new Promise<Response>(() => {});
+          return Response.json([]);
+        },
+        () => props.workspaceId,
+      ),
+    );
+    await render();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => url === "/api/query-runs/running-report"),
+    ).toBe(true);
+    await expect(remove({ path: "reports" })).rejects.toThrow(/Дождитесь/);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => url === "/api/project/entry?path=reports"),
+    ).toBe(false);
+  });
+
   it("opens a saved Markdown search hit in the existing dirty tab and reanchors its selection", async () => {
     const saved = "# Notes\n\nA needle in saved text.\n";
     const path = "docs/search.md";
@@ -798,7 +1564,7 @@ describe("chart source SQL tabs", () => {
       );
     });
     expect(editorValue()).toBe(dirty);
-    expect(tabs()).toHaveLength(2);
+    expect(tabs()).toHaveLength(1);
     expect(markdownView()!.state.selection.main.from).toBe(
       dirty.indexOf("needle"),
     );
@@ -1723,6 +2489,7 @@ describe("chart source SQL tabs", () => {
   });
 
   it("reactivates a chart tab after switching away and preserves edited SQL", async () => {
+    await render();
     await render({ source, name: "Выручка" });
     await editSql("select my_unsaved_edit");
     expect(editorValue()).toBe("select my_unsaved_edit");
@@ -1758,6 +2525,7 @@ describe("chart source SQL tabs", () => {
   });
 
   it("reuses the fallback name for repeated empty chart titles", async () => {
+    await render();
     await render({ source, name: "" });
     expect(activeTab()).toBe("source.sql");
     await editSql("select fallback_draft");

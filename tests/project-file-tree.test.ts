@@ -117,7 +117,7 @@ describe("project file tree", () => {
       },
     });
     expect(item("README.md").draggable).toBe(true);
-    expect(item("docs").draggable).toBe(false);
+    expect(item("docs").draggable).toBe(true);
     await drag("README.md", () => item("docs"));
     const treeRows = [...tree().querySelectorAll('[role="treeitem"]')];
     await drag("docs/guide.md", () => {
@@ -163,10 +163,7 @@ describe("project file tree", () => {
       await drag("docs/guide.md", tree, true);
       expect(moves).toEqual([{ path: "docs/guide.md", directory: "" }]);
       expect(tree().textContent).not.toContain("Переместить в корень проекта");
-      expect(onNotify).toHaveBeenCalledWith(
-        "Файл guide.md перемещён",
-        "success",
-      );
+      expect(onNotify).not.toHaveBeenCalled();
     } finally {
       toolbar.remove();
     }

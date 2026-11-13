@@ -115,18 +115,7 @@ export function useEditorSync(
       documents,
       api,
       (next) => {
-        setTabs(
-          next.length
-            ? next
-            : [
-                {
-                  id: crypto.randomUUID(),
-                  name: "query_1.sql",
-                  sql: "",
-                  connectionId: "",
-                },
-              ],
-        );
+        setTabs(next);
         update((n) => n + 1);
       },
       (tab) => lockCheck.current(tab),

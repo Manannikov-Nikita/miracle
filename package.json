@@ -1,6 +1,6 @@
 {
   "name": "miracle",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -20,6 +20,7 @@
     "test:install": "node tests/local-install-smoke.mjs"
   },
   "dependencies": {
+    "@duckdb/node-api": "2.0.0-r.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^10.1.7",
     "decimal.js": "^10.6.0",
@@ -38,6 +39,7 @@
     "@lezer/markdown": "^1.8.1",
     "@monaco-editor/react": "^4.7.0",
     "@phosphor-icons/react": "^2.1.10",
+    "@radix-ui/react-context-menu": "2.4.1",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-select": "^2.4.1",
@@ -51,6 +53,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",
     "@xyflow/react": "^12.9.0",
+    "ag-grid-community": "36.3.0",
     "concurrently": "^9.2.1",
     "echarts": "^6.0.0",
     "hast-util-from-html-isomorphic": "^2.0.0",

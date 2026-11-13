@@ -1,0 +1,31 @@
+.canvas-tool-preview.board-workspace {
+  position: fixed;
+  z-index: 10000;
+  display: block;
+  width: max-content;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  background: transparent;
+  transform-origin: center;
+  user-select: none;
+}
+.canvas-tool-preview,
+.canvas-tool-preview * {
+  pointer-events: none !important;
+}
+.canvas-tool-preview > .board-artifact {
+  height: 100%;
+}
+.canvas-tool-preview-image {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--board-border);
+  border-radius: 10px;
+  background: var(--board-surface);
+  color: var(--board-text);
+  box-shadow: 0 4px 16px #0003;
+  white-space: nowrap;
+}

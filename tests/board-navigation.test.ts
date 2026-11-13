@@ -156,6 +156,98 @@ describe("board navigation is local view state", () => {
   const status = () => host.querySelector('[role="status"]')?.textContent;
   const arrowData = () => flow.props.edges![0].data as BoardEdgeViewData;
 
+  function equalSpacingFixture() {
+    boards[0].document.nodes = [
+      { id: "left", x: 0 },
+      { id: "middle", x: 180 },
+      { id: "right", x: 300 },
+    ].map(({ id, x }) => ({
+      id,
+      type: "artifact",
+      position: { x, y: 100 },
+      width: 100,
+      height: 80,
+      data: { kind: "note", title: id },
+    }));
+  }
+
+  it("shows equal gaps while dragging, persists the exact spacing and undoes the whole gesture", async () => {
+    equalSpacingFixture();
+    await open();
+    const drag = (dragging: boolean) =>
+      flow.props.onNodesChange!([
+        {
+          type: "position",
+          id: "middle",
+          position: { x: 154, y: 100 },
+          dragging,
+        },
+      ]);
+    await act(async () => drag(true));
+    expect(
+      flow.props.nodes!.find((node) => node.id === "middle")!.position,
+    ).toEqual({ x: 150, y: 100 });
+    expect(host.querySelectorAll(".board-spacing-guide")).toHaveLength(2);
+    expect(
+      [...host.querySelectorAll(".board-spacing-guide > line:first-child")].map(
+        (line) =>
+          Number(line.getAttribute("x2")) - Number(line.getAttribute("x1")),
+      ),
+    ).toEqual([50, 50]);
+    expect(host.querySelector(".board-spacing-guide text")).toBeNull();
+    await act(async () => {
+      drag(false);
+      await vi.advanceTimersByTimeAsync(1200);
+    });
+    expect(boards[0].document.nodes.map((node) => node.position.x)).toEqual([
+      0, 150, 300,
+    ]);
+    expect(host.querySelector(".board-alignment-guides")).toBeNull();
+    await act(async () => {
+      host
+        .querySelector<HTMLButtonElement>('[aria-label="Отменить изменение"]')!
+        .click();
+      await vi.advanceTimersByTimeAsync(1200);
+    });
+    expect(boards[0].document.nodes.map((node) => node.position.x)).toEqual([
+      0, 180, 300,
+    ]);
+  });
+
+  it("disables equal-spacing hints and snapping with Alt during an existing drag", async () => {
+    equalSpacingFixture();
+    await open();
+    await act(async () =>
+      flow.props.onNodesChange!([
+        {
+          type: "position",
+          id: "middle",
+          position: { x: 154, y: 100 },
+          dragging: true,
+        },
+      ]),
+    );
+    expect(host.querySelectorAll(".board-spacing-guide")).toHaveLength(2);
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Alt", altKey: true }),
+      );
+      flow.props.onNodesChange!([
+        {
+          type: "position",
+          id: "middle",
+          position: { x: 154, y: 100 },
+          dragging: true,
+        },
+      ]);
+    });
+    expect(
+      flow.props.nodes!.find((node) => node.id === "middle")!.position.x,
+    ).toBe(154);
+    expect(flow.props.nodes).toHaveLength(3);
+    expect(host.querySelector(".board-alignment-guides")).toBeNull();
+  });
+
   const resizeStart = { x: 100, y: 200, width: 400, height: 300 };
   function resizeFixture(
     view: "chart" | "custom" | "table" | "note" = "chart",

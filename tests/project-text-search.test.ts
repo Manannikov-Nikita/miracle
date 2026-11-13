@@ -18,7 +18,13 @@ const harness = vi.hoisted(() => ({
 vi.mock("monaco-editor/editor/editor.api.js", async () => {
   const { URI } = await import("monaco-editor/base/common/uri.js");
   const { Range } = await import("monaco-editor/editor/common/core/range.js");
-  return { Uri: URI, Range, KeyMod: { CtrlCmd: 1 }, KeyCode: { KeyS: 2 } };
+  return {
+    Uri: URI,
+    Range,
+    editor: { setModelLanguage() {} },
+    KeyMod: { CtrlCmd: 1 },
+    KeyCode: { KeyS: 2 },
+  };
 });
 vi.mock("@monaco-editor/react", async () => {
   const { useEffect, useRef, createElement } = await import("react");
@@ -116,7 +122,7 @@ it.each(["docs/settings.json", "данные/параметры.json"])(
   "reveals a match in a nested text file using the actual Monaco URI for %s",
   async (path) => {
     const content = '{\n  "message": "needle"\n}';
-    const rawUri = `miracle-file://search-project/${encodeURIComponent(path)}`;
+    const rawUri = `miracle-query://search-project/${encodeURIComponent(path)}.sql`;
     expect(URI.parse(rawUri).toString()).not.toBe(rawUri);
     const props: ComponentProps<typeof ProjectTextEditor> = {
       workspaceId: "search-project",

@@ -11,6 +11,7 @@ const captured = vi.hoisted(() => ({
   onOpenRun: undefined as ((id: string) => Promise<void>) | undefined,
   sourceToOpen: null as SqlSourceRequest | null,
   workspaceId: "",
+  editorVisible: undefined as boolean | undefined,
 }));
 
 vi.mock("../src/client/api", () => ({
@@ -44,13 +45,16 @@ vi.mock("../src/client/components/SqlWorkspace", async () => {
       onCollapse,
       sourceToOpen,
       workspaceId,
+      visible,
     }: {
       onCollapse: () => void;
       sourceToOpen: SqlSourceRequest | null;
       workspaceId: string;
+      visible?: boolean;
     }) => {
       captured.sourceToOpen = sourceToOpen;
       captured.workspaceId = workspaceId;
+      captured.editorVisible = visible;
       const [sql, setSql] = useState("select 1");
       return createElement(
         "section",
@@ -92,6 +96,7 @@ describe("independent workspace panes on desktop", () => {
     captured.onOpenRun = undefined;
     captured.sourceToOpen = null;
     captured.workspaceId = "";
+    captured.editorVisible = undefined;
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("innerWidth", 980);
     vi.stubGlobal("matchMedia", (query: string) => ({
@@ -146,6 +151,7 @@ describe("independent workspace panes on desktop", () => {
     return host.querySelector<HTMLElement>(`[data-testid="${name}-content"]`)!;
   }
   function expectPanes(sql: boolean, board: boolean) {
+    expect(captured.editorVisible).toBe(sql);
     expect(button("Редактор").getAttribute("aria-pressed")).toBe(String(sql));
     expect(button("Доска").getAttribute("aria-pressed")).toBe(String(board));
     expect(pane("sql").closest(".pane-host")?.hasAttribute("inert")).toBe(!sql);

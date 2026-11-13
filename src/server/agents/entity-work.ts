@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import type { ProjectStore } from "../project-store.js";
-import { projectFileWorkPath } from "../project-files.js";
+import {
+  projectEntryWorkMatcher,
+  projectFileWorkPath,
+} from "../project-files.js";
 import {
   agentWorkKey,
   type AgentEntityWork,
@@ -204,6 +207,22 @@ export class EntityWork {
       targets.flatMap((target) => this.expand(target, false, false)),
       this.held(),
       this.assertActor(),
+    );
+  }
+  checkProjectFileEntries(paths: string[], descendants: boolean) {
+    const actor = this.assertActor();
+    const matches = paths.map((path) =>
+      projectEntryWorkMatcher(this.store.context, path, descendants),
+    );
+    const held = this.held();
+    this.ensureAvailable(
+      held.flatMap(({ target }) =>
+        target.kind === "file" && matches.some((match) => match(target.id))
+          ? [target]
+          : [],
+      ),
+      held,
+      actor,
     );
   }
   end(targets: AgentWorkTarget[]) {

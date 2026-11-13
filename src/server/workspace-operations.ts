@@ -290,7 +290,9 @@ export class WorkspaceOperations {
     const ids = [
       ...new Set(
         document.nodes.flatMap((n) =>
-          n.data.resultSetId ? [n.data.resultSetId] : [],
+          [n.data.resultSetId, n.data.visualTable?.sourceResultSetId].filter(
+            (id): id is string => !!id,
+          ),
         ),
       ),
     ];

@@ -1,5 +1,7 @@
 import type {
+  DeleteProjectFile,
   MoveProjectFile,
+  ProjectFileDeletion,
   ProjectFileMove,
   ProjectTextFile,
 } from "../shared/project-files";
@@ -8,12 +10,39 @@ export type ProjectFileMover = (
   input: MoveProjectFile,
 ) => Promise<ProjectFileMove>;
 
+export type ProjectFileDeleter = (
+  input: DeleteProjectFile,
+) => Promise<ProjectFileDeletion>;
+
 export interface ProjectFileDraft extends ProjectTextFile {
   id: string;
   savedContent: string;
+  deleted?: boolean;
 }
 
 export const isSqlProjectFile = (path: string) => /\.sql$/i.test(path);
+
+export function projectPathContains(parent: string, path: string): boolean {
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
+export function projectPathsOverlap(first: string, second: string): boolean {
+  return (
+    projectPathContains(first, second) || projectPathContains(second, first)
+  );
+}
+
+export const editorModelPath = (workspaceId: string, id: string) =>
+  `miracle-query://${workspaceId}/${encodeURIComponent(id)}.sql`;
+
+export function projectDraftContent(
+  file: ProjectFileDraft,
+  tabs: readonly { id: string; sql: string }[],
+): string {
+  return isSqlProjectFile(file.path)
+    ? (tabs.find((tab) => tab.id === file.id)?.sql ?? file.content)
+    : file.content;
+}
 
 export function fileLanguage(path: string): string {
   const name = path.split("/").pop()!.toLowerCase();
@@ -92,6 +121,7 @@ export function loadProjectFileDrafts(workspaceId: string): ProjectFileDraft[] {
     return value.filter(
       (file): file is ProjectFileDraft =>
         file &&
+        (file.deleted === undefined || typeof file.deleted === "boolean") &&
         ["id", "path", "name", "content", "savedContent", "revision"].every(
           (key) => typeof file[key] === "string",
         ),

@@ -79,6 +79,8 @@ describe("presentation workspace routing", () => {
   let deck: Board;
   let writes: string[];
   let registry: CanvasWorkspace;
+  let missingElementFromPoint: boolean;
+  const activate = vi.fn<(kind: "board" | "presentation") => void>();
   function CaptureRegistry() {
     registry = useCanvasWorkspace()!;
     return null;
@@ -117,12 +119,14 @@ describe("presentation workspace routing", () => {
                 key: "board",
                 kind: "board",
                 active: active === "board",
+                onActivate: () => activate("board"),
               }),
               createElement(BoardWorkspace, {
                 ...common,
                 key: "deck",
                 kind: "presentation",
                 active: active === "presentation",
+                onActivate: () => activate("presentation"),
               }),
             ],
           }),
@@ -132,10 +136,32 @@ describe("presentation workspace routing", () => {
   }
   beforeEach(async () => {
     localStorage.clear();
+    activate.mockClear();
     flow.viewport = { x: 0, y: 0, zoom: 1 };
     flow.fits = [];
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    missingElementFromPoint = !document.elementFromPoint;
+    if (missingElementFromPoint)
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => null,
+        writable: true,
+      });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    Object.defineProperties(Range.prototype, {
+      getClientRects: { configurable: true, value: () => [] },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => new DOMRect(),
+      },
+    });
     project = new ProjectSync();
     board = {
       id: "source-board",
@@ -187,6 +213,11 @@ describe("presentation workspace routing", () => {
     host.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (missingElementFromPoint)
+      Reflect.deleteProperty(document, "elementFromPoint");
+    Reflect.deleteProperty(Range.prototype, "getClientRects");
+    Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
   });
 
   const moveSource = (x: number, y: number, dragging: boolean) => {
@@ -200,6 +231,398 @@ describe("presentation workspace routing", () => {
       { type: "position", id: "source", position: { x, y }, dragging },
     ]);
   };
+  const boardTool = (name: string) =>
+    host.querySelector<HTMLButtonElement>(
+      `.board-workspace:not(.presentation-workspace) button[aria-label="${name}"]`,
+    )!;
+  const pointer = (target: EventTarget, type: string, x: number, y: number) =>
+    target.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        isPrimary: true,
+        button: 0,
+        clientX: x,
+        clientY: y,
+      }),
+    );
+  const pointerClick = (target: HTMLElement) =>
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+
+  it.each([
+    {
+      label: "Добавить текст",
+      kind: "text",
+      height: 120,
+      x: 350,
+      boardKind: "board",
+      centerX: -150,
+    },
+    {
+      label: "Добавить заметку",
+      kind: "note",
+      height: 260,
+      x: 750,
+      boardKind: "presentation",
+      centerX: 250,
+    },
+    {
+      label: "Добавить Markdown",
+      kind: "markdown",
+      height: 260,
+      x: 750,
+      boardKind: "presentation",
+      centerX: 250,
+    },
+  ])(
+    "drags the $kind tool once into the $boardKind canvas at the release point",
+    async ({ label, kind, height, x, boardKind, centerX }) => {
+      const tool = boardTool(label);
+      const target = boardKind === "board" ? board : deck;
+      const source = boardKind === "board" ? deck : board;
+      const originalIds = new Set(target.document.nodes.map((node) => node.id));
+      const targetCanvas =
+        host.querySelectorAll(".board-canvas")[boardKind === "board" ? 0 : 1];
+      const targetPane = targetCanvas.closest(".board-workspace");
+      const hit = vi
+        .spyOn(document, "elementFromPoint")
+        .mockReturnValue(targetCanvas);
+      try {
+        await act(async () => {
+          pointer(tool, "pointerdown", 170, 450);
+          pointer(window, "pointermove", x, 225);
+        });
+        const preview = document.body.querySelector<HTMLElement>(
+          ".canvas-tool-preview",
+        );
+        expect(preview).not.toBeNull();
+        expect(preview?.style.left).toBe(`${x}px`);
+        expect(preview?.style.top).toBe("225px");
+        expect(
+          preview?.querySelector(`.board-artifact-${kind}`),
+        ).not.toBeNull();
+        expect(writes).toEqual([]);
+        await act(async () => {
+          pointer(window, "pointerup", x, 220);
+          pointerClick(tool);
+        });
+        expect(document.body.querySelector(".canvas-tool-preview")).toBeNull();
+        expect(document.activeElement?.closest(".board-workspace")).toBe(
+          targetPane,
+        );
+        expect(activate).toHaveBeenLastCalledWith(boardKind);
+        await act(async () => vi.advanceTimersByTimeAsync(1200));
+        expect(writes).toEqual([`/api/boards/${target.id}`]);
+        const added = target.document.nodes.filter(
+          (node) => !originalIds.has(node.id),
+        );
+        expect(added).toHaveLength(1);
+        expect(added[0]).toMatchObject({
+          width: 360,
+          height,
+          position: { x: centerX - 180, y: 220 - height / 2 },
+          data: { kind },
+        });
+        expect(added[0].slideId).toBe(
+          boardKind === "presentation" ? "first" : undefined,
+        );
+        expect(source.document.nodes.map((node) => node.id)).toEqual(
+          boardKind === "board" ? ["first-note", "second-note"] : ["source"],
+        );
+        if (kind === "note") {
+          expect(document.activeElement).toBe(targetPane);
+          await render("presentation");
+          await act(async () => {
+            document.activeElement!.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: "z",
+                ctrlKey: true,
+                bubbles: true,
+                cancelable: true,
+              }),
+            );
+            await vi.advanceTimersByTimeAsync(1200);
+          });
+          expect(deck.document.nodes.map((node) => node.id)).toEqual([
+            "first-note",
+            "second-note",
+          ]);
+          expect(board.document.nodes.map((node) => node.id)).toEqual([
+            "source",
+          ]);
+          expect(writes).toEqual(["/api/boards/deck", "/api/boards/deck"]);
+        }
+      } finally {
+        hit.mockRestore();
+      }
+    },
+  );
+
+  it.each(["outside", "toolbar", "escape", "escape before a delayed release"])(
+    "discards the tool preview without insertion on %s",
+    async (reason) => {
+      const tool = boardTool("Добавить текст");
+      const x = reason === "outside" ? 450 : reason === "toolbar" ? 300 : 750;
+      const hit = vi
+        .spyOn(document, "elementFromPoint")
+        .mockReturnValue(
+          reason === "toolbar"
+            ? tool
+            : host.querySelectorAll(".board-canvas")[1],
+        );
+      try {
+        await act(async () => {
+          pointer(tool, "pointerdown", 170, 450);
+          pointer(window, "pointermove", x, 225);
+        });
+        expect(
+          document.body.querySelector(".canvas-tool-preview"),
+        ).not.toBeNull();
+        await act(async () => {
+          if (reason.startsWith("escape")) {
+            window.dispatchEvent(
+              new KeyboardEvent("keydown", { key: "Escape", cancelable: true }),
+            );
+            if (reason === "escape before a delayed release")
+              await vi.advanceTimersByTimeAsync(500);
+          }
+          pointer(window, "pointerup", x, 225);
+          pointerClick(tool);
+        });
+        expect(document.body.querySelector(".canvas-tool-preview")).toBeNull();
+        await act(async () => vi.advanceTimersByTimeAsync(1200));
+        expect(writes).toEqual([]);
+        expect(board.document.nodes.map((node) => node.id)).toEqual(["source"]);
+        expect(deck.document.nodes.map((node) => node.id)).toEqual([
+          "first-note",
+          "second-note",
+        ]);
+      } finally {
+        hit.mockRestore();
+      }
+    },
+  );
+
+  it("keeps a pointer click below the drag threshold as one ordinary insertion", async () => {
+    const tool = boardTool("Добавить текст");
+    await act(async () => {
+      pointer(tool, "pointerdown", 170, 450);
+      pointer(window, "pointermove", 173, 452);
+      pointer(window, "pointerup", 173, 452);
+      pointerClick(tool);
+    });
+    expect(document.body.querySelector(".canvas-tool-preview")).toBeNull();
+    expect(
+      flow.board.nodes?.filter((node) => node.data.kind === "text"),
+    ).toHaveLength(1);
+    expect(
+      host.querySelector('[aria-label="Добавить в презентацию"]'),
+    ).toBeNull();
+  });
+
+  it("drags a rectangle directly from the shape trigger while focus changes", async () => {
+    const trigger = boardTool("Добавить фигуру");
+    const focused = boardTool("Добавить текст");
+    const targetCanvas = host.querySelectorAll(".board-canvas")[1];
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(targetCanvas);
+    await act(async () => {
+      focused.focus();
+      pointer(trigger, "pointerdown", 170, 450);
+      focused.blur();
+      pointer(window, "pointermove", 750, 225);
+    });
+    expect(
+      document.body.querySelector(".canvas-tool-preview .board-artifact-shape"),
+    ).not.toBeNull();
+    expect(document.body.querySelector(".shape-picker-menu")).toBeNull();
+    await act(async () => {
+      pointer(window, "pointerup", 750, 220);
+      pointerClick(trigger);
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(1200));
+    expect(writes).toEqual(["/api/boards/deck"]);
+    expect(
+      deck.document.nodes.filter((node) => node.data.kind === "shape"),
+    ).toEqual([
+      expect.objectContaining({
+        slideId: "first",
+        position: { x: 130, y: 140 },
+        data: expect.objectContaining({ shape: { type: "rectangle" } }),
+      }),
+    ]);
+  });
+
+  it("drops the chosen ellipse after its picker closes and still supports clicking a shape", async () => {
+    const trigger = boardTool("Добавить фигуру");
+    const targetCanvas = host.querySelectorAll(".board-canvas")[1];
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(targetCanvas);
+    const openPicker = async () => {
+      await act(async () =>
+        trigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        ),
+      );
+      return document.body.querySelector<HTMLElement>(
+        '[role="menuitem"][aria-label="Эллипс"]',
+      )!;
+    };
+    const ellipse = await openPicker();
+    expect(ellipse).not.toBeNull();
+    await act(async () => {
+      ellipse.focus();
+      pointer(ellipse, "pointerdown", 170, 380);
+      pointer(window, "pointermove", 770, 245);
+    });
+    expect(document.body.querySelector(".shape-picker-menu")).toBeNull();
+    expect(
+      document.body.querySelector(".canvas-tool-preview .board-shape-ellipse"),
+    ).not.toBeNull();
+    await act(async () => pointer(window, "pointerup", 770, 245));
+    await act(async () => vi.advanceTimersByTimeAsync(1200));
+    expect(writes).toEqual(["/api/boards/deck"]);
+    expect(
+      deck.document.nodes.filter((node) => node.data.kind === "shape"),
+    ).toEqual([
+      expect.objectContaining({
+        slideId: "first",
+        position: { x: 150, y: 165 },
+        data: expect.objectContaining({ shape: { type: "ellipse" } }),
+      }),
+    ]);
+
+    const clicked = await openPicker();
+    expect(clicked).not.toBeNull();
+    await act(async () => {
+      pointer(clicked, "pointerdown", 170, 380);
+      pointer(window, "pointerup", 170, 380);
+      pointerClick(clicked);
+    });
+    expect(boardTool("Добавить фигуру").getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(
+      flow.board.nodes?.filter((node) => node.data.kind === "shape"),
+    ).toHaveLength(1);
+  });
+
+  it("lets Enter select a shape after cancelling a drag without a new pointer press", async () => {
+    const trigger = boardTool("Добавить фигуру");
+    await act(async () => {
+      pointer(trigger, "pointerdown", 170, 450);
+      pointer(window, "pointermove", 750, 225);
+    });
+    expect(document.body.querySelector(".canvas-tool-preview")).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", cancelable: true }),
+      );
+      pointer(window, "pointerup", 750, 225);
+    });
+    expect(document.body.querySelector(".canvas-tool-preview")).toBeNull();
+    await act(async () =>
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    const ellipse = document.body.querySelector<HTMLElement>(
+      '[role="menuitem"][aria-label="Эллипс"]',
+    )!;
+    expect(ellipse).not.toBeNull();
+    await act(async () =>
+      ellipse.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(
+      flow.board.nodes?.filter((node) => node.data.kind === "shape"),
+    ).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({ shape: { type: "ellipse" } }),
+      }),
+    ]);
+  });
+
+  it("opens only the target image picker and inserts the chosen image at the original drop point", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal(
+      "Image",
+      class {
+        naturalWidth = 800;
+        naturalHeight = 400;
+        onload?: () => void;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+      },
+    );
+    const previousFetch = fetch;
+    vi.stubGlobal("fetch", (path: string, options?: RequestInit) =>
+      path === "/api/board-images"
+        ? Promise.resolve(
+            response({
+              id: "a".repeat(64),
+              name: "photo.png",
+              mimeType: "image/png",
+              size: 3,
+            }),
+          )
+        : previousFetch(path, options),
+    );
+    const [boardInput, deckInput] = host.querySelectorAll<HTMLInputElement>(
+      'input[aria-label="Файлы изображений"]',
+    );
+    const boardPicker = vi.spyOn(boardInput, "click");
+    const deckPicker = vi.spyOn(deckInput, "click");
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(
+      host.querySelector(".presentation-workspace .board-canvas"),
+    );
+    const tool = boardTool("Добавить изображение");
+    await act(async () => {
+      pointer(tool, "pointerdown", 170, 450);
+      pointer(window, "pointermove", 750, 225);
+      pointer(window, "pointerup", 760, 220);
+      pointerClick(tool);
+    });
+    expect(boardPicker).not.toHaveBeenCalled();
+    expect(deckPicker).toHaveBeenCalledOnce();
+    expect(document.body.querySelector(".canvas-tool-preview")).toBeNull();
+    expect(flow.deck.nodes?.some((node) => node.data.kind === "image")).toBe(
+      false,
+    );
+    Object.defineProperty(deckInput, "files", {
+      value: [
+        new File([new Uint8Array([1, 2, 3])], "photo.png", {
+          type: "image/png",
+        }),
+      ],
+    });
+    await act(async () =>
+      deckInput.dispatchEvent(new Event("change", { bubbles: true })),
+    );
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(
+        flow.deck.nodes?.find((node) => node.data.kind === "image"),
+      ).toMatchObject({
+        slideId: "first",
+        width: 640,
+        height: 320,
+        position: { x: -60, y: 60 },
+      });
+    });
+    expect(flow.board.nodes?.some((node) => node.data.kind === "image")).toBe(
+      false,
+    );
+  });
 
   it("reveals a saved match on its current slide after restoring the camera", async () => {
     await act(async () =>
@@ -668,21 +1091,83 @@ describe("presentation workspace routing", () => {
     },
   );
 
-  it("draws a lightweight transfer skeleton outside clipping panes and clears it on Escape", async () => {
-    await act(async () => moveSource(750, 200, true));
-    const overlay = document.body.querySelector(".canvas-drag-overlay");
-    expect(overlay).not.toBeNull();
-    expect(host.contains(overlay)).toBe(false);
-    expect(overlay!.querySelectorAll(".canvas-drag-skeleton")).toHaveLength(1);
-    expect(overlay!.querySelector("textarea,iframe,canvas,img")).toBeNull();
-    expect(
-      flow.board.nodes!.find((node) => node.id === "source")!.style?.opacity,
-    ).toBe(0);
-    await act(async () =>
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
-    );
-    expect(document.body.querySelector(".canvas-drag-overlay")).toBeNull();
-    expect(board.document.nodes[0].position).toEqual({ x: 0, y: 0 });
+  it("moves a static copy of rendered card content outside the clipped panes and clears it on Escape", async () => {
+    const source = document.createElement("div");
+    source.className = "react-flow__node react-flow__node-artifact";
+    source.dataset.id = "source";
+    source.style.cssText =
+      "width:400px;height:200px;opacity:0;transform:translate(10px, 20px);z-index:1000";
+    source.innerHTML = `
+      <article class="board-artifact">
+        <div id="source-title">Rendered title</div>
+        <textarea></textarea>
+        <canvas width="800" height="400"></canvas>
+        <img alt="Rendered image" />
+        <iframe title="Chart in isolated frame"></iframe>
+      </article>
+    `;
+    const textarea = source.querySelector("textarea")!;
+    textarea.value = "Currently edited text";
+    textarea.scrollTop = 25;
+    const canvas = source.querySelector("canvas")!;
+    const image = source.querySelector("img")!;
+    Object.defineProperties(image, {
+      naturalWidth: { value: 320 },
+      naturalHeight: { value: 240 },
+    });
+    host.querySelector(".board-canvas")!.append(source);
+    const drawImage = vi.fn();
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext");
+    getContext.mockReturnValue({
+      drawImage,
+    } as unknown as CanvasRenderingContext2D);
+    try {
+      flow.viewport = { x: 20, y: 30, zoom: 0.5 };
+      await act(async () => moveSource(750, 200, true));
+      const overlay = document.body.querySelector<HTMLElement>(
+        ".canvas-drag-overlay",
+      )!;
+      expect(overlay).not.toBeNull();
+      expect(host.contains(overlay)).toBe(false);
+      expect(overlay.hasAttribute("inert")).toBe(true);
+      expect(
+        overlay.querySelector<HTMLElement>(".canvas-drag-node")?.style.zIndex,
+      ).toBe("1000");
+      expect(overlay.textContent).toContain("Rendered title");
+      expect(overlay.querySelector("textarea")?.value).toBe(
+        "Currently edited text",
+      );
+      expect(overlay.querySelector("textarea")?.scrollTop).toBe(25);
+      expect(overlay.querySelector("#source-title")).toBeNull();
+      expect(overlay.querySelector("img,iframe")).toBeNull();
+      expect(overlay.textContent).toContain("Chart in isolated frame");
+      expect(drawImage.mock.calls).toEqual([
+        [canvas, 0, 0, 800, 400],
+        [image, 0, 0, 320, 240],
+      ]);
+      expect(
+        overlay.querySelector<HTMLElement>(".canvas-drag-world")?.style
+          .transform,
+      ).toBe("translate(20px, 30px) scale(0.5)");
+      expect(
+        flow.board.nodes!.find((node) => node.id === "source")!.style?.opacity,
+      ).toBe(0);
+      const copy = overlay.querySelector(".board-artifact");
+      source.querySelector("#source-title")!.textContent =
+        "Changed during drag";
+      await act(async () => moveSource(780, 200, true));
+      expect(overlay.querySelector(".board-artifact")).toBe(copy);
+      expect(overlay.textContent).toContain("Rendered title");
+      expect(drawImage).toHaveBeenCalledTimes(2);
+      await act(async () =>
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
+      );
+      expect(document.body.querySelector(".canvas-drag-overlay")).toBeNull();
+      expect(board.document.nodes[0].position).toEqual({ x: 0, y: 0 });
+    } finally {
+      getContext.mockRestore();
+      source.remove();
+    }
   });
 
   it("copies across panes without persisting any intermediate source motion", async () => {

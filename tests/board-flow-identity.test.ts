@@ -16,6 +16,69 @@ const block = (id: string, x: number): BoardNode => ({
 });
 
 describe("controlled board node identity", () => {
+  it("uses the painted line extent as its runtime container without changing the saved frame", () => {
+    const line: BoardNode = {
+      ...block("line", 10),
+      width: 260,
+      height: 40,
+      data: { title: "Line", kind: "shape", shape: { type: "line" } },
+    };
+    const rendered = toArtifactFlowNode(line, null);
+    expect(rendered.position).toEqual({ x: 12, y: 59 });
+    expect(rendered.measured).toEqual({ width: 256, height: 2 });
+    expect(rendered.style?.pointerEvents).toBe("none");
+    expect(line.position).toEqual({ x: 10, y: 40 });
+    expect(line.height).toBe(40);
+    const changed = applyBoardNodeChanges(
+      [
+        {
+          id: "line",
+          type: "position",
+          dragging: true,
+          position: { x: 22, y: 84 },
+        },
+      ],
+      [line],
+    );
+    expect(changed[0].position).toEqual({ x: 20, y: 65 });
+    expect(changed[0].height).toBe(40);
+    expect(changed[0].data).toBe(line.data);
+    expect(toArtifactFlowNode(changed[0], null).position).toEqual({
+      x: 22,
+      y: 84,
+    });
+  });
+
+  it("does not save a shape's projected position when a drag finishes without movement", () => {
+    const line: BoardNode = {
+      ...block("line", 10),
+      width: 260,
+      height: 40,
+      data: {
+        title: "Line",
+        kind: "shape",
+        shape: { type: "line", rotation: 90 },
+      },
+    };
+    const rendered = toArtifactFlowNode(line, null);
+    expect(rendered.measured!.width).toBeCloseTo(2);
+    expect(rendered.measured!.height).toBeCloseTo(256);
+    const nodes = [line];
+    expect(
+      applyBoardNodeChanges(
+        [
+          {
+            id: "line",
+            type: "position",
+            dragging: false,
+            position: rendered.position,
+          },
+        ],
+        nodes,
+      ),
+    ).toBe(nodes);
+  });
+
   it("drags a shape by its visible content without requiring an artifact header", () => {
     const shape: BoardNode = {
       ...block("shape", 10),

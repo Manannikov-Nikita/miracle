@@ -1,0 +1,50 @@
+.line-transform-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.board-artifact .line-transform-controls .line-transform-endpoint {
+  position: absolute;
+  box-sizing: border-box;
+  width: calc(18 * var(--board-resize-unit));
+  height: calc(18 * var(--board-resize-unit));
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: auto;
+  touch-action: none;
+  transform: translate(-50%, -50%);
+  cursor: crosshair;
+}
+.line-transform-endpoint::after {
+  content: "";
+  position: absolute;
+  inset: calc(5 * var(--board-resize-unit));
+  border: var(--board-resize-unit) solid var(--board-accent);
+  border-radius: 50%;
+  background: var(--board-surface);
+}
+.board-artifact .line-transform-controls .line-transform-endpoint:hover,
+.board-artifact .line-transform-controls .line-transform-endpoint:active,
+.board-artifact
+  .line-transform-controls
+  .line-transform-endpoint:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+.line-transform-endpoint:hover::after,
+.line-transform-endpoint:active::after {
+  background: var(--board-accent);
+}
+.line-transform-endpoint:focus-visible::after {
+  outline: calc(2 * var(--board-resize-unit)) solid var(--board-accent);
+  outline-offset: calc(3 * var(--board-resize-unit));
+}

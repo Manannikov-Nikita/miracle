@@ -33,6 +33,15 @@ export interface CreateProjectFile {
 export interface MoveProjectFile {
   path: string;
   directory: string;
+  name?: string;
+}
+
+export interface DeleteProjectFile {
+  path: string;
+}
+
+export interface ProjectFileDeletion {
+  path: string;
 }
 
 export interface ProjectFileMove {

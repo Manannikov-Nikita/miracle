@@ -111,8 +111,15 @@
   display: flex;
   align-items: center;
 }
-.project-create-file {
+.project-create-file,
+.project-rename-file {
   padding: 3px 7px 3px 30px;
+}
+.project-rename-file {
+  background: var(--hover);
+}
+.project-rename-file .expanded {
+  transform: rotate(90deg);
 }
 .project-create-row {
   display: flex;
@@ -149,4 +156,150 @@
   font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+.project-context-menu {
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: var(--radix-context-menu-content-available-height);
+  overflow-y: auto;
+}
+.project-menu-label {
+  padding: 7px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-quiet);
+  font-size: 11px;
+}
+.project-menu-separator {
+  height: 1px;
+  margin: 5px;
+  background: var(--menu-border);
+}
+.project-context-menu [role="menuitem"] > svg {
+  flex-shrink: 0;
+}
+.project-menu-shortcut {
+  margin-left: auto;
+  color: var(--text-quiet);
+  font-size: 11px;
+}
+.project-context-menu .project-menu-delete {
+  color: var(--danger);
+}
+.project-context-menu .project-menu-delete[data-highlighted] {
+  color: var(--danger);
+}
+.project-menu-hint {
+  padding: 7px 10px;
+  color: var(--text-quiet);
+  font-size: 11px;
+}
+.project-file-dialog {
+  width: min(440px, calc(100vw - 32px));
+}
+.project-operation-path {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font:
+    11px/1.5 "JetBrains Mono",
+    monospace;
+  overflow-wrap: anywhere;
+}
+.project-operation-error {
+  margin: 12px 0;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.project-move-fieldset {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+.project-move-fieldset legend {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.project-folder-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.project-folder-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.project-folder-breadcrumbs > span,
+.project-folder-breadcrumbs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.project-folder-breadcrumbs button {
+  padding: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.project-folder-breadcrumbs button:hover,
+.project-folder-breadcrumbs button[aria-current] {
+  color: var(--text);
+}
+.project-folder-breadcrumbs svg {
+  flex-shrink: 0;
+}
+.project-destination-folders {
+  min-height: 130px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 5px;
+}
+.project-destination-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px;
+  text-align: left;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.project-destination-folder:hover,
+.project-destination-folder:focus-visible {
+  background: var(--hover);
+}
+.project-destination-folder > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-destination-folder > svg {
+  flex-shrink: 0;
+  color: var(--text-quiet);
+}
+.project-delete-explanation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.project-delete-explanation > svg {
+  flex-shrink: 0;
+  color: var(--danger);
+  margin-top: 2px;
+}
+.project-delete-explanation p {
+  margin: 0 0 8px;
 }

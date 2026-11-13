@@ -28,7 +28,7 @@ export function nativeBoardClipboardTarget(target: EventTarget | null) {
   return (
     (target instanceof Element &&
       !!target.closest(
-        'input,textarea,[contenteditable]:not([contenteditable="false"]),.monaco-editor,.cm-editor,[role="textbox"]',
+        'input,textarea,[contenteditable]:not([contenteditable="false"]),.monaco-editor,.cm-editor,[role="textbox"],.board-sql-table',
       )) ||
     !!window.getSelection()?.toString()
   );

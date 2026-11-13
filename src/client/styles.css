@@ -1194,6 +1194,21 @@ svg {
   font-size: 12px;
   padding: 5px 2px;
 }
+.query-results:has(> .query-error .error-details[open]) {
+  overflow: auto;
+}
+.query-results > .query-error:has(.error-details[open]) {
+  flex: 2;
+  min-height: min(160px, 100%);
+  max-height: none;
+}
+.query-results > .query-error .error-details[open] pre {
+  max-height: none;
+  overflow: visible;
+}
+.query-results:has(> .query-error .error-details[open]) > .empty-state {
+  display: none;
+}
 .empty-state {
   display: flex;
   align-items: center;
