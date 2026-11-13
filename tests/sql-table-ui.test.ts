@@ -118,11 +118,12 @@ it("aborts an evaluation when its table is unmounted", async () => {
   expect(signal.aborted).toBe(true);
 });
 
-it("shows only the editable column name and sorting, with no formulas or totals", async () => {
+it("opens the selected column from its title while sorting remains independent", async () => {
   const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
-  const sort = vi.fn();
+  const openEditor = vi.fn(),
+    sort = vi.fn();
   const header = new SqlTableHeader();
-  header.init({
+  const params = {
     definition: {
       id: "amount",
       name: "Сумма",
@@ -131,58 +132,37 @@ it("shows only the editable column name and sorting, with no formulas or totals"
       summary: "sum",
     },
     editable: true,
-    rename: vi.fn(),
+    selected: false,
+    openEditor,
     sort,
-  } as never);
-  host.append(header.getGui());
-  expect(host.querySelectorAll("input")).toHaveLength(1);
-  expect(host.querySelectorAll("button")).toHaveLength(1);
-  expect(
-    host.querySelector(
-      "select,.sql-table-column-formula,.sql-table-readonly-formula",
-    ),
-  ).toBeNull();
-  host.querySelector<HTMLButtonElement>("button")!.click();
-  expect(sort).toHaveBeenCalledTimes(1);
-});
-it("commits a name on Enter, cancels on Escape, and preserves focused drafts on refresh", async () => {
-  const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
-  const rename = vi.fn();
-  const header = new SqlTableHeader();
-  const params = {
-    definition: { id: "amount", name: "Сумма", type: "number" },
-    editable: true,
-    rename,
-    sort: vi.fn(),
   };
   header.init(params as never);
   host.append(header.getGui());
-  const input = host.querySelector<HTMLInputElement>("input")!;
-  input.focus();
-  input.value = "Расчёт";
-  input.setSelectionRange(2, 4);
+  expect(
+    host.querySelector("input,select,.sql-table-column-formula"),
+  ).toBeNull();
+  const name = host.querySelector<HTMLButtonElement>(
+    '[data-column-name="amount"]',
+  )!;
+  expect(name.tagName).toBe("BUTTON");
+  name.focus();
+  expect(openEditor).not.toHaveBeenCalled();
+  name.click();
+  expect(openEditor).toHaveBeenCalledOnce();
+  expect(sort).not.toHaveBeenCalled();
+  host.querySelector<HTMLButtonElement>(".sql-table-column-sort")!.click();
+  expect(sort).toHaveBeenCalledOnce();
+  expect(openEditor).toHaveBeenCalledOnce();
   header.refresh({
     ...params,
+    selected: true,
     definition: { ...params.definition, name: "Итог" },
   } as never);
-  expect(document.activeElement).toBe(input);
-  expect(input.value).toBe("Расчёт");
-  expect(input.selectionStart).toBe(2);
-  input.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-  );
-  await new Promise((r) => setTimeout(r, 0));
-  expect(input.value).toBe("Итог");
-  expect(rename).not.toHaveBeenCalled();
-  input.focus();
-  input.value = "Всего";
-  input.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
-  await new Promise((r) => setTimeout(r, 0));
-  expect(rename).toHaveBeenCalledWith("Всего");
+  expect(host.querySelector('[data-column-name="amount"]')).toBe(name);
+  expect(name.textContent).toBe("Итог");
+  expect(name.getAttribute("aria-expanded")).toBe("true");
 });
-it("keeps read-only column headers free of formulas and mutation controls", async () => {
+it("keeps read-only headers as plain names without editor or sorting controls", async () => {
   const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
   const header = new SqlTableHeader();
   header.init({
@@ -193,44 +173,10 @@ it("keeps read-only column headers free of formulas and mutation controls", asyn
       formula: "Цена * 2",
     },
     editable: false,
-    rename: vi.fn(),
+    openEditor: vi.fn(),
     sort: vi.fn(),
   } as never);
   host.append(header.getGui());
-  expect(host.querySelector("input")?.readOnly).toBe(true);
-  expect(
-    host.querySelector(
-      "button,select,.sql-table-column-formula,.sql-table-readonly-formula",
-    ),
-  ).toBeNull();
-});
-it("lets focus reach the sort button before committing a name and flushes on teardown", async () => {
-  const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
-  const rename = vi.fn();
-  const header = new SqlTableHeader();
-  header.init({
-    definition: { id: "quantity", name: "Количество", type: "number" },
-    editable: true,
-    rename,
-    sort: vi.fn(),
-  } as never);
-  host.append(header.getGui());
-  const name = host.querySelector<HTMLInputElement>("input")!;
-  const next = host.querySelector<HTMLButtonElement>("button")!;
-  name.focus();
-  name.value = "Штук";
-  name.blur();
-  expect(rename).not.toHaveBeenCalled();
-  next.focus();
-  await new Promise((r) => setTimeout(r, 0));
-  expect(rename).toHaveBeenCalledWith("Штук");
-  expect(document.activeElement).toBe(next);
-  rename.mockClear();
-  name.focus();
-  name.value = "Число";
-  name.blur();
-  header.destroy();
-  expect(rename).toHaveBeenCalledWith("Число");
-  await new Promise((r) => setTimeout(r, 0));
-  expect(rename).toHaveBeenCalledTimes(1);
+  expect(host.querySelector("button,input,select")).toBeNull();
+  expect(host.textContent).toBe("Сумма");
 });

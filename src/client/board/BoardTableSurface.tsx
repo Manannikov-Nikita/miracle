@@ -15,10 +15,12 @@ export default function BoardTableSurface({
   expanded,
   onClose,
   children,
+  sidePanel,
 }: {
   expanded: boolean;
   onClose: () => void;
   children: ReactNode;
+  sidePanel?: ReactNode;
 }) {
   const anchor = useRef<HTMLDivElement>(null);
   const back = useRef<HTMLButtonElement>(null);
@@ -30,14 +32,13 @@ export default function BoardTableSurface({
 
   useLayoutEffect(() => {
     const element = anchor.current;
-    if (!element || !expanded) return;
+    if (!element || (!expanded && !sidePanel)) return;
     setHost(element.closest<HTMLElement>(".board-workspace") ?? element);
-  }, [expanded]);
+  }, [expanded, Boolean(sidePanel)]);
   useLayoutEffect(() => {
-    if (!expanded || !host) return;
+    if ((!expanded && !sidePanel) || !host) return;
     hostUsers.set(host, (hostUsers.get(host) ?? 0) + 1);
     host.classList.add("board-table-surface-host");
-    back.current?.focus({ preventScroll: true });
     return () => {
       const remaining = (hostUsers.get(host) ?? 1) - 1;
       if (remaining) hostUsers.set(host, remaining);
@@ -46,6 +47,10 @@ export default function BoardTableSurface({
         host.classList.remove("board-table-surface-host");
       }
     };
+  }, [expanded, host, Boolean(sidePanel)]);
+  useLayoutEffect(() => {
+    if (expanded && host && !sidePanel)
+      back.current?.focus({ preventScroll: true });
   }, [expanded, host]);
   useLayoutEffect(() => {
     if (previousExpanded.current && !expanded) {
@@ -107,7 +112,14 @@ export default function BoardTableSurface({
           Вернуться на доску
         </button>
       </div>
-      <div className="board-table-surface-content">{children}</div>
+      <div className="board-table-surface-content">
+        <div className="board-table-main-content">{children}</div>
+        {sidePanel && (
+          <div className="board-table-side-panel board-table-side-panel-inline">
+            {sidePanel}
+          </div>
+        )}
+      </div>
     </section>
   );
   return (
@@ -125,6 +137,15 @@ export default function BoardTableSurface({
       }}
     >
       {expanded && host ? createPortal(surface, host) : children}
+      {!expanded &&
+        sidePanel &&
+        host &&
+        createPortal(
+          <div className="board-table-side-panel board-table-side-panel-floating">
+            {sidePanel}
+          </div>,
+          host,
+        )}
     </div>
   );
 }

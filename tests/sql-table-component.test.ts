@@ -12,6 +12,15 @@ import SqlTableView from "../src/client/board/SqlTableView";
 
 const evaluate = vi.hoisted(() => vi.fn());
 vi.mock("../src/client/api", () => ({ evaluateVisualTable: evaluate }));
+vi.mock("@monaco-editor/react", () => ({
+  default: ({ value, onChange, options }: any) =>
+    createElement("textarea", {
+      "aria-label": options.ariaLabel,
+      value,
+      readOnly: options.readOnly,
+      onChange: (event: any) => onChange(event.target.value),
+    }),
+}));
 let host: HTMLDivElement, root: Root, current: VisualTableSpec;
 function Harness({
   editable = true,
@@ -123,27 +132,147 @@ it("does not let a cell-level keyboard event bubble to the board", async () => {
   expect(key).not.toHaveBeenCalled();
 });
 
-it("keeps the next column name focused when a rename commits", async () => {
+it("opens the clicked column in a local sidebar without recreating the grid and preserves switched drafts", async () => {
   await act(async () => root.render(createElement(Harness)));
-  const name = host.querySelector<HTMLInputElement>(
-    `[data-column-name="${current.columns[0].id}"]`,
+  const grid = host.querySelector(".ag-root-wrapper");
+  const [first, second] = current.columns;
+  await act(async () => button(`Редактировать столбец ${first.name}`).click());
+  const sidebar = host.querySelector('[aria-label="Редактор столбца"]')!;
+  expect(sidebar).not.toBeNull();
+  expect(sidebar.closest(".react-flow__viewport")).toBeNull();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(host.querySelector(".ag-root-wrapper")).toBe(grid);
+  const name = sidebar.querySelector<HTMLInputElement>(
+    '[aria-label="Название столбца"]',
   )!;
-  const next = host.querySelector<HTMLInputElement>(
-    `[data-column-name="${current.columns[1].id}"]`,
-  )!;
-  name.focus();
-  name.value = "Название";
+  expect(name.value).toBe(first.name);
   await act(async () => {
-    next.focus();
-    await new Promise((r) => setTimeout(r, 0));
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(name, "Черновик названия");
+    name.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  expect(current.columns[0].name).toBe("Название");
-  expect(document.activeElement).toBe(next);
+  await act(async () => button(`Редактировать столбец ${second.name}`).click());
   expect(
-    host.querySelector(
-      ".sql-table-column-formula, .sql-table-column-header select",
+    host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
+      .value,
+  ).toBe(second.name);
+  await act(async () => button(`Редактировать столбец ${first.name}`).click());
+  expect(
+    host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
+      .value,
+  ).toBe("Черновик названия");
+  expect(current.columns[0].name).toBe(first.name);
+  expect(host.querySelector(".ag-root-wrapper")).toBe(grid);
+});
+it("sorts without opening a sidebar and Escape closes only the column editor", async () => {
+  await act(async () => root.render(createElement(Harness)));
+  const first = current.columns[0];
+  await act(async () => button(`Сортировка: ${first.name}`).click());
+  expect(current.sort?.columnId).toBe(first.id);
+  expect(host.querySelector('[aria-label="Редактор столбца"]')).toBeNull();
+  await act(async () => button("Развернуть таблицу").click());
+  await act(async () => button(`Редактировать столбец ${first.name}`).click());
+  const sidebar = host.querySelector('[aria-label="Редактор столбца"]')!;
+  expect(sidebar.closest(".board-table-surface-expanded")).not.toBeNull();
+  await act(async () =>
+    sidebar.querySelector("input")!.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
     ),
-  ).toBeNull();
+  );
+  expect(host.querySelector('[aria-label="Редактор столбца"]')).toBeNull();
+  expect(host.querySelector(".board-table-surface-expanded")).not.toBeNull();
+});
+it("keeps one column editor per board and preserves drafts when switching tables", async () => {
+  const tables = [createEmptyVisualTable(), createEmptyVisualTable()];
+  await act(async () =>
+    root.render(
+      createElement(
+        "div",
+        { className: "board-workspace" },
+        ...tables.map((spec, key) =>
+          createElement(SqlTableView, {
+            key,
+            spec,
+            editable: true,
+            onChange: vi.fn(),
+          }),
+        ),
+      ),
+    ),
+  );
+  const grids = host.querySelectorAll(".board-sql-table");
+  const openFirst = (index: number) =>
+    grids[index]
+      .querySelector<HTMLButtonElement>("[data-column-name]")!
+      .click();
+  await act(async () => openFirst(0));
+  const name = host.querySelector<HTMLInputElement>(
+    '[aria-label="Название столбца"]',
+  )!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(name, "Черновик первой таблицы");
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => openFirst(1));
+  expect(host.querySelectorAll('[aria-label="Редактор столбца"]')).toHaveLength(
+    1,
+  );
+  expect(
+    host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
+      .value,
+  ).toBe(tables[1].columns[0].name);
+  await act(async () => openFirst(0));
+  expect(host.querySelectorAll('[aria-label="Редактор столбца"]')).toHaveLength(
+    1,
+  );
+  expect(
+    host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
+      .value,
+  ).toBe("Черновик первой таблицы");
+  await act(async () =>
+    grids[1].querySelector<HTMLButtonElement>(".sql-table-add-column")!.click(),
+  );
+  expect(host.querySelectorAll('[aria-label="Редактор столбца"]')).toHaveLength(
+    1,
+  );
+  expect(
+    host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
+      .value,
+  ).toBe(`Столбец ${tables[1].columns.length + 1}`);
+  await act(async () => openFirst(0));
+  expect(
+    host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
+      .value,
+  ).toBe("Черновик первой таблицы");
+});
+it("keeps column editors in separate board panes independent", async () => {
+  await act(async () =>
+    root.render(
+      createElement(
+        "div",
+        null,
+        createElement(Harness, { key: "first" }),
+        createElement(Harness, { key: "second" }),
+      ),
+    ),
+  );
+  for (const board of host.querySelectorAll(".board-workspace")) {
+    await act(async () =>
+      board.querySelector<HTMLButtonElement>("[data-column-name]")!.click(),
+    );
+  }
+  expect(host.querySelectorAll('[aria-label="Редактор столбца"]')).toHaveLength(
+    2,
+  );
 });
 it("expands into the owning board without a dialog and restores one grid", async () => {
   await act(async () => root.render(createElement(Harness)));

@@ -47,8 +47,34 @@
   outline-offset: -1px;
 }
 .board-table-surface-content {
+  display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.board-table-main-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.board-table-side-panel {
+  min-width: 0;
+  min-height: 0;
+}
+.board-table-side-panel-inline {
+  width: min(420px, 48%);
+  flex-shrink: 0;
+  padding: 12px 12px 88px;
+  border-left: 1px solid var(--board-border, var(--border));
+}
+.board-table-side-panel-floating {
+  position: absolute;
+  z-index: 25;
+  top: 12px;
+  right: 12px;
+  bottom: 88px;
+  width: min(420px, calc(100% - 24px));
 }

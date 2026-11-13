@@ -46,7 +46,9 @@ import {
 import { Modal } from "../components/UI";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import BoardTableSurface from "./BoardTableSurface";
-import SqlTableColumnEditor from "./SqlTableColumnEditor";
+import SqlTableColumnEditor, {
+  type SqlTableColumnDraft,
+} from "./SqlTableColumnEditor";
 import { SqlTableHeader, type SqlTableHeaderOptions } from "./SqlTableHeader";
 import { parseSqlTableCell, formatSqlTableCell } from "./sql-table-model";
 import { useVisualTableEvaluation } from "./useVisualTableEvaluation";
@@ -62,6 +64,7 @@ type Props = {
   onExit?: () => void;
 };
 type HistoryEntry = { before: VisualTableSpec; after: VisualTableSpec };
+const columnEditorOpened = "miracle:column-editor-opened";
 const equals = (a: unknown, b: unknown) =>
   JSON.stringify(a) === JSON.stringify(b);
 const filterOps = {
@@ -86,6 +89,8 @@ export default function SqlTableView(props: Props) {
   const [offset, setOffset] = useState(0);
   const [localError, setLocalError] = useState<string>();
   const [editingColumn, setEditingColumn] = useState<string | null>();
+  const columnDrafts = useRef(new Map<string, SqlTableColumnDraft>());
+  const columnEditorOwner = useRef({});
   const [filterColumn, setFilterColumn] = useState(spec.columns[0]?.id ?? "");
   const [filterOp, setFilterOp] = useState<keyof typeof filterOps>("contains");
   const [filterValue, setFilterValue] = useState("");
@@ -106,8 +111,29 @@ export default function SqlTableView(props: Props) {
   }, []);
   const trigger = useRef<HTMLButtonElement>(null),
     focusColumn = useRef<string | undefined>(undefined);
-  const latest = useRef({ ...props, editable });
-  latest.current = { ...props, editable };
+  const latest = useRef({ ...props, editable, editingColumn });
+  latest.current = { ...props, editable, editingColumn };
+  useLayoutEffect(() => {
+    const board = mountedHost?.closest(".board-workspace");
+    if (!board) return;
+    const closeOtherEditor = (event: Event) => {
+      if ((event as CustomEvent).detail !== columnEditorOwner.current)
+        setEditingColumn(undefined);
+    };
+    board.addEventListener(columnEditorOpened, closeOtherEditor);
+    return () =>
+      board.removeEventListener(columnEditorOpened, closeOtherEditor);
+  }, [mountedHost]);
+  const openColumnEditor = useCallback((columnId: string | null) => {
+    grid.current?.stopEditing();
+    // One panel per board; switching tables keeps their unsaved drafts.
+    gridHost.current?.closest(".board-workspace")?.dispatchEvent(
+      new CustomEvent(columnEditorOpened, {
+        detail: columnEditorOwner.current,
+      }),
+    );
+    setEditingColumn(columnId);
+  }, []);
   const evaluation = useVisualTableEvaluation(spec, offset);
   const mismatch = Boolean(
     result && spec.sourceResultSetId && result.id !== spec.sourceResultSetId,
@@ -224,10 +250,8 @@ export default function SqlTableView(props: Props) {
             latest.current.spec.sort?.columnId === column.id
               ? latest.current.spec.sort.direction
               : undefined,
-          rename: (name: string) =>
-            change((current) =>
-              renameVisualTableColumn(current, column.id, name),
-            ),
+          selected: latest.current.editingColumn === column.id,
+          openEditor: () => openColumnEditor(column.id),
           sort: () =>
             change((current) => ({
               ...current,
@@ -292,9 +316,14 @@ export default function SqlTableView(props: Props) {
               ? "Локальная правка. Исходные данные не изменены."
               : undefined,
       })),
-    [change],
+    [change, openColumnEditor],
   );
-  const columnKey = JSON.stringify([spec.columns, spec.sort, editable]);
+  const columnKey = JSON.stringify([
+    spec.columns,
+    spec.sort,
+    editable,
+    editingColumn,
+  ]);
   const structureKey = JSON.stringify([
     spec.columns.map((column) => [column.id, column.type]),
     editable,
@@ -412,7 +441,7 @@ export default function SqlTableView(props: Props) {
       grid.current?.ensureColumnVisible(id);
       queueMicrotask(() =>
         gridHost.current
-          ?.querySelector<HTMLInputElement>(`[data-column-name="${id}"]`)
+          ?.querySelector<HTMLElement>(`[data-column-name="${id}"]`)
           ?.focus(),
       );
     }
@@ -478,7 +507,10 @@ export default function SqlTableView(props: Props) {
           : [...renamed.columns, column],
       };
     });
-    if (saved) setEditingColumn(undefined);
+    if (saved) {
+      columnDrafts.current.delete(editingColumn ?? "new");
+      setEditingColumn(undefined);
+    }
   };
   const removeColumn = (columnId: string) => {
     const removed = change((current) => ({
@@ -496,7 +528,10 @@ export default function SqlTableView(props: Props) {
       ),
       sort: current.sort?.columnId === columnId ? undefined : current.sort,
     }));
-    if (removed) setEditingColumn(undefined);
+    if (removed) {
+      columnDrafts.current.delete(columnId);
+      setEditingColumn(undefined);
+    }
     return removed;
   };
   const addRow = () => {
@@ -659,7 +694,7 @@ export default function SqlTableView(props: Props) {
                     {spec.columns.map((column) => (
                       <DropdownMenu.Item
                         key={column.id}
-                        onSelect={() => setEditingColumn(column.id)}
+                        onSelect={() => openColumnEditor(column.id)}
                       >
                         {column.name}
                       </DropdownMenu.Item>
@@ -839,10 +874,7 @@ export default function SqlTableView(props: Props) {
         {editable && (
           <button
             className="sql-table-add-column"
-            onClick={() => {
-              grid.current?.stopEditing();
-              setEditingColumn(null);
-            }}
+            onClick={() => openColumnEditor(null)}
             disabled={spec.columns.length >= 100}
             title="Добавить столбец"
             aria-label="Добавить столбец"
@@ -950,6 +982,45 @@ export default function SqlTableView(props: Props) {
   return (
     <>
       <BoardTableSurface
+        sidePanel={
+          editingColumn !== undefined && editable ? (
+            <SqlTableColumnEditor
+              key={editingColumn ?? "new"}
+              spec={spec}
+              columnId={editingColumn ?? undefined}
+              draft={columnDrafts.current.get(editingColumn ?? "new")}
+              onDraftChange={(draft) =>
+                columnDrafts.current.set(editingColumn ?? "new", draft)
+              }
+              onSave={saveColumn}
+              onClose={() => {
+                const id = editingColumn;
+                columnDrafts.current.delete(id ?? "new");
+                setEditingColumn(undefined);
+                requestAnimationFrame(() => {
+                  if (id) {
+                    grid.current?.ensureColumnVisible(id);
+                    Array.from(
+                      gridHost.current?.querySelectorAll<HTMLElement>(
+                        "[data-column-name]",
+                      ) ?? [],
+                    )
+                      .find((element) => element.dataset.columnName === id)
+                      ?.focus();
+                  } else {
+                    gridHost.current
+                      ?.closest(".board-sql-table")
+                      ?.querySelector<HTMLButtonElement>(
+                        ".sql-table-add-column",
+                      )
+                      ?.focus();
+                  }
+                });
+              }}
+              onRemove={removeColumn}
+            />
+          ) : undefined
+        }
         expanded={expanded}
         onClose={() => {
           grid.current?.stopEditing();
@@ -959,16 +1030,6 @@ export default function SqlTableView(props: Props) {
       >
         {body}
       </BoardTableSurface>
-      {editingColumn !== undefined && editable && (
-        <SqlTableColumnEditor
-          key={editingColumn ?? "new"}
-          spec={spec}
-          columnId={editingColumn ?? undefined}
-          onSave={saveColumn}
-          onClose={() => setEditingColumn(undefined)}
-          onRemove={removeColumn}
-        />
-      )}
       <Modal
         open={adopting}
         onOpenChange={setAdopting}

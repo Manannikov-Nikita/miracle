@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { Trash } from "@phosphor-icons/react";
+import { Trash, X } from "@phosphor-icons/react";
 import {
   renameVisualTableColumn,
   visualTableSpecSchema,
@@ -14,12 +14,20 @@ import {
   visualFormulaDependencies,
 } from "../../shared/visual-table-formula";
 import { evaluateVisualTable } from "../api";
-import { Modal } from "../components/UI";
 import "./sql-table-column-editor.css";
+
+export type SqlTableColumnDraft = {
+  name: string;
+  formula: string;
+  type: VisualTableColumn["type"];
+  summary: NonNullable<VisualTableColumn["summary"]>;
+};
 
 type Props = {
   spec: VisualTableSpec;
   columnId?: string;
+  draft?: SqlTableColumnDraft;
+  onDraftChange?: (draft: SqlTableColumnDraft) => void;
   onSave: (column: VisualTableColumn) => void;
   onClose: () => void;
   onRemove?: (columnId: string) => boolean | void;
@@ -43,6 +51,8 @@ function nextColumnName(spec: VisualTableSpec) {
 export default function SqlTableColumnEditor({
   spec,
   columnId,
+  draft,
+  onDraftChange,
   onSave,
   onClose,
   onRemove,
@@ -50,21 +60,36 @@ export default function SqlTableColumnEditor({
   const initial = useRef(spec.columns.find((column) => column.id === columnId));
   const [id] = useState(() => columnId ?? crypto.randomUUID());
   const [name, setName] = useState(
-    () => initial.current?.name ?? nextColumnName(spec),
+    () => draft?.name ?? initial.current?.name ?? nextColumnName(spec),
   );
-  const [formula, setFormula] = useState(initial.current?.formula ?? "");
+  const [formula, setFormula] = useState(
+    draft?.formula ?? initial.current?.formula ?? "",
+  );
   const [type, setType] = useState<VisualTableColumn["type"]>(
-    initial.current?.type ?? "number",
+    draft?.type ?? initial.current?.type ?? "number",
   );
   const [summary, setSummary] = useState<
     NonNullable<VisualTableColumn["summary"]>
-  >(initial.current?.summary ?? "none");
+  >(draft?.summary ?? initial.current?.summary ?? "none");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
   const request = useRef<AbortController | undefined>(undefined);
   const closed = useRef(false);
   const editor = useRef<Parameters<OnMount>[0] | null>(null);
   const source = Boolean(initial.current?.sourceColumnId);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const draftChange = useRef(onDraftChange);
+  draftChange.current = onDraftChange;
+  const draftKey = JSON.stringify([name, formula, type, summary]);
+  const previousDraft = useRef(draftKey);
+  useEffect(() => {
+    if (previousDraft.current === draftKey || closed.current) return;
+    previousDraft.current = draftKey;
+    draftChange.current?.({ name, formula, type, summary });
+  }, [draftKey, name, formula, type, summary]);
+  useLayoutEffect(() => {
+    nameInput.current?.focus({ preventScroll: true });
+  }, []);
   const latestSpec = useRef(spec);
   latestSpec.current = spec;
 
@@ -223,166 +248,197 @@ export default function SqlTableColumnEditor({
     } else setFormula((value) => value + text);
   };
   return (
-    <Modal
-      open
-      onOpenChange={(open) => {
-        if (!open) close();
+    <aside
+      className="sql-column-editor nodrag nopan nowheel nokey"
+      role="complementary"
+      aria-label="Редактор столбца"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (
+          event.key === "Escape" &&
+          !event.defaultPrevented &&
+          !event.nativeEvent.isComposing
+        ) {
+          event.preventDefault();
+          close();
+        }
       }}
-      title={columnId ? "Настройки столбца" : "Новый столбец"}
-      className="sql-column-editor"
     >
+      <header className="sql-column-heading">
+        <div>
+          <span>Столбец</span>
+          <h2>
+            {columnId ? (initial.current?.name ?? name) : "Новый столбец"}
+          </h2>
+        </div>
+        <button
+          type="button"
+          aria-label="Закрыть редактор столбца"
+          title="Закрыть редактор столбца"
+          onClick={close}
+        >
+          <X size={16} aria-hidden="true" />
+        </button>
+      </header>
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void save();
         }}
         onKeyDown={(event) => {
-          event.stopPropagation();
-          if (event.key === "Escape" && !event.defaultPrevented) {
-            event.preventDefault();
-            close();
-          }
+          if (
+            (event.metaKey || event.ctrlKey) &&
+            event.key === "Enter" &&
+            event.nativeEvent.isComposing
+          )
+            return;
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
             event.preventDefault();
             void save();
           }
         }}
       >
-        <div className="sql-column-fields">
-          <label>
-            <span>Название</span>
-            <input
-              aria-label="Название столбца"
-              value={name}
-              maxLength={200}
-              onChange={(event) => {
-                invalidate();
-                setName(event.target.value);
+        <div className="sql-column-body">
+          <div className="sql-column-fields">
+            <label>
+              <span>Название</span>
+              <input
+                ref={nameInput}
+                aria-label="Название столбца"
+                value={name}
+                maxLength={200}
+                onChange={(event) => {
+                  invalidate();
+                  setName(event.target.value);
+                }}
+              />
+            </label>
+            <label>
+              <span>Тип значений</span>
+              <select
+                aria-label="Тип столбца"
+                value={type}
+                disabled={source}
+                onChange={(event) => {
+                  invalidate();
+                  const value = event.target.value as VisualTableColumn["type"];
+                  setType(value);
+                  if (value !== "number" && ["sum", "avg"].includes(summary))
+                    setSummary("none");
+                }}
+              >
+                <option value="number">Число</option>
+                <option value="text">Текст</option>
+                <option value="boolean">Да / нет</option>
+              </select>
+            </label>
+            <label>
+              <span>Итог внизу таблицы</span>
+              <select
+                aria-label="Итог столбца"
+                value={summary}
+                onChange={(event) => {
+                  invalidate();
+                  setSummary(event.target.value as typeof summary);
+                }}
+              >
+                {Object.entries(summaries)
+                  .filter(
+                    ([value]) =>
+                      type === "number" || !["sum", "avg"].includes(value),
+                  )
+                  .map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </div>
+          <div className="sql-column-expression-label">
+            <span>SQL-выражение</span>
+            <span>
+              {source ? "Данные SQL · только чтение" : "Для всех строк"}
+            </span>
+          </div>
+          <div className="sql-column-expression">
+            <Editor
+              language="sql"
+              theme="miracle-dark"
+              value={formula}
+              onChange={(value) => {
+                if (!source) {
+                  invalidate();
+                  setFormula(value ?? "");
+                }
+              }}
+              onMount={(instance, monaco) => {
+                editor.current = instance;
+                instance.addCommand(
+                  monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+                  () => {
+                    void saveRef.current();
+                  },
+                );
+                if (!columnId) instance.focus();
+              }}
+              loading={
+                <div className="sql-column-loading">Загрузка редактора…</div>
+              }
+              options={{
+                ariaLabel: "SQL-выражение столбца",
+                readOnly: source,
+                fontSize: 14,
+                fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+                lineHeight: 24,
+                minimap: { enabled: false },
+                automaticLayout: true,
+                scrollBeyondLastLine: false,
+                wordWrap: "on",
+                padding: { top: 16, bottom: 16 },
+                tabSize: 2,
+                stickyScroll: { enabled: false },
               }}
             />
-          </label>
-          <label>
-            <span>Тип значений</span>
-            <select
-              aria-label="Тип столбца"
-              value={type}
-              disabled={source}
-              onChange={(event) => {
-                invalidate();
-                const value = event.target.value as VisualTableColumn["type"];
-                setType(value);
-                if (value !== "number" && ["sum", "avg"].includes(summary))
-                  setSummary("none");
-              }}
-            >
-              <option value="number">Число</option>
-              <option value="text">Текст</option>
-              <option value="boolean">Да / нет</option>
-            </select>
-          </label>
-          <label>
-            <span>Итог внизу таблицы</span>
-            <select
-              aria-label="Итог столбца"
-              value={summary}
-              onChange={(event) => {
-                invalidate();
-                setSummary(event.target.value as typeof summary);
-              }}
-            >
-              {Object.entries(summaries)
-                .filter(
-                  ([value]) =>
-                    type === "number" || !["sum", "avg"].includes(value),
-                )
-                .map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-            </select>
-          </label>
-        </div>
-        <div className="sql-column-expression-label">
-          <span>SQL-выражение</span>
-          <span>
-            {source ? "Данные SQL · только чтение" : "Для всех строк"}
-          </span>
-        </div>
-        <div className="sql-column-expression">
-          <Editor
-            language="sql"
-            theme="miracle-dark"
-            value={formula}
-            onChange={(value) => {
-              if (!source) {
-                invalidate();
-                setFormula(value ?? "");
-              }
-            }}
-            onMount={(instance, monaco) => {
-              editor.current = instance;
-              instance.addCommand(
-                monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
-                () => {
-                  void saveRef.current();
-                },
-              );
-              if (!columnId) instance.focus();
-            }}
-            loading={
-              <div className="sql-column-loading">Загрузка редактора…</div>
-            }
-            options={{
-              ariaLabel: "SQL-выражение столбца",
-              readOnly: source,
-              fontSize: 14,
-              fontFamily: '"JetBrains Mono", ui-monospace, monospace',
-              lineHeight: 24,
-              minimap: { enabled: false },
-              automaticLayout: true,
-              scrollBeyondLastLine: false,
-              wordWrap: "on",
-              padding: { top: 16, bottom: 16 },
-              tabSize: 2,
-              stickyScroll: { enabled: false },
-            }}
-          />
-        </div>
-        {!source && (
-          <div className="sql-column-references">
-            <span>Вставить столбец</span>
-            <div>
-              {spec.columns
-                .filter((column) => column.id !== id)
-                .map((column) => (
-                  <button
-                    type="button"
-                    key={column.id}
-                    onClick={() => insertColumn(column)}
-                  >
-                    {column.name}
-                  </button>
-                ))}
-            </div>
           </div>
-        )}
-        <p className="sql-column-hint">
-          {source
-            ? "Значения и тип исходного SQL-столбца защищены. Для вычислений добавьте новый столбец."
-            : 'Например: "Количество" * "Цена". Доступны арифметика, сравнения, IF, COALESCE, SUM и AVG.'}
           {!source && (
-            <span>
-              {formula.length.toLocaleString("ru-RU")} /{" "}
-              {VISUAL_TABLE_LIMITS.formulaLength.toLocaleString("ru-RU")}
-            </span>
+            <div className="sql-column-references">
+              <span>Вставить столбец</span>
+              <div>
+                {spec.columns
+                  .filter((column) => column.id !== id)
+                  .map((column) => (
+                    <button
+                      type="button"
+                      key={column.id}
+                      onClick={() => insertColumn(column)}
+                    >
+                      {column.name}
+                    </button>
+                  ))}
+              </div>
+            </div>
           )}
-        </p>
-        {error && (
-          <div className="sql-column-error" role="alert">
-            {error}
-          </div>
-        )}
+          <p className="sql-column-hint">
+            {source
+              ? "Значения и тип исходного SQL-столбца защищены. Для вычислений добавьте новый столбец."
+              : 'Например: "Количество" * "Цена". Доступны арифметика, сравнения, IF, COALESCE, SUM и AVG.'}
+            {!source && (
+              <span>
+                {formula.length.toLocaleString("ru-RU")} /{" "}
+                {VISUAL_TABLE_LIMITS.formulaLength.toLocaleString("ru-RU")}
+              </span>
+            )}
+          </p>
+          {error && (
+            <div className="sql-column-error" role="alert">
+              {error}
+            </div>
+          )}
+        </div>
         <div className="sql-column-actions">
           {columnId && !source && spec.columns.length > 1 && onRemove && (
             <button
@@ -402,6 +458,6 @@ export default function SqlTableColumnEditor({
           </button>
         </div>
       </form>
-    </Modal>
+    </aside>
   );
 }

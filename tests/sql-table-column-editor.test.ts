@@ -3,7 +3,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { VisualTableSpec } from "../src/shared/visual-table";
-import SqlTableColumnEditor from "../src/client/board/SqlTableColumnEditor";
+import SqlTableColumnEditor, {
+  type SqlTableColumnDraft,
+} from "../src/client/board/SqlTableColumnEditor";
 
 const evaluate = vi.hoisted(() => vi.fn());
 vi.mock("../src/client/api", () => ({ evaluateVisualTable: evaluate }));
@@ -286,7 +288,7 @@ it("keeps a referenced column and lists the dependent formulas instead of deleti
   await act(async () => button("Удалить столбец").click());
   expect(remove).not.toHaveBeenCalled();
   expect(close).not.toHaveBeenCalled();
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(document.querySelector('[role="complementary"]')).not.toBeNull();
   expect(document.querySelector('[role="alert"]')?.textContent).toContain(
     "Стоимость",
   );
@@ -355,4 +357,130 @@ it("rewrites an unchanged self reference before validating a renamed formula", a
     "Циклическая",
   );
   expect(save).not.toHaveBeenCalled();
+});
+
+it("opens a nonmodal side editor for the selected column without locking other controls", async () => {
+  const outside = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(
+        "div",
+        null,
+        createElement("button", { onClick: outside }, "Другой столбец"),
+        createElement(SqlTableColumnEditor, {
+          spec: table(),
+          columnId: "quantity",
+          onSave: vi.fn(),
+          onClose: vi.fn(),
+        }),
+      ),
+    ),
+  );
+  const panel = host.querySelector(
+    '[role="complementary"][aria-label="Редактор столбца"]',
+  );
+  expect(panel).not.toBeNull();
+  expect(panel?.querySelector("h2")?.textContent).toBe("Количество");
+  expect(document.querySelector('[role="dialog"],.modal-backdrop')).toBeNull();
+  expect(document.body.style.overflow).toBe("");
+  expect(document.activeElement).toBe(field("Название столбца"));
+  await act(async () => button("Другой столбец").click());
+  expect(outside).toHaveBeenCalledOnce();
+});
+
+it("reports changed drafts and restores them when the column editor is reopened", async () => {
+  const drafts: SqlTableColumnDraft[] = [];
+  const spec = table();
+  await act(async () =>
+    root.render(
+      createElement(SqlTableColumnEditor, {
+        spec,
+        columnId: "quantity",
+        onSave: vi.fn(),
+        onClose: vi.fn(),
+        onDraftChange: (draft: SqlTableColumnDraft) => drafts.push(draft),
+      }),
+    ),
+  );
+  expect(drafts).toHaveLength(0);
+  await fill("Название столбца", "Черновик");
+  await fill("SQL-выражение столбца", "10 * 2");
+  const cached = drafts.at(-1)!;
+  expect(cached).toEqual({
+    name: "Черновик",
+    formula: "10 * 2",
+    type: "number",
+    summary: "none",
+  });
+  await act(async () => root.render(null));
+  await act(async () =>
+    root.render(
+      createElement(SqlTableColumnEditor, {
+        spec,
+        columnId: "quantity",
+        draft: cached,
+        onSave: vi.fn(),
+        onClose: vi.fn(),
+        onDraftChange: (draft: SqlTableColumnDraft) => drafts.push(draft),
+      }),
+    ),
+  );
+  expect(field("Название столбца").value).toBe("Черновик");
+  expect(field("SQL-выражение столбца").value).toBe("10 * 2");
+  expect(drafts).toHaveLength(2);
+});
+
+it("closes the side editor with Escape from its header and does not bubble to the board", async () => {
+  const close = vi.fn(),
+    boardKey = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(
+        "div",
+        { onKeyDown: boardKey },
+        createElement(SqlTableColumnEditor, {
+          spec: table(),
+          columnId: "quantity",
+          onSave: vi.fn(),
+          onClose: close,
+        }),
+      ),
+    ),
+  );
+  const panel = host.querySelector('[role="complementary"]')!;
+  const escape = new KeyboardEvent("keydown", {
+    key: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => panel.querySelector("button")!.dispatchEvent(escape));
+  expect(close).toHaveBeenCalledOnce();
+  expect(escape.defaultPrevented).toBe(true);
+  expect(boardKey).not.toHaveBeenCalled();
+});
+
+it("leaves Escape consumed by the SQL editor alone", async () => {
+  const close = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(SqlTableColumnEditor, {
+        spec: table(),
+        columnId: "quantity",
+        onSave: vi.fn(),
+        onClose: close,
+      }),
+    ),
+  );
+  const input = field("SQL-выражение столбца");
+  input.addEventListener("keydown", (event) => event.preventDefault());
+  await act(async () =>
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+  expect(close).not.toHaveBeenCalled();
 });

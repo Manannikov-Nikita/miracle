@@ -123,18 +123,29 @@
   width: 100%;
   min-width: 0;
 }
-.board-sql-table .sql-table-column-title input {
-  width: 100%;
+.board-workspace .board-sql-table .sql-table-column-name,
+.board-sql-table .sql-table-column-name {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
   padding: 2px 0;
-  font-weight: 600;
+  overflow: hidden;
   text-overflow: ellipsis;
-  border-color: transparent;
+  text-align: left;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--sql-table-text);
+  border: 0;
   background: transparent;
 }
-.board-sql-table .sql-table-column-title input:not([readonly]):hover {
-  border-color: var(--sql-table-border);
+.board-workspace .board-sql-table button.sql-table-column-name:hover,
+.board-sql-table .is-editing .sql-table-column-name {
+  color: var(--sql-table-accent);
+  background: transparent;
 }
-.board-sql-table .sql-table-column-title button {
+.board-workspace .board-sql-table .sql-table-column-sort {
   padding: 0 2px;
   min-width: 18px;
   font-size: 14px;
