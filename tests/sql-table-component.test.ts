@@ -249,6 +249,16 @@ it("keeps one column editor per board and preserves drafts when switching tables
       .value,
   ).toBe(`Столбец ${tables[1].columns.length + 1}`);
   await act(async () => openFirst(0));
+  await act(async () =>
+    grids[1]
+      .querySelector<HTMLButtonElement>('[aria-label="Развернуть таблицу"]')!
+      .click(),
+  );
+  expect(host.querySelectorAll('[aria-label="Редактор столбца"]')).toHaveLength(
+    0,
+  );
+  await act(async () => button("Вернуться на доску").click());
+  await act(async () => openFirst(0));
   expect(
     host.querySelector<HTMLInputElement>('[aria-label="Название столбца"]')!
       .value,

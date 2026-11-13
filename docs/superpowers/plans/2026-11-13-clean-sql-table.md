@@ -76,7 +76,7 @@ Files: SqlTableHeader, SqlTableColumnEditor, BoardTableSurface, SqlTableView, re
 
 ## Sidebar follow-up verification
 
-- Focused checks: 4 files / 37 tests passed, including same-table and cross-table draft switching, independent boards, sort isolation, source restrictions and Escape behavior. The cross-table regression failed with two panels before the scoped coordination fix and passed afterward.
+- Focused checks: 4 files / 37 tests passed, including same-table and cross-table draft switching, expansion of another table, independent boards, sort isolation, source restrictions and Escape behavior. Cross-table regressions reproduced overlapping panels and a stale panel over another expanded table before the scoped coordination fix.
 - TypeScript client/server and production build passed; the existing bundle-size notice remains. The full baseline suite was not repeated for this UI follow-up.
 - Desktop checks on the main stand verified the selected column and expression, normal floating and expanded side-by-side layouts, draft restoration, cancel and Escape. The global agent button does not overlap editor actions. Cross-table exclusivity was verified by component tests using real AG Grid.
 - Screenshot: `/private/tmp/miracle-column-sidebar.png`. Temporary name drafts were canceled and the stand returned to the board view.

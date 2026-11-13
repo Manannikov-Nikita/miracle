@@ -124,16 +124,22 @@ export default function SqlTableView(props: Props) {
     return () =>
       board.removeEventListener(columnEditorOpened, closeOtherEditor);
   }, [mountedHost]);
-  const openColumnEditor = useCallback((columnId: string | null) => {
-    grid.current?.stopEditing();
+  const claimColumnEditor = useCallback(() => {
     // One panel per board; switching tables keeps their unsaved drafts.
     gridHost.current?.closest(".board-workspace")?.dispatchEvent(
       new CustomEvent(columnEditorOpened, {
         detail: columnEditorOwner.current,
       }),
     );
-    setEditingColumn(columnId);
   }, []);
+  const openColumnEditor = useCallback(
+    (columnId: string | null) => {
+      grid.current?.stopEditing();
+      claimColumnEditor();
+      setEditingColumn(columnId);
+    },
+    [claimColumnEditor],
+  );
   const evaluation = useVisualTableEvaluation(spec, offset);
   const mismatch = Boolean(
     result && spec.sourceResultSetId && result.id !== spec.sourceResultSetId,
@@ -739,6 +745,7 @@ export default function SqlTableView(props: Props) {
               ref={trigger}
               onClick={() => {
                 grid.current?.stopEditing();
+                claimColumnEditor();
                 setExpanded(true);
               }}
               aria-label="Развернуть таблицу"
