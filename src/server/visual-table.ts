@@ -163,7 +163,7 @@ function validateInput(input: EvaluateVisualTableInput) {
   if (
     !Number.isSafeInteger(offset) ||
     offset < 0 ||
-    offset > limits.sourceRows ||
+    offset > limits.sourceRows + limits.manualRows ||
     !Number.isInteger(limit) ||
     limit < 1 ||
     limit > limits.maxPageSize
@@ -209,8 +209,12 @@ function validateInput(input: EvaluateVisualTableInput) {
             "Тип исходного столбца нельзя менять. Добавьте вычисляемый столбец.",
           );
       }
+    const manualRows = new Set(table.rows?.map((row) => row.id));
     for (const edit of table.edits)
-      if (Number(edit.rowId.slice(result.id.length + 1)) >= result.rowCount)
+      if (
+        !manualRows.has(edit.rowId) &&
+        Number(edit.rowId.slice(result.id.length + 1)) >= result.rowCount
+      )
         throw issue(
           "Локальная правка ссылается на отсутствующую строку снимка.",
         );
@@ -631,25 +635,27 @@ export async function evaluateVisualTable(
       timedOut = true;
       connection?.interrupt();
     }, executionMs);
-    const rowCount = input.source?.result.rowCount ?? table.rows!.length;
+    const snapshotRowCount = input.source?.result.rowCount ?? 0;
+    const manualRows = table.rows ?? [];
+    const rowCount = snapshotRowCount + manualRows.length;
     const sourceIndices = new Map(
       input.source?.result.columns.map((c, index) => [c.id, index]),
     );
     const valueAt = (row: number, column: VisualTableColumn) =>
       inputValue(
-        input.source
+        row < snapshotRowCount
           ? column.sourceColumnId === undefined
             ? null
-            : input.source.rows[row][sourceIndices.get(column.sourceColumnId)!]
-          : Object.hasOwn(table.rows![row].values, column.id)
-            ? table.rows![row].values[column.id]
+            : input.source!.rows[row][sourceIndices.get(column.sourceColumnId)!]
+          : Object.hasOwn(manualRows[row - snapshotRowCount].values, column.id)
+            ? manualRows[row - snapshotRowCount].values[column.id]
             : null,
         column,
       );
     const rowId = (row: number) =>
-      table.sourceResultSetId
+      row < snapshotRowCount
         ? `${table.sourceResultSetId}:${row}`
-        : table.rows![row].id;
+        : manualRows[row - snapshotRowCount].id;
     const types = new Map<string, string>();
     for (const column of table.columns) {
       function* values() {

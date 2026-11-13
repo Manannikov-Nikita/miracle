@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createEmptyVisualTable,
   createResultVisualTable,
+  canEditVisualTableCell,
+  isVisualTableSourceCell,
   renameVisualTableColumn,
   setVisualTableCell,
   visualTableSpecSchema,
@@ -55,10 +57,16 @@ describe("visual table document", () => {
         10,
       ),
     ).toThrow();
-    expect(
-      setVisualTableCell(table, `${result.id}:0`, table.columns[0].id, 10)
-        .edits,
-    ).toHaveLength(1);
+    expect(() =>
+      setVisualTableCell(table, `${result.id}:0`, table.columns[0].id, 10),
+    ).toThrow(/SQL/);
+    const legacy = {
+      ...table,
+      edits: [
+        { rowId: `${result.id}:0`, columnId: table.columns[0].id, value: 10 },
+      ],
+    };
+    expect(visualTableSpecSchema.parse(legacy).edits).toEqual(legacy.edits);
   });
   it("renames references without rewriting string literals or longer names", () => {
     const table = createEmptyVisualTable();
@@ -114,7 +122,50 @@ describe("visual table document", () => {
         ...createResultVisualTable(result),
         rows: [],
       }).success,
-    ).toBe(false);
+    ).toBe(true);
+  });
+  it("keeps manual rows distinct from snapshot row identities", () => {
+    const table = {
+      ...createResultVisualTable(result),
+      rows: [{ id: "manual", values: { quantity: "7" } }],
+    };
+    const edited = setVisualTableCell(table, "manual", "quantity", "9");
+    expect(edited.edits).toEqual([
+      { rowId: "manual", columnId: "quantity", value: "9" },
+    ]);
+    expect(() =>
+      setVisualTableCell(table, "missing", "quantity", "9"),
+    ).toThrow();
+    for (const rowId of [`${result.id}:0`, `${result.id}:99999`]) {
+      expect(
+        visualTableSpecSchema.safeParse({
+          ...table,
+          rows: [{ id: rowId, values: {} }],
+        }).success,
+      ).toBe(false);
+    }
+  });
+  it("protects only snapshot cells in source columns", () => {
+    const table = createResultVisualTable(result);
+    table.rows = [{ id: "manual", values: {} }];
+    table.columns.push({
+      id: "calculated",
+      name: "Расчёт",
+      type: "number",
+      formula: "Количество * Цена",
+    });
+    for (const [rowId, columnId, source, editable] of [
+      [`${result.id}:0`, "quantity", true, false],
+      [`${result.id}:0`, "calculated", false, true],
+      ["manual", "quantity", false, true],
+      ["manual", "calculated", false, true],
+      ["missing", "quantity", false, false],
+      ["manual", "missing", false, false],
+      [`${result.id}:01`, "calculated", false, false],
+    ] as const) {
+      expect(isVisualTableSourceCell(table, rowId, columnId)).toBe(source);
+      expect(canEditVisualTableCell(table, rowId, columnId)).toBe(editable);
+    }
   });
 });
 
@@ -338,6 +389,92 @@ describe("visual table precision and isolation boundaries", () => {
       `${result.id}:10`,
       `${result.id}:11`,
     ]);
+  });
+  it("calculates, filters and sorts manual rows together with snapshot rows", async () => {
+    let table = createResultVisualTable(result);
+    table.rows = [{ id: "manual", values: { quantity: "5", price: "10" } }];
+    table.columns.push({
+      id: "amount",
+      name: "Сумма",
+      type: "number",
+      formula: "Количество * Цена",
+      summary: "sum",
+    });
+    table.edits = [
+      { rowId: `${result.id}:0`, columnId: "quantity", value: "4" },
+    ];
+    table = setVisualTableCell(table, "manual", "quantity", "6");
+    table = setVisualTableCell(table, `${result.id}:1`, "amount", "25");
+    const source = {
+      result,
+      rows: [
+        [1, 10],
+        [2, 10],
+      ],
+    };
+    const all = await evaluateVisualTable({ table, source });
+    expect(all.rows.map((row) => row.id)).toEqual([
+      `${result.id}:0`,
+      `${result.id}:1`,
+      "manual",
+    ]);
+    expect(all.rows.map((row) => Number(row.values.amount))).toEqual([
+      40, 25, 60,
+    ]);
+    expect(Number(all.summaries.amount)).toBe(125);
+    expect(all.sourceRowCount).toBe(3);
+    const filtered = await evaluateVisualTable({
+      table: {
+        ...table,
+        filters: [{ columnId: "amount", op: "gt", value: "30" }],
+        sort: { columnId: "amount", direction: "desc" },
+      },
+      source,
+      offset: 1,
+      limit: 1,
+    });
+    expect(filtered.rows.map((row) => row.id)).toEqual([`${result.id}:0`]);
+    expect(filtered.totalRowCount).toBe(2);
+    expect(Number(filtered.summaries.amount)).toBe(100);
+  });
+  it("pages through manual rows beyond a full 50000-row snapshot", async () => {
+    const source = {
+      result: { ...result, rowCount: 50000 },
+      rows: Array.from({ length: 50000 }, (_, i) => [String(i), "1"]),
+    };
+    const table = createResultVisualTable(source.result);
+    table.rows = Array.from({ length: 1000 }, (_, i) => ({
+      id: `manual-${i}`,
+      values: { quantity: String(i), price: "2" },
+    }));
+    const output = await evaluateVisualTable({
+      table,
+      source,
+      offset: 50500,
+      limit: 500,
+    });
+    expect(output.totalRowCount).toBe(51000);
+    expect(output.rows).toHaveLength(500);
+    expect(output.rows[0].id).toBe("manual-500");
+    expect(output.rows.at(-1)?.id).toBe("manual-999");
+    await expect(
+      evaluateVisualTable({ table, source, offset: 51001 }),
+    ).rejects.toThrow(/диапазон/);
+  });
+  it("evaluates added rows when the SQL snapshot is empty", async () => {
+    const source = { result: { ...result, rowCount: 0 }, rows: [] };
+    const table = createResultVisualTable(source.result);
+    table.rows = [{ id: "manual", values: { quantity: "7", price: "2.5" } }];
+    table.columns.push({
+      id: "amount",
+      name: "Сумма",
+      type: "number",
+      formula: "Количество * Цена",
+    });
+    const output = await evaluateVisualTable({ table, source });
+    expect(output.rows).toHaveLength(1);
+    expect(output.rows[0].id).toBe("manual");
+    expect(Number(output.rows[0].values.amount)).toBe(17.5);
   });
   it("handles quotes in names and keeps concurrent evaluations isolated", async () => {
     const left = manual();

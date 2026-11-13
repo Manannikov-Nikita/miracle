@@ -1,0 +1,54 @@
+.board-table-surface-anchor {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.board-table-surface-host {
+  position: relative;
+}
+.board-table-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--board-bg, var(--bg, #202225));
+  color: var(--board-text, var(--text, #eeeff0));
+  overflow: hidden;
+}
+.board-table-surface-heading {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--board-border, var(--border, #3b3e43));
+}
+.board-table-surface-heading > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  padding: 4px 8px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.board-table-surface-heading > button:hover {
+  background: var(--board-hover, var(--hover, #34373b));
+}
+.board-table-surface-heading > button:focus-visible {
+  outline: 2px solid var(--board-accent, var(--accent, #a4c3b2));
+  outline-offset: -1px;
+}
+.board-table-surface-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}

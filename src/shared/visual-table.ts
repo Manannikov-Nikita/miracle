@@ -100,6 +100,36 @@ function accepts(column: VisualTableColumn, value: VisualTableScalar) {
         : typeof value === "string")
   );
 }
+function isSnapshotRow(table: VisualTableSpec, rowId: string): boolean {
+  return Boolean(
+    table.sourceResultSetId &&
+    new RegExp(`^${table.sourceResultSetId}:(0|[1-9]\\d*)$`).test(rowId),
+  );
+}
+export function isVisualTableSourceCell(
+  table: VisualTableSpec,
+  rowId: string,
+  columnId: string,
+): boolean {
+  return (
+    isSnapshotRow(table, rowId) &&
+    Boolean(
+      table.columns.find((column) => column.id === columnId)?.sourceColumnId,
+    )
+  );
+}
+export function canEditVisualTableCell(
+  table: VisualTableSpec,
+  rowId: string,
+  columnId: string,
+): boolean {
+  return (
+    table.columns.some((column) => column.id === columnId) &&
+    !isVisualTableSourceCell(table, rowId, columnId) &&
+    (isSnapshotRow(table, rowId) ||
+      Boolean(table.rows?.some((row) => row.id === rowId)))
+  );
+}
 export const visualTableSpecSchema: z.ZodType<VisualTableSpec> = z
   .object({
     version: z.literal(1),
@@ -178,7 +208,7 @@ export const visualTableSpecSchema: z.ZodType<VisualTableSpec> = z
       fail("Исходный столбец указан несколько раз.");
     if (
       table.sourceResultSetId
-        ? !table.sourceSchema || table.rows !== undefined
+        ? !table.sourceSchema
         : table.sourceSchema !== undefined ||
           sourceIds.length > 0 ||
           table.rows === undefined
@@ -187,6 +217,15 @@ export const visualTableSpecSchema: z.ZodType<VisualTableSpec> = z
     const rows = new Set(table.rows?.map((r) => r.id));
     if (rows.size !== (table.rows?.length ?? 0))
       fail("Идентификаторы строк должны быть уникальными.");
+    if (
+      table.sourceResultSetId &&
+      table.rows?.some((row) =>
+        row.id.startsWith(`${table.sourceResultSetId}:`),
+      )
+    )
+      fail(
+        "Идентификатор добавленной строки не должен совпадать с пространством строк снимка SQL.",
+      );
     for (const row of table.rows ?? [])
       for (const [columnId, value] of Object.entries(row.values)) {
         const column = columns.get(columnId);
@@ -194,18 +233,14 @@ export const visualTableSpecSchema: z.ZodType<VisualTableSpec> = z
           fail("Неверный столбец или тип значения в строке.");
       }
     const edits = new Set<string>();
+    // Older documents may contain source-cell overlays. Keep them readable;
+    // new edits must go through the protected setVisualTableCell boundary.
     for (const edit of table.edits) {
       const column = columns.get(edit.columnId),
         key = JSON.stringify([edit.rowId, edit.columnId]);
       if (!column || !accepts(column, edit.value))
         fail("Неверный столбец или тип локальной правки.");
-      if (
-        table.sourceResultSetId
-          ? !new RegExp(`^${table.sourceResultSetId}:(0|[1-9]\\d*)$`).test(
-              edit.rowId,
-            )
-          : !rows.has(edit.rowId)
-      )
+      if (!rows.has(edit.rowId) && !isSnapshotRow(table, edit.rowId))
         fail("Правка не принадлежит исходной строке таблицы.");
       if (edits.has(key)) fail("Ячейка изменена несколько раз.");
       edits.add(key);
@@ -312,6 +347,10 @@ export function setVisualTableCell(
   columnId: string,
   value: VisualTableScalar,
 ): VisualTableSpec {
+  if (isVisualTableSourceCell(table, rowId, columnId))
+    throw new Error("Исходные ячейки SQL доступны только для чтения.");
+  if (!canEditVisualTableCell(table, rowId, columnId))
+    throw new Error("Строка или столбец таблицы не найдены.");
   return visualTableSpecSchema.parse({
     ...table,
     edits: [

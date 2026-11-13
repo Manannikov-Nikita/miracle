@@ -118,10 +118,9 @@ it("aborts an evaluation when its table is unmounted", async () => {
   expect(signal.aborted).toBe(true);
 });
 
-it("commits a column formula on Enter and cancels an uncommitted edit on Escape", async () => {
+it("shows only the editable column name and sorting, with no formulas or totals", async () => {
   const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
-  const formula = vi.fn(),
-    rename = vi.fn();
+  const sort = vi.fn();
   const header = new SqlTableHeader();
   header.init({
     definition: {
@@ -129,35 +128,61 @@ it("commits a column formula on Enter and cancels an uncommitted edit on Escape"
       name: "Сумма",
       type: "number",
       formula: "Цена * 2",
+      summary: "sum",
     },
     editable: true,
-    formula,
-    rename,
-    summary: vi.fn(),
-    sort: vi.fn(),
+    rename: vi.fn(),
+    sort,
   } as never);
   host.append(header.getGui());
-  const input = host.querySelector<HTMLInputElement>(
-    '[aria-label="Формула: Сумма"]',
-  )!;
+  expect(host.querySelectorAll("input")).toHaveLength(1);
+  expect(host.querySelectorAll("button")).toHaveLength(1);
+  expect(
+    host.querySelector(
+      "select,.sql-table-column-formula,.sql-table-readonly-formula",
+    ),
+  ).toBeNull();
+  host.querySelector<HTMLButtonElement>("button")!.click();
+  expect(sort).toHaveBeenCalledTimes(1);
+});
+it("commits a name on Enter, cancels on Escape, and preserves focused drafts on refresh", async () => {
+  const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
+  const rename = vi.fn();
+  const header = new SqlTableHeader();
+  const params = {
+    definition: { id: "amount", name: "Сумма", type: "number" },
+    editable: true,
+    rename,
+    sort: vi.fn(),
+  };
+  header.init(params as never);
+  host.append(header.getGui());
+  const input = host.querySelector<HTMLInputElement>("input")!;
   input.focus();
-  input.value = "Цена * 3";
-  input.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(formula).toHaveBeenCalledWith("Цена * 3");
-  formula.mockClear();
-  input.focus();
-  input.value = "Несохранённая правка";
+  input.value = "Расчёт";
+  input.setSelectionRange(2, 4);
+  header.refresh({
+    ...params,
+    definition: { ...params.definition, name: "Итог" },
+  } as never);
+  expect(document.activeElement).toBe(input);
+  expect(input.value).toBe("Расчёт");
+  expect(input.selectionStart).toBe(2);
   input.dispatchEvent(
     new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
   );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(input.value).toBe("Цена * 2");
-  expect(formula).not.toHaveBeenCalled();
+  await new Promise((r) => setTimeout(r, 0));
+  expect(input.value).toBe("Итог");
+  expect(rename).not.toHaveBeenCalled();
+  input.focus();
+  input.value = "Всего";
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+  );
+  await new Promise((r) => setTimeout(r, 0));
+  expect(rename).toHaveBeenCalledWith("Всего");
 });
-it("does not render formula edits, sorting or deletion in a readonly column header", async () => {
+it("keeps read-only column headers free of formulas and mutation controls", async () => {
   const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
   const header = new SqlTableHeader();
   header.init({
@@ -168,111 +193,44 @@ it("does not render formula edits, sorting or deletion in a readonly column head
       formula: "Цена * 2",
     },
     editable: false,
-    formula: vi.fn(),
     rename: vi.fn(),
-    summary: vi.fn(),
     sort: vi.fn(),
-    remove: vi.fn(),
   } as never);
   host.append(header.getGui());
   expect(host.querySelector("input")?.readOnly).toBe(true);
   expect(
-    host.querySelector("button,select,.sql-table-column-formula"),
+    host.querySelector(
+      "button,select,.sql-table-column-formula,.sql-table-readonly-formula",
+    ),
   ).toBeNull();
-  expect(host.textContent).toContain("Цена * 2");
 });
-
-it("refreshes committed header values without losing a focused draft or its selection", async () => {
-  const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
-  const oldCommit = vi.fn(),
-    newCommit = vi.fn();
-  const header = new SqlTableHeader();
-  const params = {
-    definition: {
-      id: "amount",
-      name: "Сумма",
-      type: "number",
-      formula: "Цена * 2",
-    },
-    editable: true,
-    formula: oldCommit,
-    rename: vi.fn(),
-    summary: vi.fn(),
-    sort: vi.fn(),
-  };
-  header.init(params as never);
-  host.append(header.getGui());
-  const input = host.querySelector<HTMLInputElement>(
-    '[data-column-formula="amount"]',
-  )!;
-  input.focus();
-  input.value = "Цена * 3";
-  input.setSelectionRange(2, 4);
-  const refreshed = header.refresh({
-    ...params,
-    definition: { ...params.definition, name: "Расчёт", formula: "Цена * 4" },
-    formula: newCommit,
-  } as never);
-  expect(refreshed).toBe(true);
-  expect(document.activeElement).toBe(input);
-  expect(input.value).toBe("Цена * 3");
-  expect(input.selectionStart).toBe(2);
-  expect(input.selectionEnd).toBe(4);
-  input.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-  );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(input.value).toBe("Цена * 4");
-  expect(oldCommit).not.toHaveBeenCalled();
-  expect(newCommit).not.toHaveBeenCalled();
-  input.focus();
-  input.value = "Цена * 5";
-  input.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(newCommit).toHaveBeenCalledWith("Цена * 5");
-  expect(oldCommit).not.toHaveBeenCalled();
-});
-
-it("lets native focus leave a header input before committing its blur edit", async () => {
+it("lets focus reach the sort button before committing a name and flushes on teardown", async () => {
   const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
   const rename = vi.fn();
   const header = new SqlTableHeader();
   header.init({
     definition: { id: "quantity", name: "Количество", type: "number" },
-    editable: true, rename, formula: vi.fn(), summary: vi.fn(), sort: vi.fn(),
+    editable: true,
+    rename,
+    sort: vi.fn(),
   } as never);
   host.append(header.getGui());
-  const name = host.querySelector<HTMLInputElement>('[data-column-name="quantity"]')!;
-  const next = host.querySelector<HTMLInputElement>('[data-column-formula="quantity"]')!;
+  const name = host.querySelector<HTMLInputElement>("input")!;
+  const next = host.querySelector<HTMLButtonElement>("button")!;
   name.focus();
   name.value = "Штук";
   name.blur();
-  // Chromium dispatches blur before assigning focus to the click target. Mutating
-  // the modal DOM inside this gap makes Radix's observer focus the dialog itself.
   expect(rename).not.toHaveBeenCalled();
   next.focus();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((r) => setTimeout(r, 0));
   expect(rename).toHaveBeenCalledWith("Штук");
   expect(document.activeElement).toBe(next);
-});
-
-it("flushes the last name edit when its header is destroyed before the next task", async () => {
-  const { SqlTableHeader } = await import("../src/client/board/SqlTableHeader");
-  const rename = vi.fn();
-  const header = new SqlTableHeader();
-  header.init({
-    definition: { id: "quantity", name: "Количество", type: "number" },
-    editable: true, rename, formula: vi.fn(), summary: vi.fn(), sort: vi.fn(),
-  } as never);
-  host.append(header.getGui());
-  const name = host.querySelector<HTMLInputElement>('[data-column-name="quantity"]')!;
+  rename.mockClear();
   name.focus();
-  name.value = "Штук";
+  name.value = "Число";
   name.blur();
   header.destroy();
-  expect(rename).toHaveBeenCalledWith("Штук");
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(rename).toHaveBeenCalledWith("Число");
+  await new Promise((r) => setTimeout(r, 0));
   expect(rename).toHaveBeenCalledTimes(1);
 });
