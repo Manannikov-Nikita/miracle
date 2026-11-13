@@ -11,7 +11,6 @@ import TextBlockContent from "./TextBlockContent";
 import StickyNoteEditor from "./StickyNoteEditor";
 import MarkdownEditor from "./MarkdownEditor";
 import { presentationColors } from "./presentation-colors";
-import "./board.css";
 import "./canvas-tool-preview.css";
 
 const ignoreChange = () => {};
