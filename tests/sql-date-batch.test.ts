@@ -30,11 +30,27 @@ vi.mock("@monaco-editor/react", async () => {
       harness.value = props.value ?? props.defaultValue ?? "";
       harness.path = props.path;
       useEffect(() => {
+        let disposed = false;
+        const disposeListeners = new Set<() => void>();
+        const contentListeners = new Set<() => void>();
+        const modelListeners = new Set<() => void>();
+        const listen = (listeners: Set<() => void>, callback: () => void) => {
+          listeners.add(callback);
+          return { dispose: () => listeners.delete(callback) };
+        };
         const model = {
           uri: { toString: () => harness.path },
+          isDisposed: () => disposed,
           getValue: () => harness.value,
           getValueInRange: () => harness.selection,
           getOffsetAt: () => harness.cursor,
+          getPositionAt: (index: number) => {
+            const lines = harness.value.slice(0, index).split("\n");
+            return {
+              lineNumber: lines.length,
+              column: lines.at(-1)!.length + 1,
+            };
+          },
         };
         props.onMount({
           getModel: () => model,
@@ -53,11 +69,23 @@ vi.mock("@monaco-editor/react", async () => {
           onDidChangeCursorSelection: (callback: () => void) => {
             harness.selected = callback;
           },
-          onDidChangeModel() {},
+          onDidChangeModel: (callback: () => void) =>
+            listen(modelListeners, callback),
+          onDidChangeModelContent: (callback: () => void) =>
+            listen(contentListeners, callback),
+          onDidDispose: (callback: () => void) =>
+            listen(disposeListeners, callback),
           onDidScrollChange() {},
           setPosition() {},
           setScrollTop() {},
         });
+        return () => {
+          for (const listener of disposeListeners) listener();
+          disposed = true;
+          disposeListeners.clear();
+          contentListeners.clear();
+          modelListeners.clear();
+        };
       }, []);
       return createElement("textarea", {
         value: props.value,
@@ -68,7 +96,8 @@ vi.mock("@monaco-editor/react", async () => {
   };
 });
 vi.mock("monaco-editor/editor/editor.api.js", () => ({
-  editor: { defineTheme() {}, setModelLanguage() {} },
+  editor: { defineTheme() {}, setModelLanguage() {}, setModelMarkers() {} },
+  MarkerSeverity: { Error: 8, Warning: 4 },
   KeyMod: { CtrlCmd: 1, Alt: 2 },
   KeyCode: { Enter: 3, KeyL: 4, KeyS: 5 },
   languages: {
@@ -88,6 +117,7 @@ vi.mock(
   () => ({}),
 );
 vi.mock("monaco-editor/features/wordOperations/register.js", () => ({}));
+vi.mock("monaco-editor/features/hover/register.js", () => ({}));
 vi.mock("monaco-editor/editor/editor.worker.js?worker", () => ({
   default: class {},
 }));

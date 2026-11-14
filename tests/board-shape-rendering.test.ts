@@ -6,6 +6,7 @@ import BoardFlow from "../src/client/board/BoardFlow";
 import ArtifactNode, { BoardActions } from "../src/client/board/ArtifactNode";
 import type { BoardNodeData } from "../src/shared/types";
 import type { ShapeSpec } from "../src/shared/shapes";
+import type { AgentEntityWork } from "../src/shared/agent-work";
 
 const nodeTypes = { artifact: ArtifactNode };
 
@@ -54,6 +55,7 @@ describe("shape artifact rendering", () => {
       editable?: boolean;
       presentation?: boolean;
       selected?: boolean;
+      work?: AgentEntityWork;
     } = {},
   ) {
     function Canvas() {
@@ -75,6 +77,7 @@ describe("shape artifact rendering", () => {
             editable,
             presentation: options.presentation,
             canEditNode: () => editable,
+            nodeWork: () => options.work,
             update(_id, patch) {
               updates.push(patch);
               update((previous) => ({ ...previous, ...patch }));
@@ -153,6 +156,43 @@ describe("shape artifact rendering", () => {
       expect(host.querySelector("textarea")).toBeNull();
     },
   );
+
+  it("shows the worker on the existing diamond silhouette in presentation mode", async () => {
+    const work = {
+      target: { kind: "board-node", boardId: "shape-board", id: "shape" },
+      turnId: "turn",
+      chatId: "chat",
+      startedAt: "now",
+      worker: { id: "worker", name: "Фигуры", color: 2 },
+    } satisfies AgentEntityWork & {
+      worker: { id: string; name: string; color: number };
+    };
+    await render(
+      { type: "diamond", rotation: 45 },
+      {
+        editable: false,
+        presentation: true,
+        selected: true,
+        work,
+      },
+    );
+    const shape = host.querySelector<HTMLElement>(".board-artifact-shape")!;
+    expect(shape.style.getPropertyValue("--agent-work-color")).toMatch(/^#/);
+    expect(shape.querySelector('[role="status"]')?.textContent).toContain(
+      "Фигуры",
+    );
+    expect(
+      shape.querySelectorAll(
+        ".board-shape-outline > :is(polygon, rect, ellipse)",
+      ),
+    ).toHaveLength(1);
+    expect(
+      shape
+        .querySelector(".board-shape-outline > polygon")
+        ?.getAttribute("points"),
+    ).toBe("50,0 100,50 50,100 0,50");
+    expect(shape.querySelector(".board-node-header")).toBeNull();
+  });
 
   it("applies geometry and text settings while rendering HTML-like text literally", async () => {
     await render(

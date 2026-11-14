@@ -2,13 +2,26 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { customChartGuide } from "../custom-chart-guide.js";
 import { chartGuide, chartInputSchema } from "../chart-guide.js";
-import { boardKindSchema, sourceSchema } from "../validation.js";
+import {
+  boardKindSchema,
+  sourceSchema,
+  boardEdgeAppearanceSchema,
+  boardEdgePointSchema,
+} from "../validation.js";
 import { problem } from "../project-store.js";
 import type { AgentManager, ActiveAgent } from "./manager.js";
 import { entityWorkInput } from "./entity-work.js";
 import { shapeSpecSchema } from "../../shared/shapes.js";
 import { textStyleSchema } from "../../shared/text-style.js";
 import { miracleToolFailure, miracleToolSummary } from "./tool-activity.js";
+import {
+  readBoardScene,
+  readBoardItems,
+  applyBoardSpatial,
+  sceneInputSchema,
+  itemsInputSchema,
+  spatialInputSchema,
+} from "../board-agent.js";
 
 const shapeGuide =
   "Shapes use data {title,kind:'shape',text,shape:{type,...}}. Shape type is rectangle|rounded-rectangle|ellipse|triangle|diamond|hexagon|arrow|line. A line is a standalone visual shape node, not an edge; it has no connection handles. Line fields: lineDirection (horizontal|vertical|diagonal-down|diagonal-up), lineStart/lineEnd (none|arrow). Defaults are horizontal with no arrowheads; set lineEnd:arrow for an arrow. Use width/height to control length and diagonal slope; fill and text are not rendered for lines. Optional shape fields: rotation (0–360 degrees clockwise around the shape center; default 0), fill (#RRGGBB or transparent), stroke/textColor (#RRGGBB), strokeWidth (0-12), strokeStyle (solid|dashed|dotted), opacity (0-1), cornerRadius (0-50 percent), fontSize (8-144), fontFamily (sans|serif|mono), bold/italic/underline (boolean), textAlign (left|center|right), verticalAlign (top|middle|bottom). Shape text is plain text, up to 200000 characters; do not supply SVG or HTML markup as geometry. Use node width/height to resize; interactive shapes have a 40×40 minimum.";
@@ -25,6 +38,31 @@ const slideProperties = {
   background: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" },
 };
 const mutation = { baseRevision: integer, mutationId: id };
+const nullable = (schema: Record<string, unknown>) => ({
+  anyOf: [schema, { type: "null" }],
+});
+const edgePoint = nullable(z.toJSONSchema(boardEdgePointSchema));
+const edgeEndpoint = nullable({ type: "string", minLength: 1, maxLength: 200 });
+const edgeHandle = nullable({
+  type: "string",
+  enum: ["top", "right", "bottom", "left"],
+});
+const edgePatchFields = {
+  label: { type: "string", maxLength: 500 },
+  labelPosition: nullable({ type: "number", minimum: 0, maximum: 1 }),
+  appearance: z.toJSONSchema(boardEdgeAppearanceSchema),
+  source: edgeEndpoint,
+  target: edgeEndpoint,
+  sourcePoint: edgePoint,
+  targetPoint: edgePoint,
+  sourceHandle: edgeHandle,
+  targetHandle: edgeHandle,
+  bend: {
+    ...edgePoint,
+    description:
+      "Offset from endpoint midpoint, not an absolute point. Null restores automatic routing.",
+  },
+};
 const entityTargets = {
   type: "array",
   minItems: 1,
@@ -81,7 +119,15 @@ const nodePatchSchema = {
         title: string,
         kind: {
           type: "string",
-          enum: ["result", "note", "markdown", "shape", "text"],
+          enum: [
+            "result",
+            "note",
+            "markdown",
+            "shape",
+            "text",
+            "image",
+            "table",
+          ],
         },
         text: { type: "string", maxLength: 200000 },
         textStyle: {
@@ -328,6 +374,56 @@ export const miracleTools = [
     },
     ["id"],
   ),
+  {
+    ...tool(
+      "read_board_scene",
+      "Read compact board geometry and spatial relationships. Uses painted bounds, including rotation and arrowheads; saved width/height can differ. No full text, SQL, table rows or chart source. Focus nodeIds to inspect neighbors; continue pages at the returned revision. Presentations use separate slide coordinate systems.",
+    ),
+    inputSchema: sceneInputSchema,
+  },
+  {
+    ...tool(
+      "read_board_items",
+      "Read exact content only for selected nodeIds/edgeIds. Concatenate jsonChunk pages at the same returned revision until nextOffset is null, then parse JSON. Prefer read_board_scene for placement; use this only for content/settings changes.",
+    ),
+    inputSchema: itemsInputSchema,
+  },
+  {
+    ...tool(
+      "board_spatial",
+      "Atomically move, place, align, distribute or resize blocks using the same painted geometry as the UI. Requires current baseRevision; retry conflicts after reading a fresh scene. Reuse mutationId only for retrying the identical operation. Returns compact changed geometry, never full board content.",
+      {},
+      [],
+      false,
+    ),
+    inputSchema: spatialInputSchema,
+  },
+  tool(
+    "delegate_board_task",
+    "Delegate a short, independent board-editing task to a real isolated worker using the current profile/model. Supply exact existing nodeIds/edgeIds; each worker can write only its reserved scope. At most two run concurrently; overlapping scopes wait. Prefer delegation for independent groups of simple edits, batching related edits into one task. Release your overlapping claims first. Workers receive no parent history. Poll board_task_status for bounded completion summaries; do not repeat the edits yourself. A mutationId deduplicates task creation.",
+    {
+      id,
+      name: { type: "string", minLength: 1, maxLength: 80 },
+      task: { type: "string", minLength: 1, maxLength: 4000 },
+      nodeIds: { type: "array", maxItems: 100, items: string },
+      edgeIds: { type: "array", maxItems: 100, items: string },
+      mutationId: id,
+    },
+    ["id", "name", "task", "mutationId"],
+    false,
+  ),
+  tool(
+    "board_task_status",
+    "Read bounded statuses and short summaries of this turn's managed board workers. Optional waitMs waits for a change for at most 10000ms. Failed or cancelled tasks may have already committed edits; inspect the current scene before retrying.",
+    { taskId: id, waitMs: { type: "integer", minimum: 0, maximum: 10000 } },
+  ),
+  tool(
+    "cancel_board_task",
+    "Stop one managed board worker, revoke its capability and release reservations after its process and in-flight calls stop. Committed edits are retained. Other workers continue.",
+    { taskId: id },
+    ["taskId"],
+    false,
+  ),
   tool(
     "create_board",
     "Create a named board or presentation. A new presentation starts with one slide unless a full document is supplied. Optional document uses schemaVersion 1 and flat nodes and edges arrays. A presentation document has kind:'presentation' and ordered slides [{id,title,background}], and every node and edge has slideId. For nodes: type artifact, position {x,y}, data {title,kind: result|note|markdown|shape|text|image}; result nodes reference resultSetId. Image nodes preserve an existing image reference {id,name,mimeType,size,alt?,fit?}; upload images through the UI first. Use mutationId UUID. " +
@@ -346,6 +442,12 @@ export const miracleTools = [
       id,
       ...mutation,
       name: string,
+      response: {
+        type: "string",
+        enum: ["compact", "document"],
+        description:
+          "Use compact for a small id/revision receipt; avoids copying unrelated board content.",
+      },
       operations: {
         type: "array",
         items: {
@@ -367,7 +469,16 @@ export const miracleTools = [
               ],
             },
             id: string,
-            patch: nodePatchSchema,
+            patch: {
+              ...nodePatchSchema,
+              description:
+                "update_node uses position/width/height/data; update_edge uses label/appearance/source/target/points/handles/bend; update_slide uses title/background. For attached edge ends use source/target node IDs; for free ends use sourcePoint/targetPoint. Detach by clearing node and handle to null and supplying point; reattach by clearing point to null. Null resets optional edge fields.",
+              properties: {
+                ...nodePatchSchema.properties,
+                ...edgePatchFields,
+                ...slideProperties,
+              },
+            },
             node: object,
             edge: object,
             slide: {
@@ -427,18 +538,9 @@ export async function callMiracleTool(
   name: string,
   input: unknown,
 ) {
-  return manager.store.work.runAs(
-    {
-      turnId: active.turn.id,
-      chatId: active.turn.chatId,
-      isActive: () =>
-        manager.active === active &&
-        !active.cancelled &&
-        ["running", "waiting"].includes(
-          manager.store.turn(active.turn.id).status,
-        ),
-    },
-    async () => {
+  return manager.withToolCall(active, () =>
+    manager.store.work.runAs(manager.workActor(active), async () => {
+      manager.authorizeTool(active, name, input);
       // Permission callbacks already own an approval/question lifecycle.
       if (name === "permission_prompt")
         return executeMiracleTool(manager, active, name, input);
@@ -446,7 +548,20 @@ export async function callMiracleTool(
       const tool = miracleTools.some((entry) => entry.name === name)
         ? name
         : "unknown_tool";
-      const details = { id: randomUUID(), source: "miracle", tool };
+      const details = {
+        id: randomUUID(),
+        source: "miracle",
+        tool,
+        ...(active.worker
+          ? {
+              worker: {
+                id: active.worker.id,
+                name: active.worker.name,
+                color: active.worker.color,
+              },
+            }
+          : {}),
+      };
       const started = performance.now();
       const write = (extra: Record<string, unknown>) =>
         manager.store.message(
@@ -457,7 +572,8 @@ export async function callMiracleTool(
           { ...details, ...extra },
         );
       const stillOwned = () =>
-        manager.active === active &&
+        (manager.active === active ||
+          (active.worker && manager.active?.turn.id === active.turn.id)) &&
         !active.ending &&
         ["running", "waiting"].includes(
           manager.store.turn(active.turn.id).status,
@@ -485,7 +601,7 @@ export async function callMiracleTool(
           });
         throw error;
       }
-    },
+    }),
   );
 }
 
@@ -496,7 +612,7 @@ async function executeMiracleTool(
   input: unknown,
 ) {
   manager.store.work.assertActor();
-  if (manager.active !== active || active.cancelled)
+  if (!manager.isActive(active))
     throw problem(401, "Agent task is no longer active");
   const args = z.record(z.string(), z.unknown()).parse(input || {});
   const key = () => z.uuid().parse(args.id);
@@ -507,12 +623,29 @@ async function executeMiracleTool(
   switch (name) {
     case "begin_entity_work": {
       const { entities } = entityWorkInput.parse(args);
-      result = store.work.begin(entities);
+      const snapshot = store.work.begin(entities);
+      result = active.worker
+        ? {
+            ...snapshot,
+            locks: snapshot.locks.filter(
+              (lock) => lock.worker?.id === active.worker!.id,
+            ),
+          }
+        : snapshot;
       break;
     }
-    case "end_entity_work":
-      result = store.work.end(entityWorkInput.parse(args).entities);
+    case "end_entity_work": {
+      const snapshot = store.work.end(entityWorkInput.parse(args).entities);
+      result = active.worker
+        ? {
+            ...snapshot,
+            locks: snapshot.locks.filter(
+              (lock) => lock.worker?.id === active.worker!.id,
+            ),
+          }
+        : snapshot;
       break;
+    }
     case "project_context":
       result = { ...store.context, targets: active.turn.context };
       break;
@@ -622,13 +755,45 @@ async function executeMiracleTool(
       } else result = board;
       break;
     }
+    case "read_board_scene":
+      result = readBoardScene(ops, args);
+      break;
+    case "read_board_items":
+      result = readBoardItems(ops, args);
+      break;
+    case "board_spatial":
+      result = applyBoardSpatial(ops, args);
+      break;
+    case "delegate_board_task":
+      result = await manager.startBoardTask(active, args);
+      break;
+    case "board_task_status":
+      result = await manager.boardTaskStatus(active, args);
+      break;
+    case "cancel_board_task":
+      result = await manager.cancelBoardTask(active, args);
+      break;
     case "create_board":
       z.uuid().parse(args.mutationId);
       result = ops.createBoard(args);
       break;
-    case "board_patch":
-      result = ops.patchBoard(key(), args);
+    case "board_patch": {
+      const mode = z
+        .enum(["compact", "document"])
+        .default("document")
+        .parse(args.response);
+      const board = ops.patchBoard(key(), args);
+      result =
+        active.worker || mode === "compact"
+          ? {
+              id: board.id,
+              name: board.name,
+              revision: board.revision,
+              updatedAt: board.updatedAt,
+            }
+          : board;
       break;
+    }
     case "custom_chart_guide":
       result = customChartGuide;
       break;
@@ -692,7 +857,7 @@ async function executeMiracleTool(
       throw problem(404, "Unknown Miracle tool");
   }
   store.work.assertActor();
-  if (manager.active !== active || active.cancelled)
+  if (!manager.isActive(active))
     throw problem(401, "Agent task ended during tool call");
   const json = JSON.stringify(result);
   if (Buffer.byteLength(json) > responseLimit) {

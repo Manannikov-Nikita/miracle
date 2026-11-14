@@ -47,6 +47,7 @@ const documentTools = new Set([
   "read_board",
   "create_board",
   "board_patch",
+  "board_spatial",
 ]);
 const queryStatuses: Record<string, string> = {
   running: "выполняется",
@@ -81,6 +82,29 @@ export function miracleToolSummary(
     };
   }
   switch (name) {
+    case "read_board_scene":
+      return {
+        summary: Array.isArray(result?.items)
+          ? `Получено объектов сцены: ${result.items.length}`
+          : "Геометрия доски получена",
+        ...resources([value]),
+      };
+    case "read_board_items":
+      return {
+        summary: "Содержимое выбранных объектов получено",
+        ...resources([value]),
+      };
+    case "delegate_board_task":
+      return {
+        summary:
+          result?.status === "queued"
+            ? "Задача ожидает свободных объектов"
+            : "Задача передана исполнителю",
+      };
+    case "board_task_status":
+      return { summary: "Состояние исполнителей получено" };
+    case "cancel_board_task":
+      return { summary: "Исполнитель остановлен" };
     case "run_query":
     case "refresh_node":
       return { summary: "Запрос запущен", ...resources([value], "SQL-запрос") };

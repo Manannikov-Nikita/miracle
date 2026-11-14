@@ -145,3 +145,53 @@ it("keeps dismissed target and idempotency token when a new-chat message is retr
   expect(sent[1].context.boardNodes).toEqual([]);
   expect(sent[1].clientRequestId).toBe(sent[0].clientRequestId);
 });
+
+it("keeps edge dismissal separate from a node with the same ID across retries", async () => {
+  await act(async () => {
+    Object.assign(context, { boardEdges: [{ id: "chart-a", label: "Связь" }] });
+    project.contextChanged();
+  });
+  await type("Explain");
+  const remove = host.querySelector<HTMLButtonElement>(
+    '[aria-label="Убрать стрелку Связь из контекста"]',
+  );
+  expect(remove).not.toBeNull();
+  await act(async () => remove!.click());
+  const submit = () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+      .click();
+  await act(async () => submit());
+  await act(async () => submit());
+  expect(sent).toHaveLength(2);
+  for (const attempt of sent) {
+    expect(attempt.context.boardEdges).toEqual([]);
+    expect(attempt.context.boardNodes).toEqual([
+      { id: "chart-a", title: "Revenue" },
+    ]);
+  }
+  expect(sent[1].clientRequestId).toBe(sent[0].clientRequestId);
+});
+
+it("uses a fresh request identity when the same draft targets a different edge", async () => {
+  const select = async (id: string) => {
+    await act(async () => {
+      Object.assign(context, { boardEdges: [{ id, label: "Стрелка" }] });
+      project.contextChanged();
+    });
+  };
+  const submit = () =>
+    host
+      .querySelector<HTMLButtonElement>('[aria-label="Отправить сообщение"]')!
+      .click();
+  await select("first-edge");
+  await type("Explain");
+  await act(async () => submit());
+  await select("second-edge");
+  await act(async () => submit());
+  expect(sent.map((attempt) => attempt.context.boardEdges?.[0]?.id)).toEqual([
+    "first-edge",
+    "second-edge",
+  ]);
+  expect(sent[1].clientRequestId).not.toBe(sent[0].clientRequestId);
+});

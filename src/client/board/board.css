@@ -350,6 +350,9 @@
 .board-artifact-selected {
   border-color: var(--board-accent);
 }
+.board-artifact.agent-work-active {
+  --board-work-accent: var(--agent-work-color, var(--board-accent));
+}
 @property --agent-border-angle {
   syntax: "<angle>";
   inherits: false;
@@ -358,20 +361,57 @@
 /* Paint the gradient inside the existing border, including its rounded corners. */
 .board-artifact.agent-work-active:not(.board-artifact-shape):not(
     .board-artifact-text
-  ):not(.presentation-artifact) {
+  ):not(.presentation-artifact):not(.board-artifact-image[data-agent-worker]) {
   border-color: transparent;
   background:
     linear-gradient(var(--board-artifact-fill), var(--board-artifact-fill))
       padding-box,
     conic-gradient(
         from var(--agent-border-angle),
-        color-mix(in srgb, var(--board-accent) 25%, var(--board-border)) 0% 35%,
-        var(--board-accent) 70%,
-        color-mix(in srgb, var(--board-accent) 65%, white) 85%,
-        color-mix(in srgb, var(--board-accent) 25%, var(--board-border)) 100%
+        color-mix(in srgb, var(--board-work-accent) 25%, var(--board-border)) 0%
+          35%,
+        var(--board-work-accent) 70%,
+        color-mix(in srgb, var(--board-work-accent) 65%, white) 85%,
+        color-mix(in srgb, var(--board-work-accent) 25%, var(--board-border))
+          100%
       )
       border-box;
   animation: agent-board-border 3.6s linear infinite;
+}
+.board-artifact[data-agent-worker]:is(
+    .board-artifact-text,
+    .board-artifact-image,
+    .presentation-artifact
+  ):not(.board-artifact-shape) {
+  position: relative;
+  outline: max(1px, var(--board-resize-unit)) solid var(--board-work-accent);
+  outline-offset: -1px;
+}
+.board-node-agent-indicator {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% + 4px);
+  left: 0;
+  pointer-events: none;
+  transform: rotate(calc(-1 * var(--board-shape-rotation, 0deg)));
+  transform-origin: left bottom;
+}
+.board-node-agent-indicator .agent-work-indicator,
+.board-edge-agent-indicator .agent-worker {
+  max-width: 200px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+}
+.board-node-header > .agent-worker {
+  max-width: 45%;
+  color: inherit;
+}
+.react-flow__node:focus-visible .agent-worker,
+.board-artifact-selected .agent-worker {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .board-artifact-shape.agent-work-active
   .board-shape-outline
@@ -385,13 +425,17 @@
   animation: agent-shape-gradient 3.6s linear infinite;
 }
 .board-shape-work-gradient stop {
-  stop-color: color-mix(in srgb, var(--board-accent) 25%, var(--board-border));
+  stop-color: color-mix(
+    in srgb,
+    var(--board-work-accent) 25%,
+    var(--board-border)
+  );
 }
 .board-shape-work-gradient stop:nth-child(3) {
-  stop-color: var(--board-accent);
+  stop-color: var(--board-work-accent);
 }
 .board-shape-work-gradient stop:last-child {
-  stop-color: color-mix(in srgb, var(--board-accent) 65%, white);
+  stop-color: color-mix(in srgb, var(--board-work-accent) 65%, white);
 }
 @keyframes agent-board-border {
   to {
@@ -406,7 +450,7 @@
 @media (prefers-reduced-motion: reduce) {
   .board-artifact.agent-work-active:not(.board-artifact-shape):not(
       .board-artifact-text
-    ):not(.presentation-artifact),
+    ):not(.presentation-artifact):not(.board-artifact-image[data-agent-worker]),
   .board-artifact-shape.agent-work-active .board-shape-work-gradient {
     animation: none;
   }

@@ -24,6 +24,13 @@ const harness = vi.hoisted(() => ({
   reveals: 0,
   focuses: 0,
   modelAvailable: true,
+  markers: [] as Array<{
+    message: string;
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  }>,
   undo: () => {},
   type: (_value: string) => {},
 }));
@@ -55,6 +62,14 @@ vi.mock("@monaco-editor/react", async () => {
       useEffect(() => {
         type Edit = { range: typeof harness.selection; text: string };
         const undo: string[] = [];
+        const contentListeners = new Set<() => void>();
+        const modelListeners = new Set<() => void>();
+        const disposeListeners = new Set<() => void>();
+        let disposed = false;
+        const listen = (listeners: Set<() => void>, callback: () => void) => {
+          listeners.add(callback);
+          return { dispose: () => listeners.delete(callback) };
+        };
         const offset = (lineNumber: number, column: number) =>
           harness.value
             .split("\n")
@@ -63,6 +78,7 @@ vi.mock("@monaco-editor/react", async () => {
           column -
           1;
         const changed = () => {
+          for (const listener of contentListeners) listener();
           latest.current.onChange(harness.value);
           redraw((n) => n + 1);
         };
@@ -78,6 +94,7 @@ vi.mock("@monaco-editor/react", async () => {
         };
         const model = {
           uri: { toString: () => latest.current.path },
+          isDisposed: () => disposed,
           getValue: () => harness.value,
           getValueInRange: () => "",
           getOffsetAt: (position: { lineNumber: number; column: number }) =>
@@ -110,7 +127,7 @@ vi.mock("@monaco-editor/react", async () => {
           changed();
         };
         props.onMount({
-          getModel: () => (harness.modelAvailable ? model : null),
+          getModel: () => (harness.modelAvailable && !disposed ? model : null),
           getSelection: () => harness.selection,
           getSelections: () => [harness.selection],
           setSelection: (selection: typeof harness.selection) => {
@@ -132,7 +149,12 @@ vi.mock("@monaco-editor/react", async () => {
           addAction() {},
           onDidChangeCursorPosition() {},
           onDidChangeCursorSelection() {},
-          onDidChangeModel() {},
+          onDidChangeModel: (callback: () => void) =>
+            listen(modelListeners, callback),
+          onDidChangeModelContent: (callback: () => void) =>
+            listen(contentListeners, callback),
+          onDidDispose: (callback: () => void) =>
+            listen(disposeListeners, callback),
           onDidScrollChange() {},
           pushUndoStop: () => !harness.readOnly,
           executeEdits: (_source: string, edits: Edit[]) => {
@@ -144,6 +166,13 @@ vi.mock("@monaco-editor/react", async () => {
             return true;
           },
         });
+        return () => {
+          for (const listener of disposeListeners) listener();
+          disposed = true;
+          contentListeners.clear();
+          modelListeners.clear();
+          disposeListeners.clear();
+        };
       }, []);
       return createElement("textarea", {
         "aria-label": "Monaco model",
@@ -162,7 +191,18 @@ vi.mock("monaco-editor/editor/editor.api.js", () => ({
       public endColumn: number,
     ) {}
   },
-  editor: { defineTheme() {}, setModelLanguage() {} },
+  editor: {
+    defineTheme() {},
+    setModelLanguage() {},
+    setModelMarkers: (
+      _model: unknown,
+      _owner: string,
+      markers: typeof harness.markers,
+    ) => {
+      harness.markers = markers;
+    },
+  },
+  MarkerSeverity: { Error: 8, Warning: 4 },
   KeyMod: { CtrlCmd: 1, Alt: 2 },
   KeyCode: { Enter: 3, KeyL: 4, KeyS: 5 },
   languages: {
@@ -182,6 +222,7 @@ vi.mock(
   () => ({}),
 );
 vi.mock("monaco-editor/features/wordOperations/register.js", () => ({}));
+vi.mock("monaco-editor/features/hover/register.js", () => ({}));
 vi.mock("monaco-editor/editor/editor.worker.js?worker", () => ({
   default: class {},
 }));
@@ -251,6 +292,7 @@ beforeEach(async () => {
   harness.reveals = 0;
   harness.focuses = 0;
   harness.modelAvailable = true;
+  harness.markers = [];
   harness.selection = {
     startLineNumber: 2,
     startColumn: 4,
@@ -342,6 +384,51 @@ async function release() {
 }
 const visibleSql = () =>
   container.querySelector<HTMLTextAreaElement>("textarea")!.value;
+
+it("prevalidates typed SQL without running it and clears diagnostics after correction", async () => {
+  const invalid = "SELECT city, sum(amount) FROM sales;";
+  await act(async () => harness.type(invalid));
+  await act(async () => vi.advanceTimersByTimeAsync(350));
+  expect(harness.markers).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        message: expect.stringContaining("GROUP BY"),
+        startLineNumber: 1,
+        startColumn: 8,
+        endColumn: 12,
+      }),
+    ]),
+  );
+  expect(visibleSql()).toBe(invalid);
+  expect(
+    container.querySelector<HTMLButtonElement>(".run-button")?.disabled,
+  ).toBe(false);
+  expect(
+    vi
+      .mocked(fetch)
+      .mock.calls.some(([path]) => String(path).includes("/query-runs")),
+  ).toBe(false);
+  const corrected = "SELECT city, sum(amount) FROM sales GROUP BY city;";
+  await act(async () => harness.type(corrected));
+  await act(async () => vi.advanceTimersByTimeAsync(350));
+  expect(harness.markers).toEqual([]);
+  expect(visibleSql()).toBe(corrected);
+});
+
+it("refreshes diagnostics after remote agent edits while the editor stays read-only", async () => {
+  await claim();
+  await receive("SELECT city, sum(amount) FROM sales;", 2);
+  await act(async () => vi.advanceTimersByTimeAsync(350));
+  expect(
+    harness.markers.some((marker) => marker.message.includes("GROUP BY")),
+  ).toBe(true);
+  expect(harness.readOnly).toBe(true);
+  await receive("SELECT city, sum(amount) FROM sales GROUP BY city;", 3);
+  await act(async () => vi.advanceTimersByTimeAsync(350));
+  expect(harness.markers).toEqual([]);
+  expect(harness.readOnly).toBe(true);
+  expect(writes).toEqual([]);
+});
 
 it("updates the existing read-only Monaco model while the agent owns the editor, retaining view and undo", async () => {
   const selection = { ...harness.selection };

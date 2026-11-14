@@ -674,3 +674,60 @@ it("replays a pre-presentation board creation request with the legacy default do
   );
   expect(operations.boards()).toHaveLength(1);
 });
+
+it("loads each board once per ownership operation and sees new incident edges on the next operation", () => {
+  const base = board();
+  const other = board();
+  const targets = [
+    ...["a", "b", "c"].map((id) => ({
+      kind: "board-node" as const,
+      boardId: base.id,
+      id,
+    })),
+    ...["a", "b"].map((id) => ({
+      kind: "board-node" as const,
+      boardId: other.id,
+      id,
+    })),
+  ];
+  const actor = { turnId: randomUUID(), chatId, isActive: () => true };
+  const queried = vi.spyOn(db, "query");
+  const boardReads = () =>
+    queried.mock.calls.flatMap(([sql, params]) =>
+      sql === "SELECT document FROM boards WHERE id=?1" ? [params?.[0]] : [],
+    );
+  const ids = (items: { id: string }[]) => items.map(({ id }) => id).sort();
+  const expected = ["a", "a", "ab", "ab", "b", "b", "c"];
+  try {
+    expect(ids(store.work.boardReservation(targets))).toEqual(expected);
+    expect(boardReads()).toEqual([base.id, other.id]);
+    queried.mockClear();
+    const claimed = store.work.runAs(actor, () => store.work.begin(targets));
+    expect(ids(claimed.locks.map(({ target }) => target))).toEqual(expected);
+    expect(boardReads()).toEqual([base.id, other.id]);
+
+    store.work.releaseTurn(actor.turnId);
+    operations.patchBoard(base.id, {
+      baseRevision: base.revision,
+      mutationId: randomUUID(),
+      operations: [
+        { type: "add_edge", edge: { id: "ac", source: "a", target: "c" } },
+      ],
+    });
+    queried.mockClear();
+    const next = store.work.runAs(actor, () => store.work.begin(targets));
+    expect(ids(next.locks.map(({ target }) => target))).toEqual([
+      "a",
+      "a",
+      "ab",
+      "ab",
+      "ac",
+      "b",
+      "b",
+      "c",
+    ]);
+    expect(boardReads()).toEqual([base.id, other.id]);
+  } finally {
+    queried.mockRestore();
+  }
+});

@@ -91,7 +91,8 @@
 }
 .sql-table-grid {
   flex: 1;
-  min-height: 80px;
+  min-height: 0;
+  min-width: 0;
   width: 100%;
 }
 .board-sql-table .ag-root-wrapper {
@@ -122,66 +123,33 @@
   width: 100%;
   min-width: 0;
 }
-.sql-table-column-title input {
-  width: 100%;
+.board-workspace .board-sql-table .sql-table-column-name,
+.board-sql-table .sql-table-column-name {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
   padding: 2px 0;
-  font-weight: 600;
+  overflow: hidden;
   text-overflow: ellipsis;
-  border-color: transparent;
+  text-align: left;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--sql-table-text);
+  border: 0;
   background: transparent;
 }
-.sql-table-column-title input:not([readonly]):hover {
-  border-color: var(--sql-table-border);
+.board-workspace .board-sql-table button.sql-table-column-name:hover,
+.board-sql-table .is-editing .sql-table-column-name {
+  color: var(--sql-table-accent);
+  background: transparent;
 }
-.sql-table-column-title button {
+.board-workspace .board-sql-table .sql-table-column-sort {
   padding: 0 2px;
   min-width: 18px;
   font-size: 14px;
   color: var(--sql-table-muted);
-}
-.sql-table-column-title .sql-table-column-remove {
-  opacity: 0;
-}
-.sql-table-column-title:hover .sql-table-column-remove,
-.sql-table-column-title:focus-within .sql-table-column-remove {
-  opacity: 1;
-}
-.sql-table-column-formula {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-.sql-table-column-formula > span {
-  font-style: italic;
-  color: var(--sql-table-accent);
-}
-.sql-table-column-formula input {
-  width: 100%;
-  padding: 3px 4px;
-  font-size: 11px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
-.sql-table-column-header > select {
-  width: fit-content;
-  padding: 1px 18px 1px 0;
-  height: 20px;
-  border-color: transparent;
-  font-size: 10px;
-  color: var(--sql-table-muted);
-  background: transparent;
-}
-.sql-table-column-header option {
-  color: var(--sql-table-text);
-  background: var(--sql-table-bg);
-}
-.sql-table-readonly-formula {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--sql-table-muted);
-  font-size: 10px;
 }
 .sql-table-numeric {
   text-align: right;
@@ -320,33 +288,83 @@
 .sql-table-query summary {
   cursor: pointer;
 }
-.modal.sql-table-modal {
-  width: min(1400px, calc(100vw - 64px));
-  max-width: none;
-  height: min(880px, calc(100dvh - 64px));
-  max-height: calc(100dvh - 64px);
-  display: flex;
-  flex-direction: column;
-}
-.sql-table-modal > .modal-heading {
-  flex-shrink: 0;
-}
-.sql-table-modal .board-sql-table {
-  flex: 1;
-  border: 1px solid var(--sql-table-border);
-}
-.sql-table-opened {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 12px;
-  color: var(--board-muted, var(--muted));
-  font-size: 12px;
-}
 .sql-table-confirm {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 20px;
+}
+
+.sql-table-grid-area {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 80px;
+}
+.board-workspace .board-sql-table button.sql-table-add-column {
+  width: 32px;
+  min-width: 32px;
+  align-items: flex-start;
+  padding-top: 10px;
+  border: 0;
+  border-left: 1px solid var(--sql-table-border);
+  border-radius: 0;
+  color: var(--sql-table-muted);
+  background: var(--sql-table-bg);
+}
+.board-workspace .board-sql-table button.sql-table-add-row {
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 0;
+  border-top: 1px solid var(--sql-table-border);
+  border-radius: 0;
+  color: var(--sql-table-muted);
+  font-size: 11px;
+}
+.board-workspace
+  .board-sql-table
+  button.sql-table-add-column:hover:not(:disabled),
+.board-workspace
+  .board-sql-table
+  button.sql-table-add-row:hover:not(:disabled) {
+  color: var(--sql-table-accent);
+  background: color-mix(
+    in srgb,
+    var(--sql-table-accent) 8%,
+    var(--sql-table-bg)
+  );
+}
+.board-sql-table .ag-cell.sql-table-source-cell {
+  background-color: color-mix(in srgb, var(--sql-table-accent) 9%, transparent);
+}
+.sql-table-source-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  color: var(--sql-table-accent);
+}
+.sql-table-columns-menu {
+  max-height: min(440px, 70dvh);
+  overflow-y: auto;
+}
+.sql-table-columns-menu [role="menuitem"] {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sql-table-row-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--sql-table-muted);
+  border-top: 1px solid var(--sql-table-border);
+}
+.sql-table-row-notice span {
+  flex: 1;
 }

@@ -57,14 +57,19 @@ function tokenize(sql: string, engine?: Engine) {
   const tokens: Token[] = [];
   const clean = sql.split("");
   let depth = 0;
+  let complete = true;
   for (let i = 0; i < sql.length;) {
     const start = i;
     if (/\s/.test(sql[i])) {
       i++;
       continue;
     }
-    if (sql.startsWith("--", i) || sql.startsWith("/*", i)) {
-      if (sql.startsWith("--", i)) {
+    if (
+      sql.startsWith("--", i) ||
+      sql.startsWith("/*", i) ||
+      (engine === "clickhouse" && sql[i] === "#")
+    ) {
+      if (sql.startsWith("--", i) || sql[i] === "#") {
         while (i < sql.length && sql[i] !== "\n") i++;
       } else {
         let nesting = 1;
@@ -78,15 +83,26 @@ function tokenize(sql: string, engine?: Engine) {
             i += 2;
           } else i++;
         }
+        if (nesting) complete = false;
       }
       for (let j = start; j < i; j++) if (clean[j] !== "\n") clean[j] = " ";
       continue;
     }
     let kind: Token["kind"] = "symbol";
     const delimiter = sql[i];
-    if (delimiter === "'" || delimiter === '"' || delimiter === "`") {
+    const heredoc =
+      engine === "clickhouse" && delimiter === "$"
+        ? sql.slice(i).match(/^\$(?:[A-Za-z_][\w]*)?\$/)?.[0]
+        : undefined;
+    if (heredoc) {
+      kind = "string";
+      const end = sql.indexOf(heredoc, i + heredoc.length);
+      complete &&= end >= 0;
+      i = end < 0 ? sql.length : end + heredoc.length;
+    } else if (delimiter === "'" || delimiter === '"' || delimiter === "`") {
       kind = delimiter === "'" ? "string" : "quoted";
       i++;
+      let closed = false;
       while (i < sql.length) {
         if (engine === "clickhouse" && sql[i] === "\\")
           i += Math.min(2, sql.length - i);
@@ -94,10 +110,12 @@ function tokenize(sql: string, engine?: Engine) {
           if (sql[i + 1] === delimiter) i += 2;
           else {
             i++;
+            closed = true;
             break;
           }
         } else i++;
       }
+      if (!closed) complete = false;
     } else {
       word.lastIndex = i;
       number.lastIndex = i;
@@ -116,8 +134,19 @@ function tokenize(sql: string, engine?: Engine) {
     tokens.push({ kind, text, start, end: i, depth });
     if (kind === "symbol" && open(text)) depth++;
   }
-  return { tokens, clean: clean.join("") };
+  return { tokens, clean: clean.join(""), complete };
 }
+
+// Shared structural primitives retain UTF-16 offsets. Semantic callers must
+// still reject incomplete or unsupported shapes rather than treating this as a parser.
+export {
+  tokenize as tokenizeSqlContext,
+  queryScopes as sqlQueryScopes,
+  clausesFor as sqlScopeClauses,
+  listItems as sqlScopeListItems,
+  projection as sqlProjection,
+};
+export type { Token as SqlContextToken, Scope as SqlQueryScope };
 
 function queryScopes(tokens: Token[], length: number) {
   const scopes: Scope[] = [];
@@ -349,20 +378,30 @@ function listItems(
 }
 
 /** Explicit projection aliases, grouped by SELECT, with original SQL offsets. */
-export function sqlSelectAliasOffsets(sql: string, engine?: Engine): number[][] {
+export function sqlSelectAliasOffsets(
+  sql: string,
+  engine?: Engine,
+): number[][] {
   const { tokens } = tokenize(sql, engine);
   return queryScopes(tokens, sql.length).map((scope) => {
     const end = clausesFor(tokens, scope)[1]?.start ?? scope.end;
-    return listItems(tokens, tokens[scope.index].end, end, scope.depth, true)
-      .flatMap((item) => {
-        const alias = item.at(-1);
-        const as = item.at(-2);
-        return item.length >= 3 &&
-          isName(alias) && alias?.depth === scope.depth &&
-          isWord(as, "AS") && as?.depth === scope.depth
-          ? [as.start]
-          : [];
-      });
+    return listItems(
+      tokens,
+      tokens[scope.index].end,
+      end,
+      scope.depth,
+      true,
+    ).flatMap((item) => {
+      const alias = item.at(-1);
+      const as = item.at(-2);
+      return item.length >= 3 &&
+        isName(alias) &&
+        alias?.depth === scope.depth &&
+        isWord(as, "AS") &&
+        as?.depth === scope.depth
+        ? [as.start]
+        : [];
+    });
   });
 }
 

@@ -60,6 +60,7 @@ vi.mock(
   () => ({}),
 );
 vi.mock("monaco-editor/features/wordOperations/register.js", () => ({}));
+vi.mock("monaco-editor/features/hover/register.js", () => ({}));
 vi.mock("monaco-editor/editor/editor.worker.js?worker", () => ({
   default: class {},
 }));

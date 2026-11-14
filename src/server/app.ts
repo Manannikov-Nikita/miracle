@@ -1284,7 +1284,7 @@ export async function buildApp(
             .number()
             .int()
             .min(0)
-            .max(VISUAL_TABLE_LIMITS.sourceRows)
+            .max(VISUAL_TABLE_LIMITS.sourceRows + VISUAL_TABLE_LIMITS.manualRows)
             .optional(),
           limit: z
             .number()

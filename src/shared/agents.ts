@@ -76,6 +76,7 @@ export interface AgentTargetContext {
   selection?: string;
   filePaths?: string[];
   boardNodes?: { id: string; title: string }[];
+  boardEdges?: { id: string; label: string }[];
 }
 export interface AgentTurn {
   id: string;

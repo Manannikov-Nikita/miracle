@@ -1,4 +1,5 @@
 import type { AgentMessage } from "../../shared/agents";
+import { agentWorkColor } from "../../shared/agent-work";
 import {
   codexActivitySubagent,
   type AgentSubagent,
@@ -19,13 +20,14 @@ const statuses = new Set([
   "closed",
   "unknown",
 ]);
+type ActivitySubagent = AgentSubagent & { color?: string };
 
 /** Provider snapshots can update status alone; retain the last known task/name. */
 export function agentSubagents(
   messages: AgentMessage[],
   turnId: string | null,
-): AgentSubagent[] {
-  const children = new Map<string, AgentSubagent>();
+): ActivitySubagent[] {
+  const children = new Map<string, ActivitySubagent>();
   if (!turnId) return [];
   for (const message of messages) {
     if (message.turnId !== turnId || message.role !== "action") continue;
@@ -46,13 +48,24 @@ export function agentSubagents(
     )
       continue;
     const previous = children.get(value.id);
-    const child: AgentSubagent = {
+    const child: ActivitySubagent = {
       ...previous,
       id: value.id,
       status: value.status as AgentSubagent["status"],
     };
     for (const field of ["name", "task", "parentId", "message"] as const) {
       if (typeof value[field] === "string") child[field] = value[field];
+    }
+    const worker = message.details?.worker;
+    if (
+      worker &&
+      typeof worker === "object" &&
+      "id" in worker &&
+      worker.id === child.id &&
+      "color" in worker &&
+      typeof worker.color === "number"
+    ) {
+      child.color = agentWorkColor(worker.color) ?? child.color;
     }
     children.set(child.id, child);
   }

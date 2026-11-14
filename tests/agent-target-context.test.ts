@@ -431,3 +431,64 @@ it("summarizes the selected custom chart without embedding source and exposes it
     "javascript",
   );
 });
+
+it("validates selected edges against the board and slide and persists canonical labels", () => {
+  const board = operations.createBoard({
+    name: "Deck",
+    document: {
+      kind: "presentation",
+      schemaVersion: 1,
+      slides: [
+        { id: "one", title: "Slide one", background: "#ffffff" },
+        { id: "two", title: "Slide two", background: "#ffffff" },
+      ],
+      nodes: [],
+      edges: [
+        {
+          id: "arrow",
+          slideId: "one",
+          sourcePoint: { x: 0, y: 0 },
+          targetPoint: { x: 20, y: 30 },
+          label: "Canonical",
+        },
+      ],
+    },
+  });
+  const selected = { id: "arrow", label: "From browser" };
+  const request = { content: "Move the arrow", clientRequestId: randomUUID() };
+  expect(() =>
+    manager.start(chatId, {
+      ...request,
+      context: {
+        boardId: board.id,
+        slideId: "two",
+        boardEdges: [selected],
+      },
+    }),
+  ).toThrow(expect.objectContaining({ code: "INVALID_BOARD_REFERENCE" }));
+  expect(() =>
+    manager.start(chatId, {
+      ...request,
+      context: {
+        boardId: board.id,
+        slideId: "one",
+        boardEdges: [{ id: "missing", label: "Wrong" }],
+      },
+    }),
+  ).toThrow(expect.objectContaining({ code: "INVALID_BOARD_REFERENCE" }));
+  const context = { boardId: board.id, slideId: "one", boardEdges: [selected] };
+  const turn = manager.start(chatId, { ...request, context });
+  expect(turn.context.boardEdges).toEqual([
+    { id: "arrow", label: "Canonical" },
+  ]);
+  expect(manager.start(chatId, { ...request, context }).id).toBe(turn.id);
+  expect(() =>
+    manager.start(chatId, {
+      ...request,
+      context: {
+        ...context,
+        boardEdges: [{ id: "missing", label: "Canonical" }],
+      },
+    }),
+  ).toThrow(expect.objectContaining({ code: "MUTATION_CONFLICT" }));
+});

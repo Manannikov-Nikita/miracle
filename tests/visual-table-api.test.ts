@@ -103,6 +103,19 @@ it("evaluates manual edits and computes totals across pages without saving", asy
   expect(result.sql).toContain("SELECT");
   expect((await request("GET", "/api/boards")).json()).toHaveLength(0);
 });
+it("accepts pagination beyond the SQL snapshot limit for added rows", async () => {
+  const response = await request("POST", "/api/visual-table/evaluate", {
+    table,
+    offset: 50500,
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(response.json().rows).toEqual([]);
+  const beyondLimit = await request("POST", "/api/visual-table/evaluate", {
+    table,
+    offset: 51001,
+  });
+  expect(beyondLimit.statusCode).toBe(400);
+});
 it("persists table definitions and edits through board save and project reopening", async () => {
   const created = await request("POST", "/api/boards", { name: "Расчёты" });
   expect(created.statusCode, created.body).toBe(201);
@@ -170,6 +183,14 @@ it("rejects stale snapshot overrides and retains the snapshot used by a table", 
     columnId: visual.columns[1].id,
     value: "9",
   });
+  visual.rows = [
+    { id: "manual-extra", values: { [visual.columns[1].id]: "4" } },
+  ];
+  visual.edits.push({
+    rowId: "manual-extra",
+    columnId: visual.columns[1].id,
+    value: "7",
+  });
   const stale = await request("POST", "/api/visual-table/evaluate", {
     resultSetId: refreshed.id,
     table: visual,
@@ -180,6 +201,11 @@ it("rejects stale snapshot overrides and retains the snapshot used by a table", 
     table: visual,
   });
   expect(good.statusCode, good.body).toBe(200);
+  expect(good.json().rows.map((row: { id: string }) => row.id)).toEqual([
+    `${original.id}:0`,
+    "manual-extra",
+  ]);
+  expect(Number(good.json().rows[1].values[visual.columns[1].id])).toBe(7);
   expect(String(good.json().rows[0].values[visual.columns[0].id])).toMatch(
     /^9007199254740993(?:\.0+)?$/,
   );
@@ -217,6 +243,8 @@ it("rejects stale snapshot overrides and retains the snapshot used by a table", 
   expect(refs.document.nodes[0].data.visualTable.sourceResultSetId).toBe(
     original.id,
   );
+  expect(refs.document.nodes[0].data.visualTable.rows).toEqual(visual.rows);
+  expect(refs.document.nodes[0].data.visualTable.edits).toEqual(visual.edits);
   const missing = structuredClone(document);
   missing.nodes[0].data.visualTable.sourceResultSetId = randomUUID();
   missing.nodes[0].data.visualTable.edits = [];
@@ -237,4 +265,16 @@ it("rejects stale snapshot overrides and retains the snapshot used by a table", 
   expect(
     (await request("GET", `/api/result-sets/${original.id}`)).statusCode,
   ).toBe(200);
+  const reopened = (await request("GET", `/api/boards/${created.id}`)).json();
+  const reopenedTable = reopened.document.nodes[0].data.visualTable;
+  expect(reopenedTable.rows).toEqual(visual.rows);
+  expect(reopenedTable.edits).toEqual(visual.edits);
+  const recalculated = await request("POST", "/api/visual-table/evaluate", {
+    resultSetId: original.id,
+    table: reopenedTable,
+  });
+  expect(recalculated.statusCode, recalculated.body).toBe(200);
+  expect(Number(recalculated.json().rows[1].values[visual.columns[1].id])).toBe(
+    7,
+  );
 });

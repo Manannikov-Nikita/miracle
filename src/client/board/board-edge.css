@@ -12,6 +12,14 @@
 .board-workspace .react-flow button.board-edge-label:active {
   cursor: grabbing;
 }
+.react-flow__edge:focus-visible .board-edge-selection {
+  opacity: 0.55;
+}
+.react-flow__edge.selectable:focus-visible
+  .board-edge-agent-work
+  .react-flow__edge-path {
+  filter: brightness(1.25);
+}
 .board-workspace .react-flow button.board-edge-label {
   cursor: grab;
   touch-action: none;

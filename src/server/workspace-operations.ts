@@ -14,6 +14,7 @@ import {
   boardValuesEqual,
   mergeBoardDocuments,
 } from "../shared/board-merge.js";
+import { getNodeVisualBounds } from "../shared/board-geometry.js";
 import type { AgentWorkTarget } from "../shared/agent-work.js";
 import {
   boardKind,
@@ -34,6 +35,7 @@ import type {
   Board,
   BoardDocument,
   BoardKind,
+  BoardNode,
   BoardSummary,
   QueryDocument,
   QuerySource,
@@ -550,6 +552,93 @@ export class WorkspaceOperations {
         );
       this.store.publish("board.deleted", id, { id });
       return { ok: true };
+    });
+  }
+  /** Exact-revision geometry write with a replayable receipt instead of a full document. */
+  updateBoardGeometry(
+    request: {
+      id: string;
+      baseRevision: number;
+      mutationId: string;
+      operations: unknown;
+    },
+    transform: (
+      board: Board,
+    ) => Pick<BoardNode, "id" | "position" | "width" | "height">[],
+  ) {
+    const { id, baseRevision, mutationId } = request;
+    return this.store.once(`board-spatial:${id}`, mutationId, request, () => {
+      const current = this.board(id);
+      if (current.revision !== baseRevision)
+        throw problem(
+          409,
+          "Доска изменена. Прочитайте сцену заново",
+          "REVISION_CONFLICT",
+        );
+
+      const geometry = new Map(
+        transform(current).map((node) => [node.id, node]),
+      );
+      const changed = new Map<string, BoardNode>();
+      const nodes = current.document.nodes.map((node) => {
+        const next = geometry.get(node.id);
+        if (
+          !next ||
+          (next.position.x === node.position.x &&
+            next.position.y === node.position.y &&
+            next.width === node.width &&
+            next.height === node.height)
+        )
+          return node;
+        const updated = { ...node, ...next };
+        changed.set(node.id, updated);
+        return updated;
+      });
+      if (!changed.size) return { id, revision: current.revision, changed: [] };
+
+      // Moving a connected node changes its edge geometry even when the
+      // persisted edge itself is unchanged.
+      const incidentEdges = current.document.edges.filter(
+        (edge) =>
+          (edge.source !== undefined && changed.has(edge.source)) ||
+          (edge.target !== undefined && changed.has(edge.target)),
+      );
+      this.store.work.check(
+        incidentEdges.map((edge) => ({
+          kind: "board-edge",
+          boardId: id,
+          id: edge.id,
+        })),
+      );
+      this.store.work.write(
+        [...changed.keys()].map((idOfNode) => ({
+          kind: "board-node",
+          boardId: id,
+          id: idOfNode,
+        })),
+      );
+      const document = { ...current.document, nodes };
+      checkBoardSize(document);
+      // Geometry never changes result/image references, links or metadata.
+      const row = this.db.query(
+        "UPDATE boards SET document=?2,revision=revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND revision=?3 RETURNING *",
+        [id, document, current.revision],
+      ).rows[0];
+      if (!row) throw problem(409, "Доска изменена", "REVISION_CONFLICT");
+      const board = boardDto(row);
+      this.store.publish("board.updated", id, board);
+      return {
+        id,
+        revision: board.revision,
+        changed: [...changed.values()].map((node) => ({
+          id: node.id,
+          ...(node.slideId === undefined ? {} : { slideId: node.slideId }),
+          position: node.position,
+          width: node.width ?? 480,
+          height: node.height ?? 300,
+          bounds: getNodeVisualBounds(node),
+        })),
+      };
     });
   }
   patchBoard(id: string, input: unknown): Board {

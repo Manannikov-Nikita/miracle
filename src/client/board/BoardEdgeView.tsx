@@ -1,4 +1,4 @@
-import type { AgentEntityWork } from "../../shared/agent-work";
+import { agentWorkColor, type AgentEntityWork } from "../../shared/agent-work";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import {
   useEffect,
@@ -224,6 +224,9 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
   }, [props.selected, data?.editable, width]);
   if (!data) return null;
   const appearance = edgeAppearance(data.edge.appearance);
+  const workColor = data.work?.worker
+    ? agentWorkColor(data.work.worker.color)
+    : undefined;
   const measured =
     labelPoint?.path === path && labelPoint.position === labelPosition;
   const x = measured ? labelPoint.x : fallbackX;
@@ -254,7 +257,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
           orient="auto-start-reverse"
           markerUnits="userSpaceOnUse"
         >
-          <path d="M0 0L8 4L0 8Z" fill={appearance.color} />
+          <path d="M0 0L8 4L0 8Z" fill={workColor ?? appearance.color} />
         </marker>
       </defs>
       <g
@@ -290,9 +293,10 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
         )}
         {props.selected && (
           <path
+            className="board-edge-selection"
             d={path}
             fill="none"
-            stroke="var(--board-accent)"
+            stroke={workColor ?? "var(--board-accent)"}
             strokeWidth={appearance.width + 5}
             opacity={0.22}
             pointerEvents="none"
@@ -305,7 +309,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
           markerStart={appearance.startArrow ? `url(#${markerId})` : undefined}
           markerEnd={appearance.endArrow ? `url(#${markerId})` : undefined}
           style={{
-            stroke: appearance.color,
+            stroke: workColor ?? appearance.color,
             strokeWidth: appearance.width,
             strokeDasharray: appearance.dash,
             strokeLinecap: "round",

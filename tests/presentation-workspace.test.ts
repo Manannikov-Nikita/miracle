@@ -1238,6 +1238,76 @@ describe("presentation workspace routing", () => {
     });
   });
 
+  it("captures a keyboard-selected connector only on its active slide and drops it on deletion", async () => {
+    await render("presentation");
+    deck = {
+      ...deck,
+      revision: deck.revision + 1,
+      document: {
+        ...deck.document,
+        edges: [
+          {
+            id: "first-arrow",
+            slideId: "first",
+            label: "Переход",
+            sourcePoint: { x: 100, y: 500 },
+            targetPoint: { x: 700, y: 500 },
+          },
+          {
+            id: "second-arrow",
+            slideId: "second",
+            sourcePoint: { x: 100, y: 500 },
+            targetPoint: { x: 700, y: 500 },
+          },
+        ],
+      },
+    };
+    await act(async () =>
+      project.emit({ id: 10, type: "board.updated", data: deck }),
+    );
+    await act(async () =>
+      flow.deck.onEdgesChange!([
+        { type: "select", id: "first-arrow", selected: true },
+      ]),
+    );
+    expect(project.context()).toEqual({
+      boardId: "deck",
+      slideId: "first",
+      boardNodes: [],
+      boardEdges: [{ id: "first-arrow", label: "Переход" }],
+    });
+    const switchSlide = async (title: string) => {
+      await act(async () =>
+        host
+          .querySelector<HTMLButtonElement>(
+            `.presentation-slide-thumbnail[title="${title}"]`,
+          )!
+          .click(),
+      );
+    };
+    await switchSlide("Second");
+    expect(project.context().boardEdges).toBeUndefined();
+    await act(async () =>
+      flow.deck.onEdgesChange!([
+        { type: "select", id: "second-arrow", selected: true },
+      ]),
+    );
+    expect(project.context().boardEdges).toEqual([
+      { id: "second-arrow", label: "Стрелка" },
+    ]);
+    await switchSlide("First");
+    expect(project.context().boardEdges?.[0]?.id).toBe("first-arrow");
+    deck = {
+      ...deck,
+      revision: deck.revision + 1,
+      document: { ...deck.document, edges: deck.document.edges.slice(1) },
+    };
+    await act(async () =>
+      project.emit({ id: 11, type: "board.updated", data: deck }),
+    );
+    expect(project.context().boardEdges).toBeUndefined();
+  });
+
   async function clickDeckNode(modifiers: MouseEventInit = {}) {
     await act(async () => {
       flow.deck.onNodesChange!([

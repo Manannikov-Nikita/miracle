@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AgentManager } from "./manager.js";
-import { callMiracleTool, miracleTools } from "./tools.js";
+import { callMiracleTool } from "./tools.js";
 import { readAgentImage } from "./images.js";
 
 export function registerAgentRoutes(
@@ -99,7 +99,7 @@ export function registerAgentRoutes(
       case "ping":
         return response({});
       case "tools/list":
-        return response({ tools: miracleTools });
+        return response({ tools: manager.availableTools(active) });
       case "tools/call": {
         try {
           const params = z

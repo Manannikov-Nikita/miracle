@@ -10,6 +10,7 @@ import {
   type AgentEntityWork,
   type AgentWorkSnapshot,
   type AgentWorkTarget,
+  type AgentWorkWorker,
 } from "../../shared/agent-work.js";
 import type { BoardDocument } from "../../shared/types.js";
 
@@ -35,10 +36,20 @@ export interface AgentWorkActor {
   turnId: string;
   chatId: string;
   isActive: () => boolean;
+  worker?: BoardWorkerScope;
 }
+export type BoardWorkerScope = Readonly<
+  AgentWorkWorker & {
+    boardId: string;
+    nodeIds: readonly string[];
+    edgeIds: readonly string[];
+  }
+>;
 type HeldWork = AgentEntityWork & { roots?: string[] };
 const failure = (statusCode: number, message: string, code: string) =>
   Object.assign(new Error(message), { statusCode, code });
+const owner = (work: Pick<AgentEntityWork, "turnId" | "worker">) =>
+  work.worker?.id ?? work.turnId;
 
 /** Ownership is server supplied, never accepted from a browser request body. */
 export class EntityWork {
@@ -78,10 +89,43 @@ export class EntityWork {
       ? { ...target, id: projectFileWorkPath(this.store.context, target.id) }
       : target;
   }
+  private ensureScope(targets: AgentWorkTarget[], actor?: AgentWorkActor) {
+    const worker = actor?.worker;
+    if (
+      worker &&
+      targets.some(
+        (target) =>
+          !("boardId" in target) ||
+          target.boardId !== worker.boardId ||
+          !(
+            (target.kind === "board-node" &&
+              worker.nodeIds.includes(target.id)) ||
+            (target.kind === "board-edge" && worker.edgeIds.includes(target.id))
+          ),
+      )
+    )
+      throw failure(
+        403,
+        "Объект вне назначенной области работы",
+        "AGENT_WORK_SCOPE",
+      );
+  }
+  boardReservation(targets: AgentWorkTarget[]): AgentWorkTarget[] {
+    const documents = new Map<string, BoardDocument | undefined>();
+    const expanded = targets.flatMap((target) =>
+      this.expand(target, true, true, documents),
+    );
+    return [
+      ...new Map(
+        expanded.map((target) => [agentWorkKey(target), target]),
+      ).values(),
+    ];
+  }
   private expand(
     target: AgentWorkTarget,
-    validate = false,
-    incidents = true,
+    validate: boolean,
+    incidents: boolean,
+    documents?: Map<string, BoardDocument | undefined>,
   ): AgentWorkTarget[] {
     const result = new Map<string, AgentWorkTarget>();
     const add = (item: AgentWorkTarget) => result.set(agentWorkKey(item), item);
@@ -110,7 +154,14 @@ export class EntityWork {
       }
     } else if (target.kind === "board" || "boardId" in target) {
       const boardId = "boardId" in target ? target.boardId : target.id;
-      const document = this.boardDocument(boardId);
+      let document: BoardDocument | undefined;
+      if (validate || (target.kind === "board-node" && incidents)) {
+        if (documents?.has(boardId)) document = documents.get(boardId);
+        else {
+          document = this.boardDocument(boardId);
+          documents?.set(boardId, document);
+        }
+      }
       if (
         validate &&
         (!document ||
@@ -137,7 +188,8 @@ export class EntityWork {
     const keys = new Set(targets.map(agentWorkKey));
     const lock = held.find(
       (item) =>
-        keys.has(agentWorkKey(item.target)) && item.turnId !== actor?.turnId,
+        keys.has(agentWorkKey(item.target)) &&
+        (!actor || owner(item) !== owner(actor)),
     );
     if (lock)
       throw Object.assign(
@@ -152,10 +204,15 @@ export class EntityWork {
   private acquire(targets: AgentWorkTarget[], validate: boolean) {
     const actor = this.assertActor();
     const held = this.held();
+    const documents = new Map<string, BoardDocument | undefined>();
     const groups = targets.map((target) => ({
       root: agentWorkKey(this.canonical(target)),
-      targets: this.expand(target, validate, Boolean(actor)),
+      targets: this.expand(target, validate, Boolean(actor), documents),
     }));
+    this.ensureScope(
+      groups.flatMap((group) => group.targets),
+      actor,
+    );
     this.ensureAvailable(
       groups.flatMap((group) => group.targets),
       held,
@@ -180,6 +237,15 @@ export class EntityWork {
             chatId: actor.chatId,
             startedAt: new Date().toISOString(),
             roots: [group.root],
+            ...(actor.worker
+              ? {
+                  worker: {
+                    id: actor.worker.id,
+                    name: actor.worker.name,
+                    color: actor.worker.color,
+                  },
+                }
+              : {}),
           });
           changed = true;
         }
@@ -229,6 +295,9 @@ export class EntityWork {
     const actor = this.assertActor();
     if (!actor)
       throw failure(401, "Нужна активная задача агента", "AGENT_TASK_ENDED");
+    this.ensureScope(targets, actor);
+    // Scheduler reservations stay in force for the life of the worker.
+    if (actor.worker) return this.snapshot();
     return this.store.atomic(() => {
       const keys = new Set(
         targets
@@ -237,7 +306,7 @@ export class EntityWork {
       );
       const before = this.held();
       const locks = before.flatMap((lock) => {
-        if (lock.turnId !== actor.turnId) return [lock];
+        if (owner(lock) !== owner(actor)) return [lock];
         const roots = lock.roots?.filter((root) => !keys.has(root));
         return roots?.length ? [{ ...lock, roots }] : [];
       });
@@ -246,12 +315,16 @@ export class EntityWork {
       return this.snapshot();
     });
   }
+  releaseOwner(ownerId: string) {
+    return this.release((lock) => owner(lock) === ownerId);
+  }
   releaseTurn(turnId?: string) {
+    return this.release((lock) => !turnId || lock.turnId === turnId);
+  }
+  private release(matches: (lock: HeldWork) => boolean) {
     return this.store.atomic(() => {
       const before = this.held();
-      const locks = turnId
-        ? before.filter((lock) => lock.turnId !== turnId)
-        : [];
+      const locks = before.filter((lock) => !matches(lock));
       if (locks.length !== before.length)
         this.store.publish("agent.work", undefined, { locks });
     });

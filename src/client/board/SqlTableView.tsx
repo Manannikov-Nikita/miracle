@@ -26,11 +26,15 @@ import {
   Funnel,
   Plus,
   Trash,
+  SlidersHorizontal,
+  LockSimple,
   X,
 } from "@phosphor-icons/react";
 import type { ResultSet } from "../../shared/types";
 import {
   createResultVisualTable,
+  canEditVisualTableCell,
+  isVisualTableSourceCell,
   renameVisualTableColumn,
   setVisualTableCell,
   visualTableSourceSchema,
@@ -40,6 +44,11 @@ import {
   type VisualTableSpec,
 } from "../../shared/visual-table";
 import { Modal } from "../components/UI";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import BoardTableSurface from "./BoardTableSurface";
+import SqlTableColumnEditor, {
+  type SqlTableColumnDraft,
+} from "./SqlTableColumnEditor";
 import { SqlTableHeader, type SqlTableHeaderOptions } from "./SqlTableHeader";
 import { parseSqlTableCell, formatSqlTableCell } from "./sql-table-model";
 import { useVisualTableEvaluation } from "./useVisualTableEvaluation";
@@ -55,6 +64,7 @@ type Props = {
   onExit?: () => void;
 };
 type HistoryEntry = { before: VisualTableSpec; after: VisualTableSpec };
+const columnEditorOpened = "miracle:column-editor-opened";
 const equals = (a: unknown, b: unknown) =>
   JSON.stringify(a) === JSON.stringify(b);
 const filterOps = {
@@ -69,7 +79,6 @@ const filterOps = {
   notNull: "не пусто",
 };
 
-
 export default function SqlTableView(props: Props) {
   const { spec, result, presentationBackground, onExit } = props;
   const editable = Boolean(props.editable && props.onChange);
@@ -79,11 +88,15 @@ export default function SqlTableView(props: Props) {
   const [adopting, setAdopting] = useState(false);
   const [offset, setOffset] = useState(0);
   const [localError, setLocalError] = useState<string>();
-  const [newType, setNewType] = useState<VisualTableColumn["type"]>("number");
+  const [editingColumn, setEditingColumn] = useState<string | null>();
+  const columnDrafts = useRef(new Map<string, SqlTableColumnDraft>());
+  const columnEditorOwner = useRef({});
   const [filterColumn, setFilterColumn] = useState(spec.columns[0]?.id ?? "");
   const [filterOp, setFilterOp] = useState<keyof typeof filterOps>("contains");
   const [filterValue, setFilterValue] = useState("");
   const [selectedRow, setSelectedRow] = useState<string>();
+  const [rowNotice, setRowNotice] = useState<string>();
+  const pendingRow = useRef<string | undefined>(undefined);
   const [, historyTick] = useState(0);
   const history = useRef<HistoryEntry[]>([]),
     future = useRef<HistoryEntry[]>([]);
@@ -98,8 +111,35 @@ export default function SqlTableView(props: Props) {
   }, []);
   const trigger = useRef<HTMLButtonElement>(null),
     focusColumn = useRef<string | undefined>(undefined);
-  const latest = useRef({ ...props, editable });
-  latest.current = { ...props, editable };
+  const latest = useRef({ ...props, editable, editingColumn });
+  latest.current = { ...props, editable, editingColumn };
+  useLayoutEffect(() => {
+    const board = mountedHost?.closest(".board-workspace");
+    if (!board) return;
+    const closeOtherEditor = (event: Event) => {
+      if ((event as CustomEvent).detail !== columnEditorOwner.current)
+        setEditingColumn(undefined);
+    };
+    board.addEventListener(columnEditorOpened, closeOtherEditor);
+    return () =>
+      board.removeEventListener(columnEditorOpened, closeOtherEditor);
+  }, [mountedHost]);
+  const claimColumnEditor = useCallback(() => {
+    // One panel per board; switching tables keeps their unsaved drafts.
+    gridHost.current?.closest(".board-workspace")?.dispatchEvent(
+      new CustomEvent(columnEditorOpened, {
+        detail: columnEditorOwner.current,
+      }),
+    );
+  }, []);
+  const openColumnEditor = useCallback(
+    (columnId: string | null) => {
+      grid.current?.stopEditing();
+      claimColumnEditor();
+      setEditingColumn(columnId);
+    },
+    [claimColumnEditor],
+  );
   const evaluation = useVisualTableEvaluation(spec, offset);
   const mismatch = Boolean(
     result && spec.sourceResultSetId && result.id !== spec.sourceResultSetId,
@@ -112,7 +152,9 @@ export default function SqlTableView(props: Props) {
     spec.filters,
     spec.sort,
   ]);
-  useEffect(() => setOffset(0), [pageKey]);
+  useEffect(() => {
+    if (!pendingRow.current) setOffset(0);
+  }, [pageKey]);
   useEffect(() => {
     if (!spec.columns.some((c) => c.id === filterColumn))
       setFilterColumn(spec.columns[0]?.id ?? "");
@@ -120,6 +162,8 @@ export default function SqlTableView(props: Props) {
   useEffect(() => {
     if (
       evaluation.data &&
+      !evaluation.stale &&
+      !pendingRow.current &&
       offset > 0 &&
       offset >= evaluation.data.totalRowCount
     )
@@ -129,23 +173,25 @@ export default function SqlTableView(props: Props) {
           Math.floor((evaluation.data.totalRowCount - 1) / 500) * 500,
         ),
       );
-  }, [evaluation.data, offset]);
+  }, [evaluation.data, evaluation.stale, offset]);
 
   const change = useCallback(
     (transform: (current: VisualTableSpec) => VisualTableSpec) => {
       const current = latest.current;
-      if (!current.editable || !current.onChange) return;
+      if (!current.editable || !current.onChange) return false;
       try {
         const next = visualTableSpecSchema.parse(transform(current.spec));
-        if (equals(next, current.spec)) return;
+        if (equals(next, current.spec)) return true;
         history.current.push({ before: current.spec, after: next });
         history.current = history.current.slice(-20);
         future.current = [];
         setLocalError(undefined);
         current.onChange(next);
         historyTick((value) => value + 1);
+        return true;
       } catch (error) {
         setLocalError(error instanceof Error ? error.message : String(error));
+        return false;
       }
     },
     [],
@@ -153,6 +199,8 @@ export default function SqlTableView(props: Props) {
   const travel = useCallback((back: boolean) => {
     const current = latest.current;
     if (!current.editable || !current.onChange) return;
+    pendingRow.current = undefined;
+    setRowNotice(undefined);
     const from = back ? history : future,
       to = back ? future : history;
     const entry = from.current.at(-1);
@@ -171,7 +219,11 @@ export default function SqlTableView(props: Props) {
   const editCell = useCallback(
     (rowId: string, columnId: string, raw: unknown) => {
       const column = latest.current.spec.columns.find((c) => c.id === columnId);
-      if (!column) return;
+      if (
+        !column ||
+        !canEditVisualTableCell(latest.current.spec, rowId, columnId)
+      )
+        return;
       try {
         const value = parseSqlTableCell(raw, column.type);
         change((current) =>
@@ -192,7 +244,8 @@ export default function SqlTableView(props: Props) {
         headerName: column.name,
         headerComponent: SqlTableHeader,
         headerComponentParams: {
-          register: (header: SqlTableHeader) => headers.current.set(column.id, header),
+          register: (header: SqlTableHeader) =>
+            headers.current.set(column.id, header),
           unregister: (header: SqlTableHeader) => {
             if (headers.current.get(column.id) === header)
               headers.current.delete(column.id);
@@ -203,26 +256,8 @@ export default function SqlTableView(props: Props) {
             latest.current.spec.sort?.columnId === column.id
               ? latest.current.spec.sort.direction
               : undefined,
-          rename: (name: string) =>
-            change((current) =>
-              renameVisualTableColumn(current, column.id, name),
-            ),
-          formula: (formula: string) =>
-            change((current) => ({
-              ...current,
-              columns: current.columns.map((c) =>
-                c.id === column.id
-                  ? { ...c, formula: formula || undefined }
-                  : c,
-              ),
-            })),
-          summary: (summary: VisualTableColumn["summary"]) =>
-            change((current) => ({
-              ...current,
-              columns: current.columns.map((c) =>
-                c.id === column.id ? { ...c, summary } : c,
-              ),
-            })),
+          selected: latest.current.editingColumn === column.id,
+          openEditor: () => openColumnEditor(column.id),
           sort: () =>
             change((current) => ({
               ...current,
@@ -233,34 +268,9 @@ export default function SqlTableView(props: Props) {
                     ? { columnId: column.id, direction: "desc" }
                     : undefined,
             })),
-          remove:
-            !column.sourceColumnId && latest.current.spec.columns.length > 1
-              ? () =>
-                  change((current) => ({
-                    ...current,
-                    columns: current.columns.filter((c) => c.id !== column.id),
-                    rows: current.rows?.map((row) => ({
-                      ...row,
-                      values: Object.fromEntries(
-                        Object.entries(row.values).filter(
-                          ([id]) => id !== column.id,
-                        ),
-                      ),
-                    })),
-                    edits: current.edits.filter(
-                      (edit) => edit.columnId !== column.id,
-                    ),
-                    filters: current.filters?.filter(
-                      (filter) => filter.columnId !== column.id,
-                    ),
-                    sort:
-                      current.sort?.columnId === column.id
-                        ? undefined
-                        : current.sort,
-                  }))
-              : undefined,
         },
         width: column.width ?? (column.formula ? 210 : 160),
+        flex: column.width ? undefined : 1,
         minWidth: 130,
         valueGetter: (params) => params.data?.values[column.id],
         valueFormatter: (params) =>
@@ -275,7 +285,16 @@ export default function SqlTableView(props: Props) {
           [
             column.type === "number" ? "sql-table-numeric" : "",
             params.data &&
-            !params.node.rowPinned &&
+            !params.node?.rowPinned &&
+            isVisualTableSourceCell(
+              latest.current.spec,
+              params.data.id,
+              column.id,
+            )
+              ? "sql-table-source-cell"
+              : "",
+            params.data &&
+            !params.node?.rowPinned &&
             latest.current.spec.edits.some(
               (edit) =>
                 edit.rowId === params.data!.id && edit.columnId === column.id,
@@ -287,16 +306,30 @@ export default function SqlTableView(props: Props) {
             .join(" "),
         tooltipValueGetter: (params) =>
           params.data &&
-          latest.current.spec.edits.some(
-            (edit) =>
-              edit.rowId === params.data!.id && edit.columnId === column.id,
+          !params.node?.rowPinned &&
+          isVisualTableSourceCell(
+            latest.current.spec,
+            params.data.id,
+            column.id,
           )
-            ? "Локальная правка. Исходные данные не изменены."
-            : undefined,
+            ? "Исходное значение SQL · только чтение"
+            : params.data &&
+                latest.current.spec.edits.some(
+                  (edit) =>
+                    edit.rowId === params.data!.id &&
+                    edit.columnId === column.id,
+                )
+              ? "Локальная правка. Исходные данные не изменены."
+              : undefined,
       })),
-    [change],
+    [change, openColumnEditor],
   );
-  const columnKey = JSON.stringify([spec.columns, spec.sort, editable]);
+  const columnKey = JSON.stringify([
+    spec.columns,
+    spec.sort,
+    editable,
+    editingColumn,
+  ]);
   const structureKey = JSON.stringify([
     spec.columns.map((column) => [column.id, column.type]),
     editable,
@@ -320,13 +353,23 @@ export default function SqlTableView(props: Props) {
       rowData: [],
       getRowId: (p) => p.data.id,
       defaultColDef: {
-        editable: (p) => latest.current.editable && !p.node.rowPinned,
+        editable: (p) =>
+          Boolean(
+            latest.current.editable &&
+            !p.node.rowPinned &&
+            p.data &&
+            canEditVisualTableCell(
+              latest.current.spec,
+              p.data.id,
+              p.column.getColId(),
+            ),
+          ),
         resizable: true,
         sortable: false,
         suppressMovable: true,
         suppressHeaderMenuButton: true,
       },
-      headerHeight: latest.current.editable ? 104 : 48,
+      headerHeight: 36,
       rowHeight: 30,
       readOnlyEdit: true,
       stopEditingWhenCellsLoseFocus: true,
@@ -376,7 +419,7 @@ export default function SqlTableView(props: Props) {
     const nextDefinitions = definitions();
     if (installedColumns.current !== structureKey) {
       api.setGridOption("columnDefs", nextDefinitions);
-      api.setGridOption("headerHeight", editable ? 104 : 48);
+      api.setGridOption("headerHeight", 36);
       installedColumns.current = structureKey;
     } else {
       // Replacing columnDefs (or refreshHeader) re-enters AG Grid's focus restoration.
@@ -388,10 +431,12 @@ export default function SqlTableView(props: Props) {
         const current = column.getColDef();
         current.headerName = definition.headerName;
         current.headerComponentParams = definition.headerComponentParams;
-        headers.current.get(id)?.update(
-          definition.headerComponentParams as SqlTableHeaderOptions,
-        );
-        const width = latest.current.spec.columns.find((item) => item.id === id)?.width;
+        headers.current
+          .get(id)
+          ?.update(definition.headerComponentParams as SqlTableHeaderOptions);
+        const width = latest.current.spec.columns.find(
+          (item) => item.id === id,
+        )?.width;
         if (width !== undefined && width !== column.getActualWidth())
           api.setColumnWidths([{ key: id, newWidth: width }]);
       }
@@ -402,7 +447,7 @@ export default function SqlTableView(props: Props) {
       grid.current?.ensureColumnVisible(id);
       queueMicrotask(() =>
         gridHost.current
-          ?.querySelector<HTMLInputElement>(`[data-column-name="${id}"]`)
+          ?.querySelector<HTMLElement>(`[data-column-name="${id}"]`)
           ?.focus(),
       );
     }
@@ -424,29 +469,104 @@ export default function SqlTableView(props: Props) {
       );
     } else grid.current?.setGridOption("pinnedBottomRowData", []);
     grid.current?.refreshCells({ force: true });
-  }, [evaluation.data, mountedHost]);
+    const newRow = pendingRow.current;
+    if (data && !evaluation.stale && newRow) {
+      const index = data.rows.findIndex((row) => row.id === newRow);
+      if (index >= 0) {
+        const column = latest.current.spec.columns.find((c) =>
+          canEditVisualTableCell(latest.current.spec, newRow, c.id),
+        );
+        pendingRow.current = undefined;
+        if (column) {
+          grid.current?.ensureIndexVisible(index, "bottom");
+          grid.current?.setFocusedCell(index, column.id);
+          grid.current?.startEditingCell({
+            rowIndex: index,
+            colKey: column.id,
+          });
+        }
+      }
+    }
+  }, [evaluation.data, evaluation.stale, mountedHost]);
 
-  const addColumn = () =>
-    change((current) => {
-      const id = crypto.randomUUID();
-      focusColumn.current = id;
-      let n = current.columns.length + 1;
-      while (current.columns.some((c) => c.name === `Столбец ${n}`)) n++;
+  const saveColumn = (column: VisualTableColumn) => {
+    const saved = change((current) => {
+      const existing = current.columns.find((c) => c.id === column.id);
+      const renamed = existing
+        ? renameVisualTableColumn(current, column.id, column.name)
+        : current;
+      focusColumn.current = column.id;
       return {
-        ...current,
-        columns: [
-          ...current.columns,
-          { id, name: `Столбец ${n}`, type: newType },
-        ],
+        ...renamed,
+        columns: existing
+          ? renamed.columns.map((c) =>
+              c.id === column.id
+                ? {
+                    ...column,
+                    formula:
+                      column.formula === existing.formula
+                        ? c.formula
+                        : column.formula,
+                  }
+                : c,
+            )
+          : [...renamed.columns, column],
       };
     });
-  const addRow = () =>
-    change((current) => ({
+    if (saved) {
+      columnDrafts.current.delete(editingColumn ?? "new");
+      setEditingColumn(undefined);
+    }
+  };
+  const removeColumn = (columnId: string) => {
+    const removed = change((current) => ({
       ...current,
-      rows: [...(current.rows ?? []), { id: crypto.randomUUID(), values: {} }],
+      columns: current.columns.filter((c) => c.id !== columnId),
+      rows: current.rows?.map((row) => ({
+        ...row,
+        values: Object.fromEntries(
+          Object.entries(row.values).filter(([id]) => id !== columnId),
+        ),
+      })),
+      edits: current.edits.filter((edit) => edit.columnId !== columnId),
+      filters: current.filters?.filter(
+        (filter) => filter.columnId !== columnId,
+      ),
+      sort: current.sort?.columnId === columnId ? undefined : current.sort,
     }));
+    if (removed) {
+      columnDrafts.current.delete(columnId);
+      setEditingColumn(undefined);
+    }
+    return removed;
+  };
+  const addRow = () => {
+    if (!evaluation.data || evaluation.busy || evaluation.stale) return;
+    const id = crypto.randomUUID();
+    const resetView = Boolean(spec.filters?.length || spec.sort);
+    pendingRow.current = id;
+    const added = change((current) => ({
+      ...current,
+      rows: [...(current.rows ?? []), { id, values: {} }],
+      filters: undefined,
+      sort: undefined,
+    }));
+    if (!added) {
+      pendingRow.current = undefined;
+      return;
+    }
+    setOffset(Math.floor(evaluation.data.sourceRowCount / 500) * 500);
+    setRowNotice(
+      resetView
+        ? "Фильтры и сортировка сняты, чтобы показать новую строку. Отмена восстановит их."
+        : undefined,
+    );
+  };
   const removeRow = () => {
-    if (selectedRow)
+    if (
+      selectedRow &&
+      latest.current.spec.rows?.some((row) => row.id === selectedRow)
+    )
       change((current) => ({
         ...current,
         rows: current.rows?.filter((row) => row.id !== selectedRow),
@@ -462,7 +582,9 @@ export default function SqlTableView(props: Props) {
             ...current,
             sourceResultSetId: result.id,
             sourceSchema: fresh.sourceSchema,
-            edits: [],
+            edits: current.edits.filter((edit) =>
+              current.rows?.some((row) => row.id === edit.rowId),
+            ),
           }
         : fresh;
     });
@@ -560,45 +682,42 @@ export default function SqlTableView(props: Props) {
                 <ArrowClockwise size={15} />
               </button>
               <span className="sql-table-divider" />
-              <select
-                aria-label="Тип нового столбца"
-                value={newType}
-                onChange={(event) =>
-                  setNewType(event.target.value as VisualTableColumn["type"])
-                }
-              >
-                <option value="number">Число</option>
-                <option value="text">Текст</option>
-                <option value="boolean">Да / нет</option>
-              </select>
-              <button
-                onClick={addColumn}
-                disabled={spec.columns.length >= 100}
-                title="Добавить столбец"
-              >
-                <Plus size={14} />
-                Столбец
-              </button>
-              {!spec.sourceResultSetId && (
-                <>
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
                   <button
-                    onClick={addRow}
-                    disabled={(spec.rows?.length ?? 0) >= 1000}
-                    title="Добавить строку"
+                    title="Настройки столбцов"
+                    aria-label="Настройки столбцов"
                   >
-                    <Plus size={14} />
-                    Строка
+                    <SlidersHorizontal size={15} />
                   </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    className="dropdown-menu sql-table-columns-menu"
+                    sideOffset={6}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    {spec.columns.map((column) => (
+                      <DropdownMenu.Item
+                        key={column.id}
+                        onSelect={() => openColumnEditor(column.id)}
+                      >
+                        {column.name}
+                      </DropdownMenu.Item>
+                    ))}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+              {selectedRow &&
+                spec.rows?.some((row) => row.id === selectedRow) && (
                   <button
                     onClick={removeRow}
-                    disabled={!selectedRow}
                     aria-label="Удалить выбранную строку"
                     title="Удалить выбранную строку"
                   >
                     <Trash size={14} />
                   </button>
-                </>
-              )}
+                )}
             </>
           )}
           {editable && (
@@ -626,6 +745,7 @@ export default function SqlTableView(props: Props) {
               ref={trigger}
               onClick={() => {
                 grid.current?.stopEditing();
+                claimColumnEditor();
                 setExpanded(true);
               }}
               aria-label="Развернуть таблицу"
@@ -751,12 +871,53 @@ export default function SqlTableView(props: Props) {
           </button>
         </div>
       )}
-      <div
-        className="sql-table-grid"
-        ref={bindGridHost}
-        aria-label="Редактируемая таблица"
-        aria-busy={evaluation.busy}
-      />
+      <div className="sql-table-grid-area">
+        <div
+          className="sql-table-grid"
+          ref={bindGridHost}
+          aria-label="Редактируемая таблица"
+          aria-busy={evaluation.busy}
+        />
+        {editable && (
+          <button
+            className="sql-table-add-column"
+            onClick={() => openColumnEditor(null)}
+            disabled={spec.columns.length >= 100}
+            title="Добавить столбец"
+            aria-label="Добавить столбец"
+          >
+            <Plus size={16} />
+          </button>
+        )}
+      </div>
+      {editable && (
+        <button
+          className="sql-table-add-row"
+          onClick={addRow}
+          disabled={
+            (spec.rows?.length ?? 0) >= 1000 ||
+            evaluation.busy ||
+            evaluation.stale ||
+            !evaluation.data
+          }
+          title="Добавить строку"
+          aria-label="Добавить строку"
+        >
+          <Plus size={15} />
+          <span>Строка</span>
+        </button>
+      )}
+      {rowNotice && (
+        <div className="sql-table-row-notice" role="status">
+          <span>{rowNotice}</span>
+          <button
+            aria-label="Скрыть сообщение"
+            onClick={() => setRowNotice(undefined)}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
       {!presentationBackground && (
         <div className="sql-table-footer">
           <span role="status">
@@ -766,6 +927,14 @@ export default function SqlTableView(props: Props) {
                 ? `${spec.filters?.length ? "После фильтров" : "Строк"}: ${evaluation.data.totalRowCount.toLocaleString("ru-RU")}`
                 : "Загрузка…"}
           </span>
+          {spec.sourceResultSetId && (
+            <span
+              className="sql-table-source-legend"
+              title="Исходные значения SQL защищены от редактирования"
+            >
+              <LockSimple size={12} /> SQL · только чтение
+            </span>
+          )}
           {Boolean(spec.edits.length) && (
             <span title="Правки сохранены в проекте, исходный результат SQL не изменён">
               Правок: {spec.edits.length}
@@ -819,35 +988,65 @@ export default function SqlTableView(props: Props) {
   );
   return (
     <>
-      {expanded ? (
-        <div className="sql-table-opened" aria-hidden="true">
-          Таблица открыта в расширенном редакторе.
-        </div>
-      ) : (
-        body
-      )}
-      <Modal
-        open={expanded}
-        onOpenChange={setExpanded}
-        title="Редактор таблицы"
-        className="sql-table-modal"
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          trigger.current?.focus();
+      <BoardTableSurface
+        sidePanel={
+          editingColumn !== undefined && editable ? (
+            <SqlTableColumnEditor
+              key={editingColumn ?? "new"}
+              spec={spec}
+              columnId={editingColumn ?? undefined}
+              draft={columnDrafts.current.get(editingColumn ?? "new")}
+              onDraftChange={(draft) =>
+                columnDrafts.current.set(editingColumn ?? "new", draft)
+              }
+              onSave={saveColumn}
+              onClose={() => {
+                const id = editingColumn;
+                columnDrafts.current.delete(id ?? "new");
+                setEditingColumn(undefined);
+                requestAnimationFrame(() => {
+                  if (id) {
+                    grid.current?.ensureColumnVisible(id);
+                    Array.from(
+                      gridHost.current?.querySelectorAll<HTMLElement>(
+                        "[data-column-name]",
+                      ) ?? [],
+                    )
+                      .find((element) => element.dataset.columnName === id)
+                      ?.focus();
+                  } else {
+                    gridHost.current
+                      ?.closest(".board-sql-table")
+                      ?.querySelector<HTMLButtonElement>(
+                        ".sql-table-add-column",
+                      )
+                      ?.focus();
+                  }
+                });
+              }}
+              onRemove={removeColumn}
+            />
+          ) : undefined
+        }
+        expanded={expanded}
+        onClose={() => {
+          grid.current?.stopEditing();
+          setExpanded(false);
+          requestAnimationFrame(() => trigger.current?.focus());
         }}
       >
-        {expanded ? body : null}
-      </Modal>
+        {body}
+      </BoardTableSurface>
       <Modal
         open={adopting}
         onOpenChange={setAdopting}
         title="Использовать новый снимок?"
       >
         <p>
-          Локальные правки ячеек будут сброшены.{" "}
+          Локальные правки исходного снимка будут сброшены.{" "}
           {sameSchema
-            ? "Формулы, фильтры и настройки столбцов сохранятся."
-            : "Состав столбцов изменился: формулы и настройки таблицы будут созданы заново."}
+            ? "Формулы, фильтры, настройки столбцов и добавленные строки сохранятся."
+            : "Состав столбцов изменился: формулы, настройки и добавленные строки будут заменены новым снимком."}
         </p>
         <div className="sql-table-confirm">
           <button onClick={() => setAdopting(false)}>Отмена</button>

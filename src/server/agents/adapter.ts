@@ -18,7 +18,7 @@ export type AdapterEvent =
   | { type: "context-usage"; usage: AgentContextUsage }
   | { type: "question"; id: string; questions: AgentQuestion[] }
   | { type: "subagent"; subagent: AgentSubagent }
-  | { type: "message"; text: string }
+  | { type: "message"; text: string; messageStart?: true }
   | { type: "action"; text: string; details?: Record<string, unknown> }
   | { type: "session"; sessionId: string }
   | {
@@ -35,6 +35,7 @@ export interface AgentAdapterOptions {
   prompt: string;
   images?: AgentProviderImage[];
   resumeSessionId?: string;
+  boardOnly?: boolean;
   modelSettings?: AgentModelSettings;
   model?: string;
   reasoningEffort?: string;
