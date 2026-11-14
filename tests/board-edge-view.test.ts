@@ -49,7 +49,7 @@ describe("inline board edge editing", () => {
     host.remove();
     vi.unstubAllGlobals();
   });
-  async function render(editable = true) {
+  async function render(editable = true, work?: BoardEdgeViewData["work"]) {
     function Harness() {
       const [edge, setEdge] = useState(initial);
       const [editing, setEditing] = useState(false);
@@ -59,6 +59,7 @@ describe("inline board edge editing", () => {
         edge,
         editable,
         editing,
+        work,
         onGeometryChange: () => {},
         onEdit: () => setEditing(true),
         onFinishEdit: () => setEditing(false),
@@ -215,6 +216,34 @@ describe("inline board edge editing", () => {
     ).toBeNull();
     expect(document.querySelector("input")).toBeNull();
     expect(document.body.textContent).toContain("Связь");
+  });
+  it("colors the existing path and arrowhead for the worker while preserving the hitbox", async () => {
+    const work = {
+      target: { kind: "board-edge", boardId: "board", id: "edge" },
+      turnId: "turn",
+      chatId: "chat",
+      startedAt: "now",
+      worker: { id: "worker", name: "Связи", color: 2 },
+    } as const;
+    const stroke = () =>
+      host.querySelector<SVGPathElement>(".react-flow__edge-path")!.style
+        .stroke;
+    await render(false);
+    const original = stroke();
+    await render(false, work);
+    expect(stroke()).not.toBe(original);
+    const marker = host.querySelector<SVGPathElement>("marker path")!;
+    expect(marker.getAttribute("fill")).toBe("#d97706");
+    expect(stroke()).toBe("rgb(217, 119, 6)");
+    expect(host.querySelectorAll(".react-flow__edge-path")).toHaveLength(1);
+    expect(
+      host
+        .querySelector(".react-flow__edge-interaction")
+        ?.getAttribute("stroke-width"),
+    ).toBe("20");
+    expect(
+      document.querySelector(".board-edge-agent-indicator")?.textContent,
+    ).toContain("Связи");
   });
   it("changes visible line styling and arrowheads from the floating menus", async () => {
     await render();

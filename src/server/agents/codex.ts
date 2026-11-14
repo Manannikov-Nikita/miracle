@@ -17,6 +17,24 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
   const command = buildAgentCommand("codex", options.command);
   const args = [
     ...command.args,
+    ...(options.boardOnly
+      ? [
+          "-c",
+          'sandbox_mode="read-only"',
+          "-c",
+          'approval_policy="never"',
+          "-c",
+          "features.shell_tool=false",
+          "-c",
+          "features.unified_exec=false",
+          "-c",
+          "features.multi_agent=false",
+          "-c",
+          "features.multi_agent_v2=false",
+          "-c",
+          'web_search="disabled"',
+        ]
+      : []),
     "-c",
     `mcp_servers.miracle.url=${JSON.stringify(options.mcp.url)}`,
     "-c",
@@ -303,8 +321,13 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
       method === "item/agentMessage/delta" &&
       typeof params.delta === "string"
     ) {
+      const messageStart = options.boardOnly && !streamed.has(params.itemId);
       streamed.add(params.itemId);
-      emit({ type: "message", text: params.delta });
+      emit({
+        type: "message",
+        text: params.delta,
+        ...(messageStart ? { messageStart: true } : {}),
+      });
     }
     if (
       (method === "item/started" || method === "item/completed") &&
@@ -361,7 +384,11 @@ export function startCodexTurn(options: AgentAdapterOptions): AgentProcess {
         !streamed.has(item.id) &&
         typeof item.text === "string"
       )
-        emit({ type: "message", text: item.text });
+        emit({
+          type: "message",
+          text: item.text,
+          ...(options.boardOnly ? { messageStart: true } : {}),
+        });
       else if (
         !["agentMessage", "userMessage", "reasoning"].includes(item.type)
       )

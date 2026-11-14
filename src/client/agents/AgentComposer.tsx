@@ -15,6 +15,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type { AgentChatState } from "./useAgentChat";
+import type { AgentTargetContext } from "../../shared/agents";
 import AgentHistory from "./AgentHistory";
 import AgentFileMentions, { AgentContextChips } from "./AgentFileMentions";
 import type { DraftAgentImage } from "./useAgentImageDrafts";
@@ -37,8 +38,10 @@ export interface ComposerProps {
   editorTabs?: OpenEditorTab[];
   editorTarget?: OpenEditorTab;
   onEditorTargetChange?: (tab: OpenEditorTab | undefined) => void;
-  boardNodes?: { id: string; title: string }[];
+  boardNodes?: AgentTargetContext["boardNodes"];
   onDismissBoardNode?: (id: string) => void;
+  boardEdges?: AgentTargetContext["boardEdges"];
+  onDismissBoardEdge?: (id: string) => void;
   images?: DraftAgentImage[];
   imagesLoading?: boolean;
   onImagesAdd?: (files: File[]) => Promise<void>;
@@ -59,6 +62,8 @@ export default function AgentComposer({
   onEditorTargetChange,
   boardNodes = [],
   onDismissBoardNode,
+  boardEdges,
+  onDismissBoardEdge,
   images = [],
   imagesLoading = false,
   onImagesAdd,
@@ -175,6 +180,8 @@ export default function AgentComposer({
           onEditorTargetChange={onEditorTargetChange}
           boardNodes={boardNodes}
           onDismissBoardNode={onDismissBoardNode}
+          boardEdges={boardEdges}
+          onDismissBoardEdge={onDismissBoardEdge}
         />
         {images.length > 0 && (
           <div

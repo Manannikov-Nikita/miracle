@@ -27,6 +27,16 @@ function MessageReferences({ context }: { context: unknown }) {
         ),
       )
     : [];
+  const boardEdges = Array.isArray(value.boardEdges)
+    ? value.boardEdges.filter((edge): edge is { id: string; label: string } =>
+        Boolean(
+          edge &&
+          typeof edge === "object" &&
+          typeof edge.id === "string" &&
+          typeof edge.label === "string",
+        ),
+      )
+    : [];
   const editorTarget =
     typeof value.editorDocumentId === "string" &&
     typeof value.editorDocumentName === "string"
@@ -36,6 +46,7 @@ function MessageReferences({ context }: { context: unknown }) {
     <AgentContextChips
       filePaths={filePaths}
       boardNodes={boardNodes}
+      boardEdges={boardEdges}
       editorTarget={editorTarget}
     />
   );

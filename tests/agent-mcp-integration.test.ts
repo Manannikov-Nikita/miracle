@@ -73,8 +73,8 @@ async function open() {
     expect(response.ok, JSON.stringify(data)).toBe(true);
     return data as any;
   };
-  const start = async (workflow = false) => {
-    const command = `FIXTURE_CONTROL='${control}' FIXTURE_WORKFLOW=${workflow ? 1 : 0} '${process.execPath}' '${resolve("tests/fixtures/agents/miracle-mcp-agent.mjs")}'`;
+  const start = async (workflow = false, fixture = "miracle-mcp-agent.mjs") => {
+    const command = `FIXTURE_CONTROL='${control}' FIXTURE_WORKFLOW=${workflow ? 1 : 0} '${process.execPath}' '${resolve("tests/fixtures/agents", fixture)}'`;
     const profile = await request("POST", "/api/agent-profiles", {
       name: "MCP integration",
       provider: "claude",
@@ -86,9 +86,11 @@ async function open() {
       context: {},
       clientRequestId: randomUUID(),
     });
-    await until(() => existsSync(join(control, "capability.json")), Boolean);
+    const capabilityFile =
+      fixture === "board-worker.mjs" ? "root.json" : "capability.json";
+    await until(() => existsSync(join(control, capabilityFile)), Boolean);
     const capability = JSON.parse(
-      readFileSync(join(control, "capability.json"), "utf8"),
+      readFileSync(join(control, capabilityFile), "utf8"),
     );
     let sequence = 0;
     const mcpResponse = (name: string, args = {}, extraHeaders = {}) =>
@@ -206,6 +208,323 @@ async function addEngine(
   });
   return { connection, executedSql };
 }
+
+it("discovers compact board tools and aligns painted geometry through actual MCP", async () => {
+  const s = await open();
+  const agent = await s.start();
+  const response = await fetch(agent.capability.endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${agent.capability.token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "board-tools",
+      method: "tools/list",
+    }),
+  });
+  const catalog = (await response.json()) as any;
+  expect(catalog.result.tools.map((tool: any) => tool.name)).toEqual(
+    expect.arrayContaining([
+      "read_board_scene",
+      "read_board_items",
+      "board_spatial",
+      "delegate_board_task",
+      "board_task_status",
+      "cancel_board_task",
+    ]),
+  );
+  const patchSchema = catalog.result.tools.find(
+    (tool: any) => tool.name === "board_patch",
+  ).inputSchema.properties.operations.items.properties.patch.properties;
+  expect(patchSchema.bend).toBeDefined();
+  expect(patchSchema.sourcePoint).toBeDefined();
+  expect(patchSchema.sourceHandle).toBeDefined();
+  expect(patchSchema.appearance).toBeDefined();
+  const board = await s.request("POST", "/api/boards", {
+    name: "Painted geometry",
+    document: {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "arrow",
+          type: "artifact",
+          position: { x: 10, y: 100 },
+          width: 260,
+          height: 40,
+          data: {
+            title: "Arrow",
+            kind: "shape",
+            shape: { type: "line", lineEnd: "arrow" },
+          },
+        },
+        {
+          id: "card",
+          type: "artifact",
+          position: { x: 400, y: 100 },
+          width: 100,
+          height: 100,
+          data: {
+            title: "Card",
+            kind: "note",
+            text: "private-board-content".repeat(5000),
+          },
+        },
+      ],
+      edges: [],
+    },
+  });
+  const scene = await agent.mcp("read_board_scene", { id: board.id });
+  expect(JSON.stringify(scene)).not.toContain("private-board-content");
+  expect(Buffer.byteLength(JSON.stringify(scene))).toBeLessThan(48 * 1024);
+  expect(
+    scene.items.find((item: any) => item.id === "arrow").bounds.bottom,
+  ).toBeCloseTo(123.6);
+  const request = {
+    id: board.id,
+    baseRevision: scene.revision,
+    mutationId: randomUUID(),
+    operations: [
+      { type: "align", nodeIds: ["arrow", "card"], action: "bottom" },
+    ],
+  };
+  const receipt = await agent.mcp("board_spatial", request);
+  expect(receipt.document).toBeUndefined();
+  expect(JSON.stringify(receipt)).not.toContain("private-board-content");
+  expect(await agent.mcp("board_spatial", request)).toEqual(receipt);
+  const actual = await s.request("GET", `/api/boards/${board.id}`);
+  expect(
+    actual.document.nodes.find((node: any) => node.id === "arrow").position.y,
+  ).toBeCloseTo(176.4);
+  const stale = await agent.mcpResponse("board_spatial", {
+    ...request,
+    mutationId: randomUUID(),
+  });
+  const failure = (await stale.json()) as any;
+  expect(failure.result.isError).toBe(true);
+  expect(JSON.parse(failure.result.content[0].text).code).toBe(
+    "REVISION_CONFLICT",
+  );
+  s.release();
+});
+
+it("reads only requested board items and acknowledges patches without copying other content", async () => {
+  const s = await open();
+  const agent = await s.start();
+  const board = await s.request("POST", "/api/boards", {
+    name: "Bounded content",
+    document: {
+      schemaVersion: 1,
+      nodes: [
+        {
+          id: "target",
+          type: "artifact",
+          position: { x: 0, y: 0 },
+          data: { kind: "note", title: "Target", text: "edit me" },
+        },
+        {
+          id: "other",
+          type: "artifact",
+          position: { x: 500, y: 0 },
+          data: {
+            kind: "markdown",
+            title: "Other",
+            text: "PRIVATE_OTHER_CONTENT".repeat(9000),
+          },
+        },
+      ],
+      edges: [],
+    },
+  });
+  const items = await agent.mcp("read_board_items", {
+    id: board.id,
+    nodeIds: ["target"],
+  });
+  expect(items.nextOffset).toBeNull();
+  expect(JSON.parse(items.jsonChunk).nodes.map((node: any) => node.id)).toEqual(
+    ["target"],
+  );
+  expect(JSON.stringify(items)).not.toContain("PRIVATE_OTHER_CONTENT");
+  const request = {
+    id: board.id,
+    baseRevision: items.revision,
+    mutationId: randomUUID(),
+    response: "compact",
+    operations: [
+      {
+        type: "update_node",
+        id: "target",
+        patch: { data: { text: "updated" } },
+      },
+    ],
+  };
+  const receipt = await agent.mcp("board_patch", request);
+  expect(receipt).toMatchObject({ id: board.id, revision: items.revision + 1 });
+  expect(receipt.document).toBeUndefined();
+  expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThan(2048);
+  expect(await agent.mcp("board_patch", request)).toEqual(receipt);
+  const actual = await s.request("GET", `/api/boards/${board.id}`);
+  expect(actual.document.nodes[0].data.text).toBe("updated");
+  expect(actual.document.nodes[1].data.text).toContain("PRIVATE_OTHER_CONTENT");
+  s.release();
+});
+
+it("isolates two real board workers over HTTP, queues overlapping work and revokes cancelled access", async () => {
+  const s = await open();
+  const board = await s.request("POST", "/api/boards", {
+    name: "Parallel board",
+    document: {
+      schemaVersion: 1,
+      nodes: ["a", "b", "c"].map((id, index) => ({
+        id,
+        type: "artifact",
+        position: { x: index * 500, y: 0 },
+        data: {
+          kind: "note",
+          title: id,
+          text: "PRIVATE_BOARD_TEXT".repeat(2000),
+        },
+      })),
+      edges: [],
+    },
+  });
+  const foreign = await s.request("POST", "/api/boards", {
+    name: "Outside scope",
+  });
+  const agent = await s.start(false, "board-worker.mjs");
+  const delegate = (name: string, nodeId: string) =>
+    agent.mcp("delegate_board_task", {
+      id: board.id,
+      name,
+      task: "Move the assigned block only; use a fresh scene.",
+      nodeIds: [nodeId],
+      mutationId: randomUUID(),
+    });
+  const first = await delegate("first", "a");
+  const second = await delegate("second", "b");
+  const queued = await delegate("overlap", "a");
+  expect(queued.status).toBe("queued");
+  expect(existsSync(join(s.control, "overlap.json"))).toBe(false);
+  const capability = async (name: string) => {
+    await until(() => existsSync(join(s.control, name + ".json")), Boolean);
+    return JSON.parse(readFileSync(join(s.control, name + ".json"), "utf8"));
+  };
+  const firstCap = await capability("first");
+  const secondCap = await capability("second");
+  expect(firstCap.pid).not.toBe(secondCap.pid);
+  expect(firstCap.token).not.toBe(secondCap.token);
+  expect(firstCap.token).not.toBe(agent.capability.token);
+  expect(firstCap.prompt).not.toContain("PRIVATE_BOARD_TEXT");
+  expect(Buffer.byteLength(firstCap.prompt)).toBeLessThan(16000);
+  const rpc = async (cap: any, method: string, params?: unknown) => {
+    const response = await fetch(cap.endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${cap.token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: randomUUID(),
+        method,
+        params,
+      }),
+    });
+    const body = (await response.json()) as any;
+    return { status: response.status, body };
+  };
+  const call = (cap: any, name: string, args: unknown) =>
+    rpc(cap, "tools/call", { name, arguments: args });
+  const catalog = await rpc(firstCap, "tools/list");
+  const names = catalog.body.result.tools.map((tool: any) => tool.name);
+  expect(names).toContain("board_spatial");
+  expect(names).not.toContain("run_query");
+  expect(names).not.toContain("delegate_board_task");
+  expect(names).not.toContain("read_board");
+  expect(
+    (await call(firstCap, "read_board_scene", { id: foreign.id })).body.result
+      .isError,
+  ).toBe(true);
+  expect(
+    (
+      await call(firstCap, "run_query", {
+        sql: "SELECT 1",
+        connectionId: randomUUID(),
+        mutationId: randomUUID(),
+      })
+    ).body.result.isError,
+  ).toBe(true);
+  expect(
+    (await call(firstCap, "read_board_items", { id: board.id, nodeIds: ["b"] }))
+      .body.result.isError,
+  ).toBe(true);
+  const forbidden = await call(firstCap, "board_patch", {
+    id: board.id,
+    baseRevision: board.revision,
+    mutationId: randomUUID(),
+    operations: [
+      { type: "update_node", id: "c", patch: { position: { x: 999, y: 999 } } },
+    ],
+  });
+  expect(forbidden.body.result.isError).toBe(true);
+  const locks = await s.request("GET", "/api/agent-work");
+  const owners = locks.locks.filter(
+    (lock: any) => lock.target.kind === "board-node",
+  );
+  expect(new Set(owners.map((lock: any) => lock.worker.id)).size).toBe(2);
+  expect(new Set(owners.map((lock: any) => lock.worker.color)).size).toBe(2);
+  const parentWrite = await agent.mcpResponse("board_patch", {
+    id: board.id,
+    baseRevision: board.revision,
+    mutationId: randomUUID(),
+    operations: [
+      { type: "update_node", id: "a", patch: { position: { x: 888, y: 888 } } },
+    ],
+  });
+  expect(((await parentWrite.json()) as any).result.isError).toBe(true);
+  const move = await call(firstCap, "board_spatial", {
+    id: board.id,
+    baseRevision: board.revision,
+    mutationId: randomUUID(),
+    operations: [{ type: "move", nodeIds: ["a"], dx: 25, dy: 50 }],
+  });
+  expect(move.body.result.isError).toBe(false);
+  const current = await s.request("GET", `/api/boards/${board.id}`);
+  expect(current.document.nodes.map((node: any) => node.position)).toEqual([
+    { x: 25, y: 50 },
+    { x: 500, y: 0 },
+    { x: 1000, y: 0 },
+  ]);
+  await agent.mcp("cancel_board_task", { taskId: first.id });
+  expect((await rpc(firstCap, "tools/list")).status).toBe(401);
+  const overlapCap = await capability("overlap");
+  expect(overlapCap.pid).not.toBe(firstCap.pid);
+  expect((await rpc(secondCap, "tools/list")).status).toBe(200);
+  writeFileSync(join(s.control, "second.finish"), "");
+  writeFileSync(join(s.control, "overlap.finish"), "");
+  const statuses = await until(
+    () => agent.mcp("board_task_status"),
+    (value: any) =>
+      value.tasks.every((task: any) =>
+        ["completed", "cancelled", "failed"].includes(task.status),
+      ),
+  );
+  expect(statuses.tasks.find((task: any) => task.id === second.id).status).toBe(
+    "completed",
+  );
+  expect(statuses.tasks.find((task: any) => task.id === queued.id).status).toBe(
+    "completed",
+  );
+  expect(Buffer.byteLength(JSON.stringify(statuses))).toBeLessThan(16000);
+  expect((await s.request("GET", "/api/agent-work")).locks).toEqual([]);
+  writeFileSync(join(s.control, "root.finish"), "");
+  await until(
+    () => s.request("GET", `/api/chats/${agent.chat.id}`),
+    (chat: any) => chat.turns[0].status === "completed",
+  );
+  expect((await rpc(overlapCap, "tools/list")).status).toBe(401);
+});
 
 it("exposes chart appearance and geometry controls through the actual MCP discovery and guide", async () => {
   const s = await open();

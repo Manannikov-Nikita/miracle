@@ -374,6 +374,21 @@ function Workspace({
     ],
   );
   const selectionRef = useRef<ReadonlySet<string>>(selectedIds);
+  const [selectedEdge, setSelectedEdgeId] = useState<string | null>(null);
+  const selectedEdgeRef = useRef<{
+    boardId: string;
+    slideId?: string;
+    id: string;
+  } | null>(null);
+  const setSelectedEdge = useCallback(
+    (id: string | null) => {
+      const boardId = store.current.current?.id;
+      selectedEdgeRef.current =
+        id && boardId ? { boardId, slideId: slideRef.current, id } : null;
+      setSelectedEdgeId(id);
+    },
+    [store.current],
+  );
   const projectSync = useProjectSync();
   useEffect(
     () =>
@@ -382,6 +397,16 @@ function Workspace({
           if (!activeRef.current) return {};
           const current = store.current.current;
           if (!current) return {};
+          const selection = selectedEdgeRef.current;
+          const edge =
+            selection?.boardId === current.id &&
+            selection.slideId === slideRef.current
+              ? current.document.edges.find(
+                  (edge) =>
+                    edge.id === selection.id &&
+                    edge.slideId === selection.slideId,
+                )
+              : undefined;
           return {
             boardId: current.id,
             ...(slideRef.current ? { slideId: slideRef.current } : {}),
@@ -393,6 +418,13 @@ function Workspace({
                     selectionRef.current.has(node.id),
                 )
                 .map((node) => ({ id: node.id, title: node.data.title })) || [],
+            ...(edge
+              ? {
+                  boardEdges: [
+                    { id: edge.id, label: edge.label?.trim() || "Стрелка" },
+                  ],
+                }
+              : {}),
           };
         },
         // useBoard registers the board's pending writes separately.
@@ -405,14 +437,22 @@ function Workspace({
   }, [
     projectSync,
     selectedIds,
+    selectedEdge,
     board?.id,
     board?.document.nodes,
+    board?.document.edges,
     slideId,
     active,
   ]);
   const selectNodes = (ids: ReadonlySet<string>) => {
     selectionRef.current = ids;
     setSelectedIds(ids);
+  };
+  const selectEdge = (id: string) => {
+    setSelectedEdge(id);
+    setSelected(null);
+    selectNodes(new Set());
+    setInspecting(false);
   };
   const [guides, setGuides] = useState<AlignmentGuide[]>([]);
   const movingIds = useRef<ReadonlySet<string> | null>(null);
@@ -434,7 +474,6 @@ function Workspace({
   const snapCancelled = useRef(false);
   const suppressDragClick = useRef(false);
   const [inspecting, setInspecting] = useState(false);
-  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const searchNavigation = useRef<{
     controller: AbortController;
     dispose(): void;
@@ -915,10 +954,8 @@ function Workspace({
         primary && ids.has(primary) ? primary : ([...ids].at(-1) ?? null),
       );
     }
-    if (
-      selectedEdge &&
-      !visibleContent?.edges.some((edge) => edge.id === selectedEdge)
-    )
+    const edge = selectedEdgeRef.current;
+    if (edge && !visibleContent?.edges.some((item) => item.id === edge.id))
       setSelectedEdge(null);
   }, [visibleContent]);
   useEffect(() => {
@@ -2941,6 +2978,21 @@ function Workspace({
                     targetHandle: e.targetHandle ?? "left",
                     selected: e.id === selectedEdge,
                     type: "board",
+                    domAttributes: {
+                      onKeyDownCapture: (event) => {
+                        if (
+                          event.target !== event.currentTarget ||
+                          event.nativeEvent.isComposing ||
+                          (event.key !== "Enter" && event.key !== " ")
+                        )
+                          return;
+                        // An explicit keyboard selection must bypass the
+                        // marquee filter, even when a node is selected.
+                        event.preventDefault();
+                        event.stopPropagation();
+                        selectEdge(e.id);
+                      },
+                    },
                     data: {
                       edge: e,
                       gestureScope: `${workspaceId}:${cameraId}`,
@@ -2952,19 +3004,11 @@ function Workspace({
                         board.document,
                       ),
                       editing: editingEdge === e.id,
-                      onSelect: () => {
-                        setSelectedEdge(e.id);
-                        setSelected(null);
-                        selectNodes(new Set());
-                        setInspecting(false);
-                      },
+                      onSelect: () => selectEdge(e.id),
                       onEdit: () => {
                         if (!editable || !store.canEditEdge(e.id)) return;
-                        setSelectedEdge(e.id);
+                        selectEdge(e.id);
                         setEditingEdge(e.id);
-                        setSelected(null);
-                        selectNodes(new Set());
-                        setInspecting(false);
                       },
                       onFinishEdit: () =>
                         setEditingEdge((current) =>

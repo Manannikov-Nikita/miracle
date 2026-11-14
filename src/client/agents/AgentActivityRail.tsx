@@ -5,6 +5,7 @@ import {
   ClockCounterClockwise,
   Database,
   Pause,
+  Sparkle,
   UsersThree,
   WarningCircle,
   X,
@@ -150,7 +151,7 @@ function SubagentDetails({
   children,
   live,
 }: {
-  children: AgentSubagent[];
+  children: ReturnType<typeof agentSubagents>;
   live: boolean;
 }) {
   if (!children.length)
@@ -163,14 +164,24 @@ function SubagentDetails({
     <>
       <p className="agent-rail-hint">
         {live
-          ? "Статусы от провайдера агента."
-          : "Последние известные статусы от провайдера."}
+          ? "Статусы исполнителей."
+          : "Последние известные статусы исполнителей."}
       </p>
       <div className="agent-rail-items">
         {children.map((child) => (
           <article className="agent-rail-item" key={child.id}>
             <div className="agent-rail-child-heading">
-              <strong>{child.name || child.id}</strong>
+              <strong className="agent-rail-child-name">
+                {child.color && (
+                  <Sparkle
+                    size={14}
+                    weight="fill"
+                    color={child.color}
+                    aria-hidden="true"
+                  />
+                )}
+                {child.name || child.id}
+              </strong>
               <span>{childLabels[child.status]}</span>
             </div>
             {child.name && (

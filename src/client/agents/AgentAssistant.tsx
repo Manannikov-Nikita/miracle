@@ -52,12 +52,26 @@ export default function AgentAssistant({
       context.boardId,
       context.slideId,
       (context.boardNodes || []).map((node) => node.id),
+      (context.boardEdges || []).map((edge) => edge.id),
     ]);
   const currentSelection = selectionKey(targetContext);
-  const selectedNodes = (targetContext.boardNodes || []).filter(
-    (node) =>
-      dismissed.key !== currentSelection || !dismissed.ids.includes(node.id),
-  );
+  const boardReferences = (context: typeof targetContext) => {
+    const omitted =
+      dismissed.key === selectionKey(context) ? dismissed.ids : [];
+    return {
+      boardNodes: (context.boardNodes || []).filter(
+        (node) => !omitted.includes(`node:${node.id}`),
+      ),
+      boardEdges: context.boardEdges?.filter(
+        (edge) => !omitted.includes(`edge:${edge.id}`),
+      ),
+    };
+  };
+  const dismissBoardReference = (id: string) =>
+    setDismissed((current) => ({
+      key: currentSelection,
+      ids: [...(current.key === currentSelection ? current.ids : []), id],
+    }));
   useEffect(() => {
     setDismissed((current) =>
       current.key === currentSelection
@@ -106,11 +120,7 @@ export default function AgentAssistant({
       filePaths,
       boardId: current.boardId,
       slideId: current.slideId,
-      boardNodes: (current.boardNodes || []).filter(
-        (node) =>
-          dismissed.key !== selectionKey(current) ||
-          !dismissed.ids.includes(node.id),
-      ),
+      ...boardReferences(current),
     };
     const signature = JSON.stringify({
       content,
@@ -121,6 +131,7 @@ export default function AgentAssistant({
         ? { id: editorTarget.id, path: editorTarget.path }
         : undefined,
       boardNodeIds: references.boardNodes.map((node) => node.id),
+      boardEdgeIds: (references.boardEdges || []).map((edge) => edge.id),
       imageIds: images.map((image) => image.localId),
     });
     const previous = requestIds.current.get(draftKey);
@@ -279,16 +290,9 @@ export default function AgentAssistant({
                 onEditorTargetChange={(tab) =>
                   setEditorTargets((items) => ({ ...items, [draftKey]: tab }))
                 }
-                boardNodes={selectedNodes}
-                onDismissBoardNode={(id) =>
-                  setDismissed((current) => ({
-                    key: currentSelection,
-                    ids: [
-                      ...(current.key === currentSelection ? current.ids : []),
-                      id,
-                    ],
-                  }))
-                }
+                {...boardReferences(targetContext)}
+                onDismissBoardNode={(id) => dismissBoardReference(`node:${id}`)}
+                onDismissBoardEdge={(id) => dismissBoardReference(`edge:${id}`)}
                 onSettings={() => setSettings(true)}
               />
             )}

@@ -1,13 +1,13 @@
 import { preserveResizeAspect, type ResizeRectangle } from "./resize-aspect";
 import type { ResizeSides } from "./resize-snapping";
 
-type Point = { x: number; y: number };
+import {
+  normalizeRotation,
+  rotatePoint,
+  type Point,
+} from "../../shared/board-geometry";
 
-export function normalizeRotation(angle: number): number {
-  if (!Number.isFinite(angle)) return 0;
-  const remainder = angle % 360;
-  return remainder === 0 ? 0 : remainder < 0 ? remainder + 360 : remainder;
-}
+export { normalizeRotation, rotatePoint };
 
 export function snapRotation(angle: number, shift = false): number {
   const normalized = normalizeRotation(angle);
@@ -22,18 +22,6 @@ export function pointerRotation(center: Point, pointer: Point): number {
   return normalizeRotation(
     (Math.atan2(pointer.x - center.x, center.y - pointer.y) * 180) / Math.PI,
   );
-}
-
-export function rotatePoint(point: Point, center: Point, angle: number): Point {
-  const radians = (normalizeRotation(angle) * Math.PI) / 180;
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  return {
-    x: center.x + dx * cosine - dy * sine,
-    y: center.y + dx * sine + dy * cosine,
-  };
 }
 
 /**

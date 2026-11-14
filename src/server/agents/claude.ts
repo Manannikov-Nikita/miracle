@@ -32,6 +32,9 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
   });
   const args = [
     ...command.args,
+    ...(options.boardOnly
+      ? ["--tools", "AskUserQuestion", "--strict-mcp-config"]
+      : []),
     "--mcp-config",
     mcp,
     ...(options.resumeSessionId ? ["--resume", options.resumeSessionId] : []),
@@ -58,6 +61,13 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
     resultError: Error | undefined;
   const partialMessages = new Set<string>();
   let currentMessage = "initial";
+  let lastWorkerMessage: string | undefined;
+  const emitText = (text: string, messageId: string) => {
+    if (options.boardOnly && lastWorkerMessage !== messageId) {
+      lastWorkerMessage = messageId;
+      emit({ type: "message", text, messageStart: true });
+    } else emit({ type: "message", text });
+  };
   let currentModel: string | undefined;
   let contextUsage: AgentContextUsage | undefined;
   const tools = new Map<
@@ -285,7 +295,7 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
       ) {
         partialMessages.add(currentMessage);
         textEmitted = true;
-        emit({ type: "message", text: event.delta.text });
+        emitText(event.delta.text, currentMessage);
       }
     }
     if (
@@ -303,7 +313,7 @@ export function startClaudeTurn(options: AgentAdapterOptions): AgentProcess {
           typeof block.text === "string"
         ) {
           textEmitted = true;
-          emit({ type: "message", text: block.text });
+          emitText(block.text, message.message.id || currentMessage);
         }
         if (
           block.type === "tool_use" &&

@@ -1,5 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ChartLine, Code, FileText, X } from "@phosphor-icons/react";
+import {
+  ArrowUpRight,
+  ChartLine,
+  Code,
+  FileText,
+  X,
+} from "@phosphor-icons/react";
+import type { AgentTargetContext } from "../../shared/agents";
 import { api } from "../api";
 import type { OpenEditorTab } from "./ProjectSync";
 
@@ -299,15 +306,25 @@ export function AgentContextChips({
   onEditorTargetChange,
   boardNodes,
   onDismissBoardNode,
+  boardEdges = [],
+  onDismissBoardEdge,
 }: {
   filePaths: string[];
   onFilesChange?: (paths: string[]) => void;
   editorTarget?: OpenEditorTab;
   onEditorTargetChange?: (tab: OpenEditorTab | undefined) => void;
-  boardNodes: { id: string; title: string }[];
+  boardNodes: NonNullable<AgentTargetContext["boardNodes"]>;
   onDismissBoardNode?: (id: string) => void;
+  boardEdges?: AgentTargetContext["boardEdges"];
+  onDismissBoardEdge?: (id: string) => void;
 }) {
-  if (!filePaths.length && !boardNodes.length && !editorTarget) return null;
+  if (
+    !filePaths.length &&
+    !boardNodes.length &&
+    !boardEdges.length &&
+    !editorTarget
+  )
+    return null;
   return (
     <div className="agent-context-chips" aria-label="Контекст сообщения">
       {editorTarget && !editorTarget.path && (
@@ -345,6 +362,28 @@ export function AgentContextChips({
               aria-label={`Убрать из контекста ${node.title}`}
               onClick={() => {
                 onDismissBoardNode(node.id);
+                document.getElementById("agent-message")?.focus();
+              }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </span>
+      ))}
+      {boardEdges.map((edge) => (
+        <span
+          className="agent-context-chip"
+          key={`edge:${edge.id}`}
+          title={edge.label}
+        >
+          <ArrowUpRight size={14} aria-hidden="true" />
+          <span>{edge.label}</span>
+          {onDismissBoardEdge && (
+            <button
+              type="button"
+              aria-label={`Убрать стрелку ${edge.label} из контекста`}
+              onClick={() => {
+                onDismissBoardEdge(edge.id);
                 document.getElementById("agent-message")?.focus();
               }}
             >

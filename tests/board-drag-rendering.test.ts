@@ -251,3 +251,75 @@ it("locks one card without blocking its neighbor or copying and selection", asyn
     )!.readOnly,
   ).toBe(false);
 });
+
+it("gives simultaneous card owners distinct work colors and readable names", async () => {
+  await open();
+  await act(async () =>
+    project.emit({
+      id: 10,
+      type: "agent.work",
+      data: {
+        locks: [
+          { id: "moving", name: "Раскладка", color: 0 },
+          { id: "stationary", name: "Проверка", color: 1 },
+        ].map(({ id, name, color }) => ({
+          target: { kind: "board-node", boardId: board.id, id },
+          turnId: "same-turn",
+          chatId: "chat",
+          startedAt: "now",
+          worker: { id: `worker-${color}`, name, color },
+        })),
+      },
+    }),
+  );
+  const cards = [
+    ...host.querySelectorAll<HTMLElement>("article.agent-work-active"),
+  ];
+  const colors = cards.map((card) =>
+    card.style.getPropertyValue("--agent-work-color"),
+  );
+  expect(colors.every(Boolean)).toBe(true);
+  expect(new Set(colors).size).toBe(2);
+  expect(
+    cards
+      .find((card) => card.ariaLabel === "moving")
+      ?.querySelector('[role="status"]')?.textContent,
+  ).toContain("Раскладка");
+  expect(
+    cards
+      .find((card) => card.ariaLabel === "stationary")
+      ?.querySelector('[role="status"]')?.textContent,
+  ).toContain("Проверка");
+});
+
+it("selects an explicitly focused connector by keyboard while a card is selected", async () => {
+  board.document.edges = [
+    {
+      id: "connector",
+      label: "Связь",
+      sourcePoint: { x: 100, y: 500 },
+      targetPoint: { x: 600, y: 500 },
+    },
+  ];
+  await open();
+  expect(project.context().boardNodes?.[0]?.id).toBe("moving");
+  const edge = host.querySelector<SVGElement>(
+    '[data-testid="rf__edge-connector"]',
+  )!;
+  expect(edge).not.toBeNull();
+  await act(async () => edge.focus());
+  expect(document.activeElement).toBe(edge);
+  await act(async () =>
+    edge.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+  expect(project.context().boardEdges).toEqual([
+    { id: "connector", label: "Связь" },
+  ]);
+  expect(project.context().boardNodes).toEqual([]);
+});

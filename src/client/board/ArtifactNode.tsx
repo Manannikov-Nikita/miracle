@@ -35,7 +35,7 @@ import {
 } from "@phosphor-icons/react";
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
-import type { AgentEntityWork } from "../../shared/agent-work";
+import { agentWorkColor, type AgentEntityWork } from "../../shared/agent-work";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import MarkdownEditor from "./MarkdownEditor";
 import StickyNoteEditor from "./StickyNoteEditor";
@@ -119,6 +119,9 @@ function ArtifactNode({
     ? presentationColors(actions.slideBackground ?? "#ffffff")
     : undefined;
   const work = actions.nodeWork?.(id);
+  const workColor = work?.worker
+    ? agentWorkColor(work.worker.color)
+    : undefined;
   const zoom = useStore(selectZoom);
   const content = useRef<HTMLDivElement>(null);
   const updateNodeInternals = useUpdateNodeInternals();
@@ -191,10 +194,13 @@ function ArtifactNode({
     <article
       className={`board-artifact board-artifact-${data.kind}${presentation ? " presentation-artifact" : ""}${selected ? " board-artifact-selected" : ""}${work ? " agent-work-active" : ""}`}
       aria-label={data.title}
+      data-agent-worker={work?.worker?.id}
       style={
         {
           "--board-resize-unit": `${1 / zoom}px`,
+          "--agent-work-color": workColor,
           ...(data.kind === "shape" && {
+            "--board-shape-rotation": `${rotation}deg`,
             ...(shapeFrame && {
               position: "absolute",
               left: shapeFrame.x,
@@ -321,9 +327,14 @@ function ArtifactNode({
           }
         />
       ))}
+      {work?.worker && (presentation || freeform) && (
+        <div className="board-node-agent-indicator">
+          <AgentWorkIndicator work={work} />
+        </div>
+      )}
       {!presentation && !freeform && (
         <header className="board-node-header">
-          <AgentWorkIndicator work={work} compact />
+          <AgentWorkIndicator work={work} compact={!work?.worker} />
           {data.kind !== "note" && (
             <>
               <span className="board-node-kind" aria-hidden="true">

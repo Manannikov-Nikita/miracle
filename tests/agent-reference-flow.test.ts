@@ -291,6 +291,38 @@ it("sends the displayed file and original chart even when selection changes duri
   );
 });
 
+it("captures the shown connector before flush and renders its chip in message history", async () => {
+  await act(async () => {
+    Object.assign(context, {
+      boardEdges: [{ id: "edge-a", label: "Причина → следствие" }],
+    });
+    project.contextChanged();
+  });
+  expect(host.querySelector("form")?.textContent).toContain(
+    "Причина → следствие",
+  );
+  await type("Explain the connector");
+  hold = true;
+  const submit = host.querySelector<HTMLButtonElement>(
+    '[aria-label="Отправить сообщение"]',
+  )!;
+  await act(async () => submit.click());
+  await act(async () => {
+    Object.assign(context, {
+      boardEdges: [{ id: "edge-b", label: "Другая стрелка" }],
+    });
+    project.contextChanged();
+    finish!();
+  });
+  expect(sent[0]?.context.boardEdges).toEqual([
+    { id: "edge-a", label: "Причина → следствие" },
+  ]);
+  expect(host.querySelector("article.user")?.textContent).toContain(
+    "Причина → следствие",
+  );
+  expect(host.querySelector("form")?.textContent).toContain("Другая стрелка");
+});
+
 it("pins the mentioned editor instead of the active tab and omits another tab's selection", async () => {
   let activeEditor = "editor-other";
   await act(async () => {

@@ -292,6 +292,69 @@ it("shows an empty state and only latest-turn child statuses without completing 
   expect(runningChild.textContent).not.toContain("Отменён");
 });
 
+it("shows the board owner color beside managed workers in activity", async () => {
+  vi.stubGlobal("fetch", async () => response([]));
+  const turn = {
+    id: "turn-a",
+    chatId: "chat-a",
+    status: "running" as const,
+    context: {},
+    createdAt: "now",
+  };
+  const workers = [
+    { id: "worker-a", name: "Раскладка", color: 0 },
+    { id: "worker-b", name: "Проверка", color: 1 },
+  ];
+  const messages: AgentMessage[] = workers.map((worker) => ({
+    id: worker.id,
+    chatId: turn.chatId,
+    turnId: turn.id,
+    role: "action",
+    content: worker.name,
+    createdAt: "now",
+    details: {
+      subagent: { id: worker.id, name: worker.name, status: "running" },
+      worker,
+    },
+  }));
+  await act(async () =>
+    root.render(
+      createElement(AgentActivityRail, {
+        state: state({
+          active: turn,
+          conversation: {
+            chat: {
+              id: turn.chatId,
+              title: "Chat",
+              provider: "codex",
+              profileId: "profile",
+              createdAt: "",
+              updatedAt: "",
+            },
+            turns: [turn],
+            messages,
+          },
+        }),
+      }),
+    ),
+  );
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>(".agent-rail-agents")!.click(),
+  );
+  const names = [
+    ...host.querySelectorAll<HTMLElement>(".agent-rail-child-name"),
+  ];
+  expect(names.map((item) => item.textContent)).toEqual([
+    "Раскладка",
+    "Проверка",
+  ]);
+  const fills = names.map((item) =>
+    item.querySelector("svg")?.getAttribute("fill"),
+  );
+  expect(fills.every(Boolean)).toBe(true);
+  expect(new Set(fills).size).toBe(2);
+});
+
 it("does not report no subagents before the selected conversation has loaded", async () => {
   vi.stubGlobal(
     "fetch",
