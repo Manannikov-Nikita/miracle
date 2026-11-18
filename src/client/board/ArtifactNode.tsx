@@ -35,6 +35,7 @@ import {
 } from "@phosphor-icons/react";
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
+import { BoardChartOverviewContext } from "./board-chart-overview";
 import { useCanvasChartViewport } from "./useCanvasChartViewport";
 import { agentWorkColor, type AgentEntityWork } from "../../shared/agent-work";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
@@ -191,7 +192,7 @@ function ArtifactNode({
   const zoom = useStore(needsZoom ? selectZoom : unitZoom);
   const canvasChart =
     data.kind === "result" && data.view === "chart" && !presentation;
-  const showResult = useCanvasChartViewport(
+  const chartViewport = useCanvasChartViewport(
     content,
     canvasChart,
     data.kind === "result" &&
@@ -273,6 +274,7 @@ function ArtifactNode({
     <article
       className={`board-artifact board-artifact-${data.kind}${presentation ? " presentation-artifact" : ""}${selected ? " board-artifact-selected" : ""}${work ? " agent-work-active" : ""}`}
       aria-label={data.title}
+      data-chart-overview={chartViewport.overview || undefined}
       inert={actions.inspectPresentationCharts && !inspectable}
       data-agent-worker={work?.worker?.id}
       style={
@@ -505,13 +507,15 @@ function ArtifactNode({
             />
           </Suspense>
         )}
-        {data.kind === "result" && data.resultSetId && showResult && (
-          <ArtifactResult
-            key={`${actions.boardId}:${id}`}
-            id={id}
-            data={data}
-            inlineEditable={inlineEditable}
-          />
+        {data.kind === "result" && data.resultSetId && chartViewport.mount && (
+          <BoardChartOverviewContext.Provider value={chartViewport.overview}>
+            <ArtifactResult
+              key={`${actions.boardId}:${id}`}
+              id={id}
+              data={data}
+              inlineEditable={inlineEditable}
+            />
+          </BoardChartOverviewContext.Provider>
         )}
         {data.kind === "image" && data.image && (
           <ImageContent

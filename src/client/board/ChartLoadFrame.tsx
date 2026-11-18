@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useContext, type ReactNode } from "react";
+import { BoardChartOverviewContext } from "./board-chart-overview";
 import ChartSkeleton, { type ChartSkeletonProps } from "./ChartSkeleton";
 import "./chart-loading.css";
 
@@ -15,8 +16,12 @@ export default function ChartLoadFrame({
   inlineSkeleton?: boolean;
   refreshing?: boolean;
 } & Pick<ChartSkeletonProps, "spec" | "count">) {
+  const overview = useContext(BoardChartOverviewContext);
   return (
-    <div className="chart-load-frame">
+    <div
+      className="chart-load-frame"
+      data-thumbnail-loading={(overview && busy) || undefined}
+    >
       <div
         className="chart-load-content"
         aria-busy={busy}
@@ -27,7 +32,9 @@ export default function ChartLoadFrame({
       </div>
       {busy && (
         <>
-          {!inlineSkeleton && <ChartSkeleton spec={spec} count={count} />}
+          {!overview && !inlineSkeleton && (
+            <ChartSkeleton spec={spec} count={count} />
+          )}
           <span className="chart-load-announcement" role="status">
             {refreshing || children
               ? "Обновление графика…"

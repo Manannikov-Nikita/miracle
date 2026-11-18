@@ -20,7 +20,7 @@
 /* Scale the SVG layout and HTML overlays together so their coordinates agree
    at every board zoom. */
 @container chart-content (min-width: 640px) and (min-height: 365px) {
-  .bk-chart {
+  .bk-chart:not([data-detail="thumbnail"]) {
     zoom: 1.3;
   }
 }
@@ -242,4 +242,42 @@
     :is(.bk-stack-value, .bk-stack-total) {
     animation: bk-appear 140ms ease-out calc(750ms + var(--bk-delay)) backwards;
   }
+}
+
+/* World-space sizes keep titles distinct even at the board's minimum zoom. */
+.board-artifact[data-chart-overview] .board-node-header {
+  height: 54px;
+  min-height: 54px;
+  padding-inline: 16px;
+  gap: 10px;
+}
+.board-artifact[data-chart-overview] .board-node-header strong {
+  font-size: 34px;
+  line-height: 1.2;
+}
+.board-artifact[data-chart-overview] .board-node-kind {
+  display: none;
+}
+.board-artifact[data-chart-overview]:not(
+    :hover,
+    :focus-within,
+    .board-artifact-selected
+  )
+  .board-node-toolbar {
+  position: absolute;
+  right: 16px;
+  pointer-events: none;
+}
+.bk-chart[data-detail="thumbnail"] {
+  padding: 4% 5%;
+  min-height: 0;
+}
+.bk-chart[data-detail="thumbnail"] .bk-no-series {
+  font-size: 24px;
+}
+
+/* Zooming back to a snapshot already on screen should immediately show its
+   finished geometry. A new result still gets its normal entrance animation. */
+.bk-chart[data-zoom-restored] .bk-plot svg * {
+  animation: none !important;
 }

@@ -1,8 +1,10 @@
 import {
   Component,
   memo,
+  useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ReactNode,
@@ -13,6 +15,8 @@ import {
 } from "../../shared/chart-appearance";
 import { ErrorBox } from "../components/UI";
 import ChartSkeleton from "./ChartSkeleton";
+import { BoardChartOverviewContext } from "./board-chart-overview";
+import ChartThumbnail from "./chart-kit/ChartThumbnail";
 import ScatterPlot from "./chart-kit/ScatterPlot";
 import { presentationColors } from "./presentation-colors";
 import CartesianPlot from "./chart-kit/CartesianPlot";
@@ -75,25 +79,32 @@ const plots = {
   scatter: ScatterPlot,
 } satisfies Record<ChartKind, (props: ChartPlotProps) => ReactNode>;
 
-class PlotBoundary extends Component<
-  { children: ReactNode; reset: Props },
-  { error?: Error }
-> {
+type PlotBoundaryProps = {
+  children: ReactNode;
+  reset: Props;
+  overview: boolean;
+};
+
+class PlotBoundary extends Component<PlotBoundaryProps, { error?: Error }> {
   state: { error?: Error } = {};
   static getDerivedStateFromError(error: Error) {
     return { error };
   }
-  componentDidUpdate(prev: Readonly<{ reset: Props }>) {
+  componentDidUpdate(prev: Readonly<PlotBoundaryProps>) {
     const next = this.props.reset;
     if (
       this.state.error &&
-      (prev.reset.spec !== next.spec || prev.reset.series !== next.series)
+      (prev.reset.spec !== next.spec ||
+        prev.reset.series !== next.series ||
+        prev.overview !== this.props.overview)
     )
       this.setState({ error: undefined });
   }
   render() {
     if (this.state.error && this.props.reset.loading)
-      return <ChartSkeleton spec={this.props.reset.spec} />;
+      return this.props.overview ? null : (
+        <ChartSkeleton spec={this.props.reset.spec} />
+      );
     return this.state.error ? (
       <ErrorBox
         className="board-error nowheel"
@@ -114,7 +125,7 @@ class PlotBoundary extends Component<
   }
 }
 
-function ChartKitPlot(props: Props) {
+function ChartKitPlot({ overview, ...props }: Props & { overview: boolean }) {
   const { series, spec, presentationBackground } = props;
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const showLegend = spec.kind !== "histogram" && spec.legend;
@@ -148,16 +159,29 @@ function ChartKitPlot(props: Props) {
       colors: visible.map((entry) => entry.color),
     };
   }, [entries, hidden, showLegend]);
+  const previewedSeries = useRef<typeof data.series | null>(null);
+  useEffect(() => {
+    if (overview) previewedSeries.current = data.series;
+    else if (previewedSeries.current !== data.series)
+      previewedSeries.current = null;
+  }, [overview, data.series]);
   const ink = presentationBackground
     ? presentationColors(presentationBackground)
     : undefined;
   const position = spec.legendPosition ?? "top";
-  const Plot = plots[spec.kind];
+  const Plot = overview ? ChartThumbnail : plots[spec.kind];
   return (
     <div
       className="board-chart bk-chart"
       data-kind={spec.kind}
-      data-legend-position={showLegend ? position : undefined}
+      data-detail={overview ? "thumbnail" : undefined}
+      data-zoom-restored={
+        (!overview &&
+          !props.loading &&
+          previewedSeries.current === data.series) ||
+        undefined
+      }
+      data-legend-position={showLegend && !overview ? position : undefined}
       style={
         {
           "--bk-text": ink?.text ?? "var(--board-text, #eeeff0)",
@@ -168,7 +192,7 @@ function ChartKitPlot(props: Props) {
         } as CSSProperties
       }
     >
-      {showLegend && (
+      {showLegend && !overview && (
         <div
           className="bk-legend nowheel nodrag"
           role="group"
@@ -212,10 +236,12 @@ function ChartKitPlot(props: Props) {
       )}
       <div className="bk-plot">
         {props.loading && !entries.length ? (
-          <ChartSkeleton
-            spec={spec}
-            count={series[0]?.xCategories?.length ?? series[0]?.data.length}
-          />
+          overview ? null : (
+            <ChartSkeleton
+              spec={spec}
+              count={series[0]?.xCategories?.length ?? series[0]?.data.length}
+            />
+          )
         ) : data.series.length ||
           (spec.kind === "histogram" && !entries.length) ? (
           <Plot
@@ -226,7 +252,9 @@ function ChartKitPlot(props: Props) {
           />
         ) : (
           <div className="bk-no-series" role="status">
-            Все ряды скрыты. Выберите ряд в легенде.
+            {overview
+              ? "Все ряды скрыты"
+              : "Все ряды скрыты. Выберите ряд в легенде."}
           </div>
         )}
       </div>
@@ -235,9 +263,10 @@ function ChartKitPlot(props: Props) {
 }
 
 export default memo(function BoardChartPlot(props: Props) {
+  const overview = useContext(BoardChartOverviewContext);
   return (
-    <PlotBoundary reset={props}>
-      <ChartKitPlot {...props} />
+    <PlotBoundary reset={props} overview={overview}>
+      <ChartKitPlot {...props} overview={overview} />
     </PlotBoundary>
   );
 });

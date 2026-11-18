@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, createElement } from "react";
+import { act, createElement, useContext } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getResultRows } from "../src/client/api";
 import { type ReactFlowInstance } from "@xyflow/react";
+import {
+  BoardChartOverviewContext,
+  isLargeChartBoard,
+} from "../src/client/board/board-chart-overview";
 import BoardFlow from "../src/client/board/BoardFlow";
 import ArtifactNode, {
   type ArtifactFlowNode,
@@ -19,7 +23,7 @@ vi.mock("../src/client/board/ResultView", async (load) => {
   return {
     ...actual,
     default: (props: Parameters<typeof actual.default>[0]) => {
-      resultRenders();
+      resultRenders(props.nodeId, useContext(BoardChartOverviewContext));
       return createElement(actual.default, props);
     },
   };
@@ -131,11 +135,14 @@ describe("board trackpad scrolling", () => {
     gestureScope = "board",
     extras: ArtifactFlowNode[] = [],
     selected = false,
+    { largeChartBoard = false, zoom = 1 } = {},
   ) {
     await act(async () =>
       root.render(
         createElement(BoardFlow, {
           gestureScope,
+          largeChartBoard,
+          defaultViewport: { x: 0, y: 0, zoom },
           width: 1000,
           height: 800,
           nodeTypes,
@@ -255,6 +262,86 @@ describe("board trackpad scrolling", () => {
     await render(chart);
     expect(host.querySelector(".bk-legend")).not.toBeNull();
     expect(getResultRows).toHaveBeenCalledOnce();
+  });
+  it("counts only native chart results for the board overview threshold", () => {
+    const nodes = Array.from({ length: 20 }, (_, i) => ({
+      id: String(i),
+      type: "artifact" as const,
+      position: { x: 0, y: i * 400 },
+      data: chart,
+    }));
+    expect(
+      isLargeChartBoard([
+        ...nodes,
+        { ...nodes[0], data: { ...chart, view: "table" } },
+        { ...nodes[0], data: { ...chart, view: "custom" } },
+        { ...nodes[0], data: { ...chart, resultSetId: undefined } },
+        { ...nodes[0], data: { kind: "text", title: "Заметка" } },
+      ]),
+    ).toBe(false);
+    expect(isLargeChartBoard([...nodes, { ...nodes[0], id: "21" }])).toBe(true);
+  });
+  it("starts at saved overview zoom, waits for fresh intersections on zoom-in and retains detail across pans", async () => {
+    const observed = installVisibilityObserver();
+    resultRenders.mockClear();
+    const other: ArtifactFlowNode = {
+      id: "far",
+      type: "artifact",
+      position: { x: 4000, y: 4000 },
+      width: 400,
+      height: 300,
+      data: chart,
+    };
+    await render(chart, "dense", [other], true, {
+      largeChartBoard: true,
+      zoom: 0.4,
+    });
+    const [near, far] = [
+      ...host.querySelectorAll<HTMLElement>("[data-canvas-chart]"),
+    ];
+    const mode = (body: Element) =>
+      body.closest("article")!.hasAttribute("data-chart-overview");
+    expect(mode(near)).toBe(true);
+    expect(
+      resultRenders.mock.calls
+        .filter(([id]) => id === "block")
+        .every(([, overview]) => overview === true),
+    ).toBe(true);
+    await act(async () => {
+      observed.notify(near, true);
+      observed.notify(far, true);
+    });
+    expect(mode(far)).toBe(true);
+    const zoom = async (z: number) => {
+      await act(async () => {
+        await flow.setViewport({ x: 0, y: 0, zoom: z });
+      });
+    };
+    await zoom(0.53);
+    expect(mode(near)).toBe(true);
+    await zoom(0.56);
+    expect(mode(near)).toBe(true);
+    expect(mode(far)).toBe(true);
+    await act(async () => {
+      observed.notify(near, true);
+      observed.notify(far, false);
+    });
+    expect(mode(near)).toBe(false);
+    expect(mode(far)).toBe(true);
+    await act(async () => {
+      observed.notify(near, false);
+      observed.notify(far, true);
+    });
+    expect(mode(far)).toBe(false);
+    expect(mode(near)).toBe(false);
+    await zoom(0.47);
+    expect(mode(near)).toBe(false);
+    await zoom(0.45);
+    expect(mode(near)).toBe(true);
+    expect(mode(far)).toBe(true);
+    expect(getResultRows).toHaveBeenCalledTimes(2);
+    await render(chart, "sparse", [], true, { zoom: 0.3 });
+    expect(mode(host.querySelector("[data-canvas-chart]")!)).toBe(false);
   });
   async function wheel(
     selector: string,

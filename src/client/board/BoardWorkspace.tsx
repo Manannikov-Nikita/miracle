@@ -126,6 +126,7 @@ import {
   removeNode,
 } from "./model";
 import { useBoard } from "./useBoard";
+import { isLargeChartBoard } from "./board-chart-overview";
 import { readBoardViewport, saveBoardViewport } from "./viewport";
 import { applyBoardNodeChanges } from "./flow-nodes";
 import { getNodeVisualBounds } from "./shape-geometry";
@@ -276,6 +277,10 @@ function Workspace({
           (presentation ? undefined : board?.document.viewport))
         : undefined,
     [workspaceId, cameraId],
+  );
+  const largeChartBoard = useMemo(
+    () => !presentation && !!board && isLargeChartBoard(board.document.nodes),
+    [presentation, board?.document.nodes],
   );
   const visibleContent = useMemo(
     () =>
@@ -2968,6 +2973,7 @@ function Workspace({
             <BoardActions.Provider value={actionContext}>
               <BoardFlow
                 id={flowId}
+                largeChartBoard={largeChartBoard}
                 gestureScope={`${workspaceId}:${cameraId}`}
                 colorMode="dark"
                 nodes={renderedBoard.nodes}

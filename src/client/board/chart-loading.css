@@ -197,3 +197,17 @@
     animation: chart-histogram-sweep 2.2s linear infinite;
   }
 }
+
+/* A zoomed-out board can show hundreds of cards. Keep the last silhouette
+   and use a single lightweight status while its snapshot is being refreshed. */
+.chart-load-frame[data-thumbnail-loading] > .chart-load-content {
+  opacity: 0.45;
+}
+.chart-load-frame[data-thumbnail-loading] > .chart-load-announcement {
+  inset: auto 5% 5%;
+  width: auto;
+  height: auto;
+  clip-path: none;
+  font-size: 22px;
+  color: var(--board-muted);
+}

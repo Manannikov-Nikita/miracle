@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api, getResultRows } from "../src/client/api";
 import ResultView from "../src/client/board/ResultView";
+import { BoardChartOverviewContext } from "../src/client/board/board-chart-overview";
 import type { ChartSpec, ResultPage, ResultSet } from "../src/shared/types";
 
 vi.mock("../src/client/api", () => ({ api: vi.fn(), getResultRows: vi.fn() }));
@@ -40,10 +41,24 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-function render(id: string, refreshing = false, spec = chart) {
+function render(
+  id: string,
+  refreshing = false,
+  spec = chart,
+  overview = false,
+) {
   return act(async () =>
     root.render(
-      createElement(ResultView, { id, refreshing, chart: spec, view: "chart" }),
+      createElement(
+        BoardChartOverviewContext.Provider,
+        { value: overview },
+        createElement(ResultView, {
+          id,
+          refreshing,
+          chart: spec,
+          view: "chart",
+        }),
+      ),
     ),
   );
 }
@@ -73,6 +88,47 @@ function expectReady() {
   expect(visible).not.toBeNull();
   expect(visible!.closest('[aria-hidden="true"], [inert]')).toBeNull();
 }
+
+it("keeps the snapshot and legend selection across board detail changes", async () => {
+  const snapshot = page("first", 3);
+  const spec = { ...chart, y: ["y", "plan"] };
+  snapshot.result.columns.push({ id: "plan", name: "План", type: "Float64" });
+  snapshot.rows = snapshot.rows.map(([x, y]) => [x, y, 5]);
+  vi.mocked(getResultRows).mockResolvedValueOnce(snapshot);
+  vi.mocked(api).mockResolvedValueOnce(snapshot);
+  await render("first", false, spec);
+  const button = () =>
+    host.querySelector<HTMLButtonElement>('.bk-legend button[title="План"]');
+  await act(async () => button()!.click());
+  const reads = vi.mocked(api).mock.calls.length;
+  await render("first", false, spec, true);
+  expect(host.querySelector('.bk-chart-thumbnail[role="img"]')).not.toBeNull();
+  expect(host.querySelector(".bk-legend")).toBeNull();
+  expect(plot()).toBeNull();
+  await render("first", true, spec, true);
+  expect(loading()).not.toBeNull();
+  expect(host.querySelector(".bk-chart-thumbnail")).not.toBeNull();
+  expect(host.querySelector(".chart-skeleton")).toBeNull();
+  await render("first", false, spec);
+  expect(plot()).not.toBeNull();
+  expect(button()!.getAttribute("aria-pressed")).toBe("false");
+  expect(getResultRows).toHaveBeenCalledOnce();
+  expect(api).toHaveBeenCalledTimes(reads);
+});
+
+it("uses a lightweight status before the first thumbnail and clears it for an empty result", async () => {
+  const metadata = Promise.withResolvers<ResultPage>();
+  const empty = page("empty", 0);
+  vi.mocked(getResultRows).mockReturnValueOnce(metadata.promise);
+  vi.mocked(api).mockResolvedValueOnce(empty);
+  await render("empty", false, chart, true);
+  expect(status()).toContain("Загрузка графика");
+  expect(host.querySelector(".chart-skeleton")).toBeNull();
+  await act(async () => metadata.resolve(empty));
+  expect(loading()).toBeNull();
+  expect(host.textContent).toContain("В результате нет строк.");
+  expect(host.querySelector(".bk-chart-thumbnail")).toBeNull();
+});
 
 it("shows loading feedback through running SQL, new metadata and full rows, and discards superseded reads", async () => {
   const firstRead = Promise.withResolvers<ResultPage>();

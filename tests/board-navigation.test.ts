@@ -11,6 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { ReactFlowProps, ResizeParams, Viewport } from "@xyflow/react";
 import type { Board } from "../src/shared/types";
 import BoardWorkspace from "../src/client/board/BoardWorkspace";
+import { CanvasChartDetailContext } from "../src/client/board/board-chart-overview";
 import { BoardActions } from "../src/client/board/ArtifactNode";
 import type { BoardEdgeViewData } from "../src/client/board/BoardEdgeView";
 import {
@@ -24,6 +25,7 @@ const flow = vi.hoisted(() => ({
   props: {} as ReactFlowProps,
   viewport: { x: 0, y: 0, zoom: 1 } as Viewport,
   restored: [] as Viewport[],
+  detail: "" as string,
   actions: undefined as ContextType<typeof BoardActions> | undefined,
 }));
 vi.mock("@xyflow/react", async (original) => {
@@ -48,6 +50,7 @@ vi.mock("@xyflow/react", async (original) => {
     ReactFlow: (props: ReactFlowProps) => {
       flow.props = props;
       flow.actions = useContext(BoardActions);
+      flow.detail = useContext(CanvasChartDetailContext).phase;
       return props.children;
     },
     useReactFlow: () => controller,
@@ -817,6 +820,34 @@ describe("board navigation is local view state", () => {
       host.querySelector<HTMLButtonElement>('[aria-label="Отменить изменение"]')
         ?.disabled,
     ).toBe(true);
+  });
+
+  it("uses the saved overview immediately on large boards and resets it when switching to a smaller board", async () => {
+    boards[0].document.nodes = Array.from({ length: 21 }, (_, i) => ({
+      id: `chart-${i}`,
+      type: "artifact",
+      position: { x: i * 600, y: 0 },
+      data: {
+        kind: "result",
+        view: "chart",
+        resultSetId: `snapshot-${i}`,
+        title: "Доход",
+      },
+    }));
+    boards[1].document.nodes = boards[0].document.nodes.slice(0, 20);
+    for (const board of boards) {
+      localStorage.setItem(
+        `miracle:board-viewport:workspace-a:${board.id}`,
+        JSON.stringify({ x: 30, y: 50, zoom: 0.42 }),
+      );
+    }
+    await open();
+    expect(flow.detail).toBe("overview");
+    await open("workspace-a", "second");
+    expect(flow.detail).toBe("full");
+    await open();
+    expect(flow.detail).toBe("overview");
+    expect(patches).toEqual([]);
   });
 
   it("restores the local camera independently for each board and workspace", async () => {
