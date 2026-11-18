@@ -6,7 +6,10 @@
   min-width: 0;
   min-height: 0;
 }
-.trend-plot {
+.trend-scroll {
+  width: 100%;
+  height: 100%;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -41,6 +44,7 @@
   }
 }
 .trend-latest {
+  pointer-events: none;
   position: absolute;
   right: 6px;
   top: 2px;
@@ -60,6 +64,7 @@
 }
 .matrix-tick,
 .matrix-value {
+  pointer-events: none;
   fill: currentColor;
   font-family: inherit;
   font-size: 11px;
@@ -87,32 +92,22 @@
     currentColor
   );
 }
-.compact-plot-readout {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0 8px;
-  padding: 4px 7px;
-  max-width: calc(100% - 6px);
-  box-sizing: border-box;
-  pointer-events: none;
-  background: #303338;
-  color: #eeeff0;
-  border: 1px solid #555a62;
-  border-radius: 4px;
-  font:
-    11px/1.35 system-ui,
-    sans-serif;
-  font-variant-numeric: tabular-nums;
+.trend-scroll:has(.trend-row[data-active]) .trend-context {
+  opacity: 0.64;
 }
-.compact-plot-readout span,
-.compact-plot-readout strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.trend-guide {
+  stroke: var(--bk-muted, currentColor);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.trend-row svg,
+.matrix-plot svg {
+  cursor: crosshair;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .trend-context {
+    transition: opacity 120ms ease-out;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .trend-line,

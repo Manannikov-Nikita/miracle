@@ -2,6 +2,7 @@ import { memo, type CSSProperties } from "react";
 import type { ChartSpec } from "../../../shared/types";
 import type { cartesianGeometry } from "./cartesian-geometry";
 import { formatChartNumber } from "../chartOptions";
+import { barRect } from "./cartesian-focus";
 import { LinePath } from "./bklit/line-path";
 import { truncateTick } from "./cartesian-geometry";
 
@@ -70,11 +71,7 @@ export default memo(function CartesianMarks({
                         : `0 ${zero}px`,
                     } as CSSProperties
                   }
-                  x={g.horizontal ? Math.min(zero, v) : start}
-                  y={g.horizontal ? start : Math.min(zero, v)}
-                  width={g.horizontal ? length : g.barWidth}
-                  height={g.horizontal ? g.barWidth : length}
-                  rx={Math.min(3, g.barWidth / 3, length / 2)}
+                  {...barRect(g, start, v)}
                   fill={color}
                 />
               ) : (

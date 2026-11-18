@@ -135,34 +135,23 @@
   stroke: var(--bk-muted);
   stroke-dasharray: 3;
 }
-.bk-readout {
-  position: absolute;
-  top: 5px;
-  z-index: 1;
-  right: 5px;
+.bk-marks[data-dimmed="true"] {
+  opacity: 0.3;
+}
+.bk-focus {
   pointer-events: none;
-  color: #eeeff0;
-  background: #292c30;
-  border: 1px solid #55585c;
-  border-radius: 6px;
-  padding: 6px 9px;
-  max-width: 75%;
-  max-height: 85%;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  font-variant-numeric: tabular-nums;
 }
-.bk-readout[data-side="left"] {
-  left: 5px;
-  right: auto;
+.bk-focus-dot {
+  stroke: var(--bk-surface);
+  stroke-width: 2.25;
 }
-.bk-readout div {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+.bk-category-chip rect {
+  fill: var(--bk-text);
 }
-.bk-readout b {
-  margin-left: auto;
+.bk-cartesian .bk-category-chip text {
+  fill: var(--bk-surface);
+  font-size: 11px;
+  font-weight: 600;
 }
 @keyframes bk-sweep {
   from {
@@ -189,6 +178,14 @@
   }
 }
 @media (prefers-reduced-motion: no-preference) {
+  .bk-focus-dot {
+    transition:
+      cx 95ms ease-out,
+      cy 95ms ease-out;
+  }
+  .bk-marks {
+    transition: opacity 0.14s ease-out;
+  }
   .bk-cartesian .bk-reveal {
     animation: bk-sweep 0.52s cubic-bezier(0.2, 0.68, 0.2, 1) both;
   }

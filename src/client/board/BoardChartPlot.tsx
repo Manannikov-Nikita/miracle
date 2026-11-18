@@ -118,6 +118,8 @@ function ChartKitPlot(props: Props) {
           "--bk-text": ink.text,
           "--bk-muted": ink.muted,
           "--bk-grid": ink.grid,
+          "--bk-surface":
+            presentationBackground ?? "var(--board-surface, #27292d)",
         } as CSSProperties
       }
     >

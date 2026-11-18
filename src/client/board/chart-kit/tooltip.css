@@ -1,0 +1,101 @@
+.chart-tooltip {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  width: max-content;
+  overflow: hidden;
+  padding: 8px min(11px, 3%);
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 9px;
+  background: #242629;
+  color: #f3f4f5;
+  box-shadow:
+    0 3px 12px rgb(0 0 0 / 23%),
+    0 1px 3px rgb(0 0 0 / 15%);
+  font:
+    12px/1.4 system-ui,
+    sans-serif;
+  pointer-events: none;
+  user-select: none;
+}
+
+.chart-tooltip-heading,
+.chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.chart-tooltip-heading {
+  margin-bottom: 4px;
+}
+
+.chart-tooltip-heading strong,
+.chart-tooltip-name,
+.chart-tooltip-value {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chart-tooltip-heading strong {
+  font-weight: 600;
+}
+
+.chart-tooltip-more {
+  flex: none;
+  color: #b4b7bd;
+  font-size: 10px;
+}
+
+.chart-tooltip-rows {
+  min-width: 0;
+}
+
+.chart-tooltip-row {
+  height: 20px;
+}
+
+.chart-tooltip-swatch {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.chart-tooltip-name {
+  flex: 1 1 auto;
+  color: #b4b7bd;
+}
+
+.chart-tooltip-row[data-active="true"] .chart-tooltip-name {
+  color: #eff0f2;
+  font-weight: 550;
+}
+
+.chart-tooltip-value {
+  flex: 0 0 auto;
+  max-width: 58%;
+  margin-inline-start: 5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+}
+
+.chart-tooltip[data-compact] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 2px;
+}
+
+.chart-tooltip[data-compact] .chart-tooltip-heading {
+  margin-bottom: 0;
+  flex: 0 1 auto;
+}
+
+.chart-tooltip[data-compact] .chart-tooltip-rows {
+  flex: 1 1 auto;
+}

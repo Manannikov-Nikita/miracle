@@ -17,12 +17,14 @@ function PresentationScene({
   slide,
   scale = 1,
   refreshing,
+  inspectCharts = false,
 }: {
   document: BoardDocument;
   boardId: string;
   slide: PresentationSlide;
   scale?: number;
   refreshing?: Record<string, boolean>;
+  inspectCharts?: boolean;
 }) {
   const flowId = useId();
   const viewport = useMemo(() => ({ x: 0, y: 0, zoom: scale }), [scale]);
@@ -31,6 +33,7 @@ function PresentationScene({
       boardId,
       editable: false,
       presentation: true,
+      inspectPresentationCharts: inspectCharts,
       slideBackground: slide.background,
       reportChartStatus: false,
       update: noop,
@@ -44,7 +47,7 @@ function PresentationScene({
       busy: {},
       refreshing,
     }),
-    [boardId, slide.background, refreshing],
+    [boardId, slide.background, refreshing, inspectCharts],
   );
   const scene = useMemo(() => {
     const elements = presentationSlideContent(document, slide.id);

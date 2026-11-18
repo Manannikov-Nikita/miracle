@@ -672,8 +672,11 @@
   pointer-events: none;
 }
 .presentation-node-content,
-.presentation-node-content * {
+.presentation-node-content:not([data-inspectable-chart]) * {
   pointer-events: none;
+}
+.presentation-node-content[data-inspectable-chart] .board-chart {
+  pointer-events: auto;
 }
 .presentation-artifact .board-note-text {
   color: var(--board-text);

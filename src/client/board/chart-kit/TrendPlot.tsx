@@ -1,10 +1,17 @@
 // Adapted from the Bklit UI LineSparkline (bklit/bklit-ui@76299da, MIT).
-import { memo, useMemo, useState } from "react";
+import { memo, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ChartSeriesItem } from "../model";
 import type { ChartPlotProps } from "./plot-types";
 import { trendLine } from "./bklit/trend-line";
 import { categoryText, metricText, usePlotViewport } from "./compact-plot";
+import ChartTooltip from "./ChartTooltip";
 import "./compact-plots.css";
+
+interface Selection {
+  key: string;
+  index: number;
+}
 
 const TrendRow = memo(function TrendRow({
   item,
@@ -13,6 +20,12 @@ const TrendRow = memo(function TrendRow({
   label,
   width,
   height,
+  rowKey,
+  activeIndex,
+  setSelection,
+  tooltipHost,
+  viewportHeight,
+  offset,
 }: {
   item: ChartSeriesItem;
   spec: ChartPlotProps["spec"];
@@ -20,10 +33,19 @@ const TrendRow = memo(function TrendRow({
   label: string;
   width: number;
   height: number;
+  rowKey: string;
+  activeIndex: number | null;
+  setSelection: React.Dispatch<React.SetStateAction<Selection | null>>;
+  tooltipHost: HTMLDivElement | null;
+  viewportHeight: number;
+  offset: number;
 }) {
-  const [focus, setFocus] = useState<number | null>(null);
+  const clip = useId();
+  const tooltipId = useId();
+  const pointerInspection = useRef(false);
   const last = item.data.length - 1;
-  const active = focus === null || last < 0 ? null : Math.min(focus, last);
+  const active =
+    activeIndex === null || last < 0 ? null : Math.min(activeIndex, last);
   const { points, path } = useMemo(
     () =>
       trendLine(
@@ -34,8 +56,17 @@ const TrendRow = memo(function TrendRow({
     [item.data, width, height],
   );
   const point = active === null ? undefined : points[active];
+  const ink = (active !== null && item.displayData?.[active]?.color) || color;
   const valueText = (index: number) =>
     metricText(item, index, spec.numberFormat);
+  const choose = (index: number) =>
+    setSelection((prev) =>
+      prev?.key === rowKey && prev.index === index
+        ? prev
+        : { key: rowKey, index },
+    );
+  const clear = () =>
+    setSelection((prev) => (prev?.key === rowKey ? null : prev));
   // SVG strokes skip isolated defined points between gaps. Keep those points visible.
   const singles = useMemo(
     () =>
@@ -47,8 +78,21 @@ const TrendRow = memo(function TrendRow({
       ),
     [points],
   );
+  const highlightWidth = Math.min(width, Math.max(24, width * 0.16));
+  const anchorY =
+    offset + (point && Number.isFinite(point.y) ? point.y : height / 2);
+  const tooltipVisible =
+    active !== null &&
+    point &&
+    tooltipHost &&
+    anchorY >= 0 &&
+    anchorY <= viewportHeight;
   return (
-    <div className="trend-row" style={{ height }}>
+    <div
+      className="trend-row"
+      style={{ height }}
+      data-active={active !== null || undefined}
+    >
       <svg
         width="100%"
         height="100%"
@@ -57,13 +101,21 @@ const TrendRow = memo(function TrendRow({
         tabIndex={0}
         aria-label={`${label} · ${item.name}`}
         aria-roledescription="Спарклайн"
-        onFocus={() => setFocus((current) => current ?? 0)}
-        onBlur={() => setFocus(null)}
+        aria-describedby={tooltipVisible ? tooltipId : undefined}
+        onFocus={() => choose(active ?? 0)}
+        onBlur={() => {
+          pointerInspection.current = false;
+          clear();
+        }}
+        onPointerDown={() => {
+          pointerInspection.current = true;
+        }}
         onPointerMove={(event) => {
+          pointerInspection.current = true;
           const bounds = event.currentTarget.getBoundingClientRect();
           if (!bounds.width || !points.length) return;
           const x = ((event.clientX - bounds.left) / bounds.width) * width;
-          setFocus(
+          choose(
             Math.max(
               0,
               Math.min(
@@ -73,8 +125,9 @@ const TrendRow = memo(function TrendRow({
             ),
           );
         }}
-        onPointerLeave={(event) => {
-          if (event.currentTarget !== document.activeElement) setFocus(null);
+        onPointerLeave={() => {
+          if (pointerInspection.current) clear();
+          pointerInspection.current = false;
         }}
         onKeyDown={(event) => {
           let next = active ?? 0;
@@ -92,60 +145,102 @@ const TrendRow = memo(function TrendRow({
               next = last;
               break;
             case "Escape":
-              setFocus(null);
+              clear();
               event.stopPropagation();
               return;
             default:
               return;
           }
+          pointerInspection.current = false;
           event.preventDefault();
           event.stopPropagation();
-          setFocus(Math.min(last, Math.max(0, next)));
+          choose(Math.min(last, Math.max(0, next)));
         }}
       >
-        <path
-          className="trend-line"
-          d={path}
-          pathLength={1}
-          fill="none"
-          stroke={color}
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        {singles.map((p) => (
-          <circle key={p.x} cx={p.x} cy={p.y} r={2} fill={color} />
-        ))}
+        <g className="trend-context">
+          <path
+            className="trend-line"
+            d={path}
+            pathLength={1}
+            fill="none"
+            stroke={color}
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          {singles.map((p) => (
+            <circle key={p.x} cx={p.x} cy={p.y} r={2} fill={color} />
+          ))}
+        </g>
         {point && (
-          <line
-            x1={point.x}
-            x2={point.x}
-            y1={0}
-            y2={height}
-            stroke="currentColor"
-            opacity={0.55}
-            strokeDasharray="3 3"
-          />
-        )}
-        {point && Number.isFinite(point.y) && (
-          <circle
-            cx={point.x}
-            cy={point.y}
-            r={3.5}
-            fill={item.displayData?.[active!]?.color ?? color}
-          />
+          <g pointerEvents="none">
+            <defs>
+              <clipPath id={clip}>
+                <rect
+                  x={point.x - highlightWidth / 2}
+                  y={0}
+                  width={highlightWidth}
+                  height={height}
+                />
+              </clipPath>
+            </defs>
+            <path
+              d={path}
+              clipPath={`url(#${clip})`}
+              strokeWidth={2.5}
+              fill="none"
+              stroke={color}
+              strokeLinecap="round"
+            />
+            <line
+              className="trend-guide"
+              x1={point.x}
+              x2={point.x}
+              y1={1}
+              y2={height - 1}
+            />
+            {Number.isFinite(point.y) && (
+              <g
+                className="trend-marker"
+                transform={`translate(${point.x} ${point.y})`}
+              >
+                <circle r={6} fill={ink} fillOpacity={0.23} />
+                <circle
+                  r={4.25}
+                  fill="var(--bk-surface, #202124)"
+                  stroke="currentColor"
+                  strokeWidth={1.2}
+                />
+                <circle r={2.5} fill={ink} />
+              </g>
+            )}
+          </g>
         )}
       </svg>
       {active === null && spec.showLabels && last >= 0 && (
         <span className="trend-latest">{valueText(last)}</span>
       )}
-      {active !== null && (
-        <output className="compact-plot-readout" aria-live="polite">
-          <span>{item.name}</span>
-          <span>{categoryText(item, active)}</span>
-          <strong>{valueText(active)}</strong>
-        </output>
-      )}
+      {tooltipVisible &&
+        createPortal(
+          <ChartTooltip
+            id={tooltipId}
+            x={point.x}
+            y={anchorY}
+            width={width}
+            height={viewportHeight}
+            title={categoryText(item, active)}
+            rows={[
+              {
+                key: rowKey,
+                name: item.name,
+                value: valueText(active),
+                color: ink,
+                active: true,
+              },
+            ]}
+          />,
+          tooltipHost,
+        )}
     </div>
   );
 });
@@ -155,27 +250,55 @@ export default function TrendPlot({
   series,
   colors,
   label,
+  presentationBackground,
 }: ChartPlotProps) {
   const { host, width, height } = usePlotViewport();
+  const overlay = useRef<HTMLDivElement>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
   const rowHeight = Math.max(
     30,
     Math.floor(height / Math.max(1, series.length)) - 4,
   );
   return (
-    <div className="trend-plot nowheel" ref={host}>
-      {width > 0 &&
-        height > 0 &&
-        series.map((item, index) => (
-          <TrendRow
-            key={item.colorKey ?? index}
-            item={item}
-            spec={spec}
-            color={colors[index]}
-            label={label}
-            width={width}
-            height={rowHeight}
-          />
-        ))}
+    <div
+      ref={overlay}
+      className="trend-plot"
+      style={
+        {
+          "--bk-surface": presentationBackground ?? "#202124",
+        } as React.CSSProperties
+      }
+    >
+      <div
+        ref={host}
+        className="trend-scroll nowheel"
+        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      >
+        {width > 0 &&
+          height > 0 &&
+          series.map((item, index) => {
+            const key = item.colorKey ?? String(index);
+            const selected = selection?.key === key;
+            return (
+              <TrendRow
+                key={key}
+                rowKey={key}
+                item={item}
+                spec={spec}
+                color={colors[index]}
+                label={label}
+                width={width}
+                height={rowHeight}
+                activeIndex={selected ? selection.index : null}
+                setSelection={setSelection}
+                tooltipHost={overlay.current}
+                viewportHeight={height}
+                offset={selected ? index * (rowHeight + 4) - scrollTop : 0}
+              />
+            );
+          })}
+      </div>
     </div>
   );
 }

@@ -72,6 +72,7 @@ export function cartesianGeometry(
       style,
       name: s.name,
       key: s.colorKey ?? String(i),
+      seriesIndex: i,
       color: colors[i],
     };
   });

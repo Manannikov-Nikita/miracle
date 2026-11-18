@@ -1,10 +1,11 @@
 // Bklit UI's heatmap rectangle layout and column-wave entrance, adapted for
 // SQL categories and signed metrics. bklit/bklit-ui@76299da (MIT).
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { formatChartNumber } from "../chartOptions";
 import type { ChartPlotProps } from "./plot-types";
 import { metricText, usePlotViewport } from "./compact-plot";
 import { heatmapRectCells } from "./bklit/heatmap-rect-cells";
+import ChartTooltip from "./ChartTooltip";
 import { unitPosition } from "./unit-position";
 import "./compact-plots.css";
 
@@ -20,6 +21,9 @@ export default function MatrixPlot({
   label,
   presentationBackground,
 }: ChartPlotProps) {
+  const focusMask = useId();
+  const tooltipId = useId();
+  const pointerInspection = useRef(false);
   const { host, width, height } = usePlotViewport();
   const [focus, setFocus] = useState<{ col: number; row: number } | null>(null);
   const { categories, bins, min, max } = useMemo(() => {
@@ -190,6 +194,7 @@ export default function MatrixPlot({
       default:
         return;
     }
+    pointerInspection.current = false;
     event.preventDefault();
     event.stopPropagation();
     setFocus({
@@ -204,17 +209,26 @@ export default function MatrixPlot({
           role="img"
           aria-roledescription="Тепловая карта"
           aria-label={label}
+          aria-describedby={active ? tooltipId : undefined}
           tabIndex={0}
           width="100%"
           height="100%"
           viewBox={`0 0 ${width} ${height}`}
           onKeyDown={onKeyDown}
           onFocus={() => setFocus((previous) => previous ?? { col: 0, row: 0 })}
-          onBlur={() => setFocus(null)}
-          onPointerLeave={(event) => {
-            if (event.currentTarget !== document.activeElement) setFocus(null);
+          onBlur={() => {
+            pointerInspection.current = false;
+            setFocus(null);
+          }}
+          onPointerDown={() => {
+            pointerInspection.current = true;
+          }}
+          onPointerLeave={() => {
+            if (pointerInspection.current) setFocus(null);
+            pointerInspection.current = false;
           }}
           onPointerMove={(event) => {
+            pointerInspection.current = true;
             const rect = event.currentTarget.getBoundingClientRect();
             const col = Math.floor(
               (((event.clientX - rect.left) / rect.width) * width - startX) /
@@ -238,7 +252,34 @@ export default function MatrixPlot({
             else setFocus(null);
           }}
         >
-          {svgCells}
+          {active && (
+            <defs>
+              <mask
+                id={focusMask}
+                maskUnits="userSpaceOnUse"
+                x={0}
+                y={0}
+                width={width}
+                height={height}
+                style={{ maskType: "alpha" }}
+              >
+                <rect
+                  width={width}
+                  height={height}
+                  fill="white"
+                  fillOpacity={0.68}
+                />
+                <rect
+                  x={active.x}
+                  y={active.y}
+                  width={active.width}
+                  height={active.height}
+                  fill="white"
+                />
+              </mask>
+            </defs>
+          )}
+          <g mask={active ? `url(#${focusMask})` : undefined}>{svgCells}</g>
           {spec.showYAxis !== false &&
             series.map(
               (item, row) =>
@@ -293,17 +334,26 @@ export default function MatrixPlot({
             </text>
           )}
           {active && (
-            <rect
-              x={active.x}
-              y={active.y}
-              width={active.width}
-              height={active.height}
-              rx={2}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.8}
-              pointerEvents="none"
-            />
+            <g className="matrix-focus" pointerEvents="none" fill="none">
+              <rect
+                x={active.x}
+                y={active.y}
+                width={active.width}
+                height={active.height}
+                rx={Math.min(2, active.width / 4, active.height / 4)}
+                stroke={presentationBackground ?? "var(--board-bg, #202124)"}
+                strokeWidth={3.5}
+              />
+              <rect
+                x={active.x}
+                y={active.y}
+                width={active.width}
+                height={active.height}
+                rx={Math.min(2, active.width / 4, active.height / 4)}
+                stroke="currentColor"
+                strokeWidth={1.6}
+              />
+            </g>
           )}
         </svg>
       )}
@@ -322,13 +372,30 @@ export default function MatrixPlot({
         </div>
       )}
       {active && item && (
-        <output className="compact-plot-readout" aria-live="polite">
-          <span>{item.name}</span>
-          <span>{titleFor(active.column)}</span>
-          <strong>
-            {metricText(item, active.bin.index, spec.numberFormat)}
-          </strong>
-        </output>
+        <ChartTooltip
+          id={tooltipId}
+          x={active.x + active.width / 2}
+          y={active.y + active.height / 2}
+          width={width}
+          height={height}
+          title={
+            active.bin.index >= 0
+              ? (item.displayData?.[active.bin.index]?.x ??
+                titleFor(active.column))
+              : titleFor(active.column)
+          }
+          rows={[
+            {
+              key: item.colorKey ?? String(active.row),
+              name: item.name,
+              value: metricText(item, active.bin.index, spec.numberFormat),
+              color:
+                item.displayData?.[active.bin.index]?.color ??
+                colors[active.row],
+              active: true,
+            },
+          ]}
+        />
       )}
     </div>
   );

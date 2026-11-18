@@ -53,6 +53,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+const tooltipText = () => host.querySelector('[role="tooltip"]')?.textContent;
 async function key(key: string) {
   await act(async () => {
     host
@@ -71,11 +72,16 @@ it("draws the whole heat matrix, differentiates missing cells and zero, and read
   );
   expect(host.querySelector(".matrix-scale")?.textContent).toBe("-30100");
   await key("ArrowRight");
-  expect(host.querySelector("output")?.textContent).toContain("0 шт.");
+  expect(tooltipText()).toContain("0 шт.");
+  expect(host.querySelector(".matrix-focus")).toBeTruthy();
+  expect(host.querySelector("svg")?.getAttribute("aria-describedby")).toBe(
+    host.querySelector('[role="tooltip"]')?.id,
+  );
+  expect(host.querySelector(".matrix-plot mask")).toBeTruthy();
   await key("ArrowDown");
-  expect(host.querySelector("output")?.textContent).toContain("ЮгQ2100");
+  expect(tooltipText()).toContain("Q2Юг100");
   await key("Home");
-  expect(host.querySelector("output")?.textContent).toContain("ЮгQ1—");
+  expect(tooltipText()).toContain("Q1Юг—");
   await act(async () =>
     root.render(
       createElement(MatrixPlot, {
@@ -105,9 +111,19 @@ it("renders independent trend rows and exposes formatted category and null value
     host.querySelectorAll(".trend-row")[1].querySelector("circle"),
   ).toBeTruthy();
   await key("End");
-  expect(host.querySelector("output")?.textContent).toBe("СеверIIIпусто");
+  expect(tooltipText()).toBe("IIIСеверпусто");
   await key("Home");
-  expect(host.querySelector("output")?.textContent).toBe("СеверI−30 шт.");
+  expect(tooltipText()).toBe("IСевер−30 шт.");
+  expect(host.querySelector("svg")?.getAttribute("aria-describedby")).toBe(
+    host.querySelector('[role="tooltip"]')?.id,
+  );
+  expect(
+    host.querySelector(".trend-row[data-active] .trend-marker"),
+  ).toBeTruthy();
+  expect(host.querySelector('.trend-scroll [role="tooltip"]')).toBeNull();
+  await key("Escape");
+  expect(tooltipText()).toBeUndefined();
+  expect(host.querySelector(".trend-row[data-active]")).toBeNull();
 });
 it("centres flat curves, breaks the path at nulls and supports signed Float64 extrema", () => {
   expect(trendLine([Number.MAX_VALUE], 200, 60).points).toEqual([

@@ -67,6 +67,7 @@ export const BoardActions = createContext<{
   boardId: string;
   editable: boolean;
   presentation?: boolean;
+  inspectPresentationCharts?: boolean;
   slideBackground?: string;
   reportChartStatus?: boolean;
   canEditNode?: (id: string) => boolean;
@@ -113,6 +114,10 @@ function ArtifactNode({
   const actions = useContext(BoardActions);
   const editable = actions.editable && (actions.canEditNode?.(id) ?? true);
   const presentation = actions.presentation === true;
+  const inspectable =
+    actions.inspectPresentationCharts &&
+    data.kind === "result" &&
+    data.view === "chart";
   const freeform =
     data.kind === "shape" || data.kind === "text" || data.kind === "image";
   const inlineEditable = editable && !presentation;
@@ -152,14 +157,21 @@ function ArtifactNode({
     const preventTabStops = () => {
       for (const control of element.querySelectorAll<HTMLElement>(
         "a[href],button,input,select,textarea,iframe,[tabindex],[contenteditable]",
-      ))
+      )) {
+        if (
+          inspectable &&
+          control.closest(".board-chart") &&
+          control.matches('svg[role="img"], .bk-legend button')
+        )
+          continue;
         control.tabIndex = -1;
+      }
     };
     preventTabStops();
     const observer = new MutationObserver(preventTabStops);
     observer.observe(element, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [presentation]);
+  }, [presentation, inspectable]);
   // Keep these handlers stable: XYFlow installs its raw resize calculation in
   // an effect keyed by the callback identities, including during the gesture.
   const resizeStart = useCallback<OnResizeStart>(
@@ -195,6 +207,7 @@ function ArtifactNode({
     <article
       className={`board-artifact board-artifact-${data.kind}${presentation ? " presentation-artifact" : ""}${selected ? " board-artifact-selected" : ""}${work ? " agent-work-active" : ""}`}
       aria-label={data.title}
+      inert={actions.inspectPresentationCharts && !inspectable}
       data-agent-worker={work?.worker?.id}
       style={
         {
@@ -401,6 +414,7 @@ function ArtifactNode({
       )}
       <div
         ref={content}
+        data-inspectable-chart={inspectable || undefined}
         className={`board-node-body${presentation ? " presentation-node-content" : freeform ? "" : " nodrag nopan"}${freeform || (data.kind === "result" && data.view === "chart") ? "" : " nowheel"}`}
       >
         {data.kind === "table" && data.visualTable && (

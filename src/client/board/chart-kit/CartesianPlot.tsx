@@ -1,5 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatChartNumber } from "../chartOptions";
+import ChartTooltip from "./ChartTooltip";
+import CartesianFocus from "./CartesianFocus";
+import {
+  focusColumns,
+  pointerFocus,
+  keyboardFocus,
+  type PlotFocus,
+} from "./cartesian-focus";
 import CartesianMarks from "./CartesianMarks";
 import { cartesianGeometry, truncateTick } from "./cartesian-geometry";
 import type { ChartPlotProps } from "./plot-types";
@@ -7,9 +15,10 @@ import type { ChartPlotProps } from "./plot-types";
 export default function CartesianPlot(props: ChartPlotProps) {
   const { spec, label, columns } = props;
   const [size, setSize] = useState({ width: 460, height: 240 });
-  const [focus, setFocus] = useState<number | null>(null);
+  const [focus, setFocus] = useState<PlotFocus | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const clip = useId();
+  const tooltipId = useId();
   useEffect(() => {
     const el = host.current;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -35,7 +44,25 @@ export default function CartesianPlot(props: ChartPlotProps) {
     1,
     Math.ceil((g.horizontal ? 22 : 66) / g.slot),
   );
-  const active = focus !== null && focus < g.categories.length ? focus : null;
+  const byCategory = useMemo(() => focusColumns(g), [g]);
+  const active = focus && byCategory[focus.category] ? focus : null;
+  const samples = active ? byCategory[active.category] : [];
+  const selected = active ? (samples[active.sample] ?? samples[0]) : undefined;
+  const tooltipRows = useMemo(
+    () =>
+      samples.map((sample, index) => ({
+        key: `${sample.mark.key}:${index}`,
+        name: sample.mark.name,
+        color: sample.color,
+        value:
+          sample.point.display ??
+          (sample.point.value === null
+            ? "—"
+            : formatChartNumber(sample.point.value, spec.numberFormat)),
+        active: sample === selected,
+      })),
+    [samples, selected, spec.numberFormat],
+  );
   const { width, height } = size;
   const categoryTitle = columns.find((c) => c.id === spec.x)?.name;
   const metricTitle = spec.y
@@ -50,9 +77,14 @@ export default function CartesianPlot(props: ChartPlotProps) {
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label={label}
+        aria-describedby={active ? tooltipId : undefined}
         aria-roledescription="график"
         tabIndex={0}
-        onFocus={() => setFocus(0)}
+        onFocus={() =>
+          setFocus(
+            (current) => current ?? keyboardFocus("Home", g, byCategory, null),
+          )
+        }
         onBlur={() => setFocus(null)}
         onPointerLeave={() => setFocus(null)}
         onPointerMove={(event) => {
@@ -60,13 +92,11 @@ export default function CartesianPlot(props: ChartPlotProps) {
           if (!rect.width || !rect.height) return;
           const x = ((event.clientX - rect.left) * width) / rect.width;
           const y = ((event.clientY - rect.top) * height) / rect.height;
-          if (x < g.left || x > g.right || y < g.top || y > g.bottom)
-            return setFocus(null);
-          setFocus(
-            Math.min(
-              g.categories.length - 1,
-              Math.floor((g.horizontal ? y - g.top : x - g.left) / g.slot),
-            ),
+          const next = pointerFocus(g, byCategory, x, y);
+          setFocus((prev) =>
+            prev?.category === next?.category && prev?.sample === next?.sample
+              ? prev
+              : next,
           );
         }}
         onKeyDown={(event) => {
@@ -84,19 +114,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
             return;
           event.preventDefault();
           event.stopPropagation();
-          if (event.key === "Escape") return setFocus(null);
-          const delta =
-            event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
-          setFocus(
-            event.key === "Home"
-              ? 0
-              : event.key === "End"
-                ? g.categories.length - 1
-                : Math.max(
-                    0,
-                    Math.min(g.categories.length - 1, (active ?? 0) + delta),
-                  ),
-          );
+          setFocus((prev) => keyboardFocus(event.key, g, byCategory, prev));
         }}
       >
         <defs>
@@ -131,7 +149,8 @@ export default function CartesianPlot(props: ChartPlotProps) {
         {(g.horizontal ? g.showY : g.showX) &&
           g.categories.map(
             (name, i) =>
-              i % categoryStride === 0 && (
+              i % categoryStride === 0 &&
+              i !== active?.category && (
                 <text
                   key={i}
                   x={g.horizontal ? g.axisLeft - 5 : g.center(i)}
@@ -169,47 +188,33 @@ export default function CartesianPlot(props: ChartPlotProps) {
             {truncateTick(nameY || "", g.bottom - g.top)}
           </text>
         )}
-        <g clipPath={`url(#${clip})`}>
+        <g
+          className="bk-marks"
+          data-dimmed={!!selected && selected.point.value !== null}
+          clipPath={`url(#${clip})`}
+        >
           <CartesianMarks geometry={g} spec={spec} width={width} />
         </g>
-        {active !== null && (
-          <line
-            className="bk-crosshair"
-            x1={g.horizontal ? g.left : g.center(active)}
-            x2={g.horizontal ? g.right : g.center(active)}
-            y1={g.horizontal ? g.center(active) : g.top}
-            y2={g.horizontal ? g.center(active) : g.bottom}
+        {active && (
+          <CartesianFocus
+            g={g}
+            category={active.category}
+            sample={selected}
+            width={width}
+            height={height}
           />
         )}
       </svg>
-      {active !== null && (
-        <div
-          className="bk-readout"
-          data-side={
-            !g.horizontal && g.center(active) > width / 2 ? "left" : "right"
-          }
-          role="status"
-        >
-          <strong>{g.categories[active]}</strong>
-          {g.marks.map((m) => {
-            const points = m.points.filter((p) => p.category === active);
-            if (!points.length) return null;
-            return (
-              <div key={m.key}>
-                <span className="bk-key" style={{ background: m.color }} />
-                {m.name}
-                <b>
-                  {points
-                    .map(
-                      (p) =>
-                        p.display ?? (p.value === null ? "—" : number(p.value)),
-                    )
-                    .join(", ")}
-                </b>
-              </div>
-            );
-          })}
-        </div>
+      {active && (
+        <ChartTooltip
+          id={tooltipId}
+          x={selected?.x ?? (g.horizontal ? g.zero : g.center(active.category))}
+          y={selected?.y ?? (g.horizontal ? g.center(active.category) : g.zero)}
+          width={width}
+          height={height}
+          title={g.categories[active.category]}
+          rows={tooltipRows}
+        />
       )}
     </div>
   );
