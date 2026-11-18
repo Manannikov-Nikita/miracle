@@ -1,5 +1,5 @@
 import type { useChartPaint } from "./mark-paint";
-import { type CSSProperties, type ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
 import type { ChartSpec } from "../../../shared/types";
 import { formatChartNumber } from "../chart-number";
 import { presentationColors } from "../presentation-colors";
@@ -202,7 +202,7 @@ export default function StackedBarMarks({
         }
       }
       groups[category].push(
-        <g key={mark.key}>
+        <Fragment key={mark.key}>
           {tip ? (
             <path
               ref={ref}
@@ -227,7 +227,7 @@ export default function StackedBarMarks({
             />
           )}
           {label}
-        </g>,
+        </Fragment>,
       );
     }
   }

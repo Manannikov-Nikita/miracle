@@ -80,6 +80,7 @@ export default memo(function CartesianMarks({
     const zero = g.zero;
     return g.marks.map((m) => {
       const inside = spec.labelPosition === "inside" && m.style === "bar";
+      const hasLabels = !!spec.showLabels && g.slot >= (g.horizontal ? 13 : 20);
       return (
         <g
           key={m.key}
@@ -135,15 +136,21 @@ export default memo(function CartesianMarks({
           })}
           {m.points.map((p, i) => {
             if (p.value === null) return null;
+            const marker =
+              m.style !== "bar" &&
+              (p.keepMarker ||
+                m.points.length < 70 ||
+                (m.points[i - 1]?.value == null &&
+                  m.points[i + 1]?.value == null));
+            if (m.style !== "bar" && !marker && !hasLabels) return null;
             const pos = g.center(p.category);
             const v = p.endPx;
             const start = pos + m.offset;
             const length = Math.abs(v - zero);
             const color = p.color ?? m.color;
-            const text = p.display ?? number(p.value);
+            const text = hasLabels ? (p.display ?? number(p.value)) : "";
             const drawLabel =
-              spec.showLabels &&
-              g.slot >= (g.horizontal ? 13 : 20) &&
+              hasLabels &&
               (!inside || length >= (g.horizontal ? text.length * 7 : 14));
             const dx = p.value < 0 ? -1 : 1;
             const labelX = g.horizontal
@@ -159,7 +166,7 @@ export default memo(function CartesianMarks({
                 ? (v + zero) / 2 + 4
                 : v + (p.value < 0 ? 12 : -5);
             return (
-              <g key={i}>
+              <Fragment key={i}>
                 {m.style === "bar" ? (
                   <rect
                     className="bk-bar"
@@ -178,10 +185,7 @@ export default memo(function CartesianMarks({
                     {...paint.fill(p.style, color)}
                   />
                 ) : (
-                  (p.keepMarker ||
-                    m.points.length < 70 ||
-                    (m.points[i - 1]?.value == null &&
-                      m.points[i + 1]?.value == null)) && (
+                  marker && (
                     <circle
                       cx={pos}
                       cy={v}
@@ -206,7 +210,7 @@ export default memo(function CartesianMarks({
                     {truncateTick(text, g.horizontal ? width * 0.14 : g.slot)}
                   </text>
                 )}
-              </g>
+              </Fragment>
             );
           })}
         </g>

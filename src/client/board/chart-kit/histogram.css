@@ -17,7 +17,8 @@
 @media (prefers-reduced-motion: no-preference) {
   .bk-histogram-bin {
     transform-box: view-box;
-    animation: bk-rise 1.1s cubic-bezier(0.45, 0, 0.25, 1) var(--bin-delay) both;
+    animation: bk-rise 1.1s cubic-bezier(0.45, 0, 0.25, 1) var(--bin-delay)
+      backwards;
   }
   .bk-histogram:not([data-keyboard]) .bk-histogram-guide {
     transition: transform var(--bk-inspect-duration, 125ms)

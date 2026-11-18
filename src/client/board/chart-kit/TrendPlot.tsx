@@ -1,3 +1,4 @@
+import { isPanningPointer } from "./svg-point";
 // Adapted from the Bklit UI LineSparkline (bklit/bklit-ui@76299da, MIT).
 import {
   Fragment,
@@ -189,6 +190,10 @@ const TrendRow = memo(function TrendRow({
           pointerInspection.current = true;
         }}
         onPointerMove={(event) => {
+          if (isPanningPointer(event.buttons)) {
+            if (active !== null) clear();
+            return;
+          }
           pointerInspection.current = true;
           const bounds = event.currentTarget.getBoundingClientRect();
           if (!bounds.width || !points.length) return;

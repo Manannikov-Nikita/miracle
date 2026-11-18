@@ -207,11 +207,11 @@
       width var(--bk-inspect-duration) var(--bk-inspect-ease);
   }
   .bk-cartesian .bk-reveal {
-    animation: bk-sweep 0.52s cubic-bezier(0.2, 0.68, 0.2, 1) both;
+    animation: bk-sweep 0.52s cubic-bezier(0.2, 0.68, 0.2, 1) backwards;
   }
   .bk-cartesian .bk-bar {
     animation: bk-rise 0.42s cubic-bezier(0.2, 0.68, 0.2, 1)
-      var(--bk-delay, 0ms) both;
+      var(--bk-delay, 0ms) backwards;
   }
   .bk-chart[data-kind="bar"] .bk-reveal {
     animation: none;
@@ -228,7 +228,8 @@
      segments stay flush, including when a breakdown has missing categories. */
   .bk-cartesian .bk-stack-category {
     transform-box: view-box;
-    animation: bk-rise 1.1s cubic-bezier(0.45, 0, 0.25, 1) var(--bk-delay) both;
+    animation: bk-rise 1.1s cubic-bezier(0.45, 0, 0.25, 1) var(--bk-delay)
+      backwards;
   }
   .bk-cartesian[data-horizontal="true"] .bk-stack-category {
     animation-name: bk-sweep;

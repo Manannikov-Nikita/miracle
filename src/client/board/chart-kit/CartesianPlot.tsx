@@ -1,3 +1,4 @@
+import { isPanningPointer } from "./svg-point";
 import {
   useEffect,
   useId,
@@ -66,12 +67,18 @@ export default function CartesianPlot(props: ChartPlotProps) {
     1,
     Math.ceil((g.horizontal ? 22 : 66) / g.slot),
   );
-  const byCategory = useMemo(() => focusColumns(g), [g]);
+  // Most charts on a board are never inspected. Build the hit index on demand
+  // and reuse it until the data or its geometry changes.
+  const focusIndex = useMemo(() => {
+    let index: ReturnType<typeof focusColumns> | undefined;
+    return () => (index ??= focusColumns(g));
+  }, [g]);
   useEffect(() => {
     if (loading) setFocus(null);
   }, [loading]);
-  const active = !loading && focus && byCategory[focus.category] ? focus : null;
-  const samples = active ? byCategory[active.category] : noSamples;
+  const active =
+    !loading && focus && focus.category < g.categories.length ? focus : null;
+  const samples = active ? focusIndex()[active.category] : noSamples;
   const selected = active ? (samples[active.sample] ?? samples[0]) : undefined;
   const shared = spec.kind === "composed";
   const highlighted = useMemo(() => {
@@ -127,18 +134,22 @@ export default function CartesianPlot(props: ChartPlotProps) {
         onFocus={() => {
           if (!focus) {
             setKeyboard(true);
-            setFocus(keyboardFocus("Home", g, byCategory, null));
+            setFocus(keyboardFocus("Home", g, focusIndex(), null));
           }
         }}
         onBlur={() => setFocus(null)}
         onPointerLeave={() => setFocus(null)}
         onPointerMove={(event) => {
+          if (isPanningPointer(event.buttons)) {
+            if (focus) setFocus(null);
+            return;
+          }
           const rect = event.currentTarget.getBoundingClientRect();
           if (!rect.width || !rect.height) return;
           const x = ((event.clientX - rect.left) * width) / rect.width;
           const y = ((event.clientY - rect.top) * height) / rect.height;
           setKeyboard(false);
-          const next = pointerFocus(g, byCategory, x, y);
+          const next = pointerFocus(g, focusIndex(), x, y);
           setFocus((prev) =>
             prev?.category === next?.category && prev?.sample === next?.sample
               ? prev
@@ -161,7 +172,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
           event.preventDefault();
           event.stopPropagation();
           setKeyboard(true);
-          setFocus((prev) => keyboardFocus(event.key, g, byCategory, prev));
+          setFocus((prev) => keyboardFocus(event.key, g, focusIndex(), prev));
         }}
       >
         {!loading && paint.defs}
@@ -197,9 +208,12 @@ export default function CartesianPlot(props: ChartPlotProps) {
           </g>
         ))}
         {(g.horizontal ? g.showY : g.showX) &&
-          g.categories.map(
-            (name, i) =>
-              i % categoryStride === 0 && (
+          Array.from(
+            { length: Math.ceil(g.categories.length / categoryStride) },
+            (_, tick) => {
+              const i = tick * categoryStride;
+              const name = g.categories[i];
+              return (
                 <text
                   key={i}
                   className="bk-category-tick"
@@ -218,7 +232,8 @@ export default function CartesianPlot(props: ChartPlotProps) {
                   )}
                   <title>{name}</title>
                 </text>
-              ),
+              );
+            },
           )}
         {g.showX && height >= 100 && (
           <text

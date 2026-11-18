@@ -1,5 +1,6 @@
 import {
   Component,
+  memo,
   useEffect,
   useMemo,
   useState,
@@ -233,10 +234,10 @@ function ChartKitPlot(props: Props) {
   );
 }
 
-export default function BoardChartPlot(props: Props) {
+export default memo(function BoardChartPlot(props: Props) {
   return (
     <PlotBoundary reset={props}>
       <ChartKitPlot {...props} />
     </PlotBoundary>
   );
-}
+});

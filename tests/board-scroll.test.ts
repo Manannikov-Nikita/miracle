@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { getResultRows } from "../src/client/api";
 import { type ReactFlowInstance } from "@xyflow/react";
 import BoardFlow from "../src/client/board/BoardFlow";
 import ArtifactNode, {
@@ -12,6 +13,17 @@ import type { BoardNodeData } from "../src/shared/types";
 // Keep ArtifactNode, ResultView and XYFlow's native wheel handling real.
 // Fail the drawing step only for the error-detail scrolling case.
 const failure = vi.hoisted(() => ({ stage: "" }));
+const resultRenders = vi.hoisted(() => vi.fn());
+vi.mock("../src/client/board/ResultView", async (load) => {
+  const actual = await load<typeof import("../src/client/board/ResultView")>();
+  return {
+    ...actual,
+    default: (props: Parameters<typeof actual.default>[0]) => {
+      resultRenders();
+      return createElement(actual.default, props);
+    },
+  };
+});
 vi.mock("../src/client/api", () => {
   const snapshot = async () => ({
     result: {
@@ -37,7 +49,10 @@ vi.mock("../src/client/api", () => {
       return Promise.reject(new Error("Snapshot unavailable\n".repeat(100)));
     return snapshot();
   };
-  return { getResultRows: () => load("snapshot"), api: () => load("data") };
+  return {
+    getResultRows: vi.fn(() => load("snapshot")),
+    api: () => load("data"),
+  };
 });
 vi.mock(
   "../src/client/board/chart-kit/cartesian-geometry",
@@ -75,6 +90,7 @@ describe("board trackpad scrolling", () => {
 
   beforeEach(() => {
     failure.stage = "";
+    vi.mocked(getResultRows).mockClear();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal(
       "ResizeObserver",
@@ -110,7 +126,12 @@ describe("board trackpad scrolling", () => {
     vi.unstubAllGlobals();
   });
 
-  async function render(data: BoardNodeData, gestureScope = "board") {
+  async function render(
+    data: BoardNodeData,
+    gestureScope = "board",
+    extras: ArtifactFlowNode[] = [],
+    selected = false,
+  ) {
     await act(async () =>
       root.render(
         createElement(BoardFlow, {
@@ -126,7 +147,9 @@ describe("board trackpad scrolling", () => {
               width: 400,
               height: 300,
               data,
+              selected,
             },
+            ...extras,
           ],
           panOnScroll: true,
           panOnDrag: [1, 2],
@@ -138,6 +161,101 @@ describe("board trackpad scrolling", () => {
       ),
     );
   }
+  function installVisibilityObserver() {
+    const watched = new Set<Element>();
+    let callback: IntersectionObserverCallback;
+    const disconnect = vi.fn();
+    const makeObserver = vi.fn(function (
+      this: Partial<IntersectionObserver>,
+      handle: IntersectionObserverCallback,
+    ) {
+      callback = handle;
+      this.observe = (element) => {
+        watched.add(element);
+      };
+      this.unobserve = (element) => {
+        watched.delete(element);
+      };
+      this.disconnect = disconnect;
+    });
+    vi.stubGlobal("IntersectionObserver", makeObserver);
+    const notify = (target: Element, isIntersecting: boolean) => {
+      expect(watched.has(target)).toBe(true);
+      callback(
+        [{ target, isIntersecting } as IntersectionObserverEntry],
+        {} as IntersectionObserver,
+      );
+    };
+    return { watched, makeObserver, disconnect, notify };
+  }
+  it("loads only nearby canvas charts, keeps their legend state on return and shares an observer", async () => {
+    const observer = installVisibilityObserver();
+    await render(chart, "board", [
+      {
+        id: "far",
+        type: "artifact",
+        position: { x: 6000, y: 5000 },
+        width: 400,
+        height: 300,
+        data: chart,
+      },
+    ]);
+    const bodies = host.querySelectorAll<HTMLElement>("[data-canvas-chart]");
+    expect(bodies).toHaveLength(2);
+    expect(observer.makeObserver).toHaveBeenCalledTimes(1);
+    expect(observer.makeObserver).toHaveBeenCalledWith(expect.any(Function), {
+      root: host.querySelector(".react-flow"),
+      rootMargin: "200px",
+    });
+    expect(getResultRows).not.toHaveBeenCalled();
+    expect(host.querySelector("article[aria-label=Chart]")).not.toBeNull();
+    await act(async () => {
+      observer.notify(bodies[0], true);
+      observer.notify(bodies[1], false);
+    });
+    const legend =
+      bodies[0].querySelector<HTMLButtonElement>(".bk-legend button")!;
+    expect(legend.getAttribute("aria-pressed")).toBe("true");
+    expect(bodies[1].querySelector(".board-chart")).toBeNull();
+    await act(async () => legend.click());
+    await act(async () => {
+      observer.notify(bodies[0], false);
+      observer.notify(bodies[1], true);
+    });
+    expect(getResultRows).toHaveBeenCalledTimes(2);
+    expect(bodies[0].hasAttribute("data-chart-away")).toBe(true);
+    await act(async () => observer.notify(bodies[0], true));
+    expect(bodies[0].querySelector(".bk-legend button")).toBe(legend);
+    expect(legend.getAttribute("aria-pressed")).toBe("false");
+    expect(bodies[0].hasAttribute("data-chart-away")).toBe(false);
+    expect(getResultRows).toHaveBeenCalledTimes(2);
+    await act(async () => root.render(null));
+    expect(observer.watched.size).toBe(0);
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("opens an unvisited selection immediately and keeps its data after deselection", async () => {
+    installVisibilityObserver();
+    await render(chart);
+    expect(getResultRows).not.toHaveBeenCalled();
+    await render(chart, "board", [], true);
+    expect(host.querySelector(".bk-legend")).not.toBeNull();
+    await render(chart);
+    expect(host.querySelector(".bk-legend")).not.toBeNull();
+    expect(getResultRows).toHaveBeenCalledOnce();
+    await render({ ...chart, view: "table" });
+    expect(host.querySelector(".board-table-scroll")).not.toBeNull();
+    expect(getResultRows).toHaveBeenCalledOnce();
+  });
+
+  it("retains an already fetched table when it is switched to a chart outside the viewport", async () => {
+    installVisibilityObserver();
+    await render({ ...chart, view: "table" });
+    expect(host.querySelector(".board-table-scroll")).not.toBeNull();
+    await render(chart);
+    expect(host.querySelector(".bk-legend")).not.toBeNull();
+    expect(getResultRows).toHaveBeenCalledOnce();
+  });
   async function wheel(
     selector: string,
     deltaX: number,
@@ -171,8 +289,10 @@ describe("board trackpad scrolling", () => {
 
   it("allows trackpad pinch zoom over a chart", async () => {
     await render(chart);
+    resultRenders.mockClear();
     await wheel(".board-chart svg[role=img]", 0, -20, true);
     expect(flow.getViewport().zoom).toBeGreaterThan(1);
+    expect(resultRenders).not.toHaveBeenCalled();
   });
 
   it("keeps a board gesture moving when it crosses a table", async () => {

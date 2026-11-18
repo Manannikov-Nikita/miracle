@@ -35,6 +35,7 @@ import {
 } from "@phosphor-icons/react";
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
+import { useCanvasChartViewport } from "./useCanvasChartViewport";
 import { agentWorkColor, type AgentEntityWork } from "../../shared/agent-work";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import MarkdownEditor from "./MarkdownEditor";
@@ -100,7 +101,59 @@ export const BoardActions = createContext<{
   busy: {},
 });
 const selectZoom = (state: ReactFlowState) => state.transform[2];
+const unitZoom = () => 1;
 const SqlTableView = lazy(() => import("./SqlTableView"));
+
+// Selected handles track zoom even when the chart itself has no new props.
+const ArtifactResult = memo(function ArtifactResult({
+  id,
+  data,
+  inlineEditable,
+}: {
+  id: string;
+  data: BoardNodeData;
+  inlineEditable: boolean;
+}) {
+  const actions = useContext(BoardActions);
+  const presentation = actions.presentation === true;
+  return (
+    <ResultView
+      refreshing={actions.refreshing?.[id]}
+      boardId={actions.boardId}
+      nodeId={id}
+      id={data.resultSetId!}
+      view={data.view ?? "table"}
+      chart={data.chart}
+      customChart={data.customChart}
+      visibleColumns={data.visibleColumns}
+      table={data.table}
+      visualTable={data.visualTable}
+      visualTableEnabled={data.visualTableEnabled}
+      onVisualTableChange={
+        inlineEditable
+          ? (visualTable) => actions.update(id, { visualTable })
+          : undefined
+      }
+      onVisualTableToggle={
+        inlineEditable
+          ? (enabled, visualTable) =>
+              actions.update(id, {
+                visualTableEnabled: enabled,
+                ...(visualTable ? { visualTable } : {}),
+              })
+          : undefined
+      }
+      onMetadata={actions.metadata}
+      reportChartStatus={actions.reportChartStatus}
+      presentationBackground={
+        presentation ? (actions.slideBackground ?? "#ffffff") : undefined
+      }
+      onTableChange={
+        inlineEditable ? (table) => actions.update(id, { table }) : undefined
+      }
+    />
+  );
+});
 
 function ArtifactNode({
   id,
@@ -128,10 +181,23 @@ function ArtifactNode({
   const workColor = work?.worker
     ? agentWorkColor(work.worker.color)
     : undefined;
-  const zoom = useStore(selectZoom);
   const content = useRef<HTMLDivElement>(null);
   const updateNodeInternals = useUpdateNodeInternals();
   const shapeType = data.kind === "shape" ? data.shape?.type : undefined;
+  const needsZoom =
+    (selected && editable) ||
+    shapeType === "line" ||
+    (!!work?.worker && (freeform || presentation));
+  const zoom = useStore(needsZoom ? selectZoom : unitZoom);
+  const canvasChart =
+    data.kind === "result" && data.view === "chart" && !presentation;
+  const showResult = useCanvasChartViewport(
+    content,
+    canvasChart,
+    data.kind === "result" &&
+      (!canvasChart || !!selected || !!actions.refreshing?.[id]),
+    `${actions.boardId}:${id}`,
+  );
   const shapeFrame = data.kind === "shape" ? data.shapeFrame : undefined;
   const rectangle = {
     x: positionAbsoluteX + (shapeFrame?.x ?? 0),
@@ -415,6 +481,7 @@ function ArtifactNode({
       <div
         ref={content}
         data-inspectable-chart={inspectable || undefined}
+        data-canvas-chart={canvasChart || undefined}
         className={`board-node-body${presentation ? " presentation-node-content" : freeform ? "" : " nodrag nopan"}${freeform || (data.kind === "result" && data.view === "chart") ? "" : " nowheel"}`}
       >
         {data.kind === "table" && data.visualTable && (
@@ -438,44 +505,12 @@ function ArtifactNode({
             />
           </Suspense>
         )}
-        {data.kind === "result" && data.resultSetId && (
-          <ResultView
+        {data.kind === "result" && data.resultSetId && showResult && (
+          <ArtifactResult
             key={`${actions.boardId}:${id}`}
-            refreshing={actions.refreshing?.[id]}
-            boardId={actions.boardId}
-            nodeId={id}
-            id={data.resultSetId}
-            view={data.view ?? "table"}
-            chart={data.chart}
-            customChart={data.customChart}
-            visibleColumns={data.visibleColumns}
-            table={data.table}
-            visualTable={data.visualTable}
-            visualTableEnabled={data.visualTableEnabled}
-            onVisualTableChange={
-              inlineEditable
-                ? (visualTable) => actions.update(id, { visualTable })
-                : undefined
-            }
-            onVisualTableToggle={
-              inlineEditable
-                ? (enabled, visualTable) =>
-                    actions.update(id, {
-                      visualTableEnabled: enabled,
-                      ...(visualTable ? { visualTable } : {}),
-                    })
-                : undefined
-            }
-            onMetadata={actions.metadata}
-            reportChartStatus={actions.reportChartStatus}
-            presentationBackground={
-              presentation ? (actions.slideBackground ?? "#ffffff") : undefined
-            }
-            onTableChange={
-              inlineEditable
-                ? (table) => actions.update(id, { table })
-                : undefined
-            }
+            id={id}
+            data={data}
+            inlineEditable={inlineEditable}
           />
         )}
         {data.kind === "image" && data.image && (

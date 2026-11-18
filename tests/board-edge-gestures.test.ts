@@ -18,7 +18,7 @@ vi.mock("@xyflow/react", async (original) => {
       createPortal(children, document.body),
     useViewport: () => ({ x: 100, y: 50, zoom: 2 }),
     useStore: (select: (state: unknown) => unknown) =>
-      select({ width: 1000, height: 700 }),
+      select({ transform: [100, 50, 2], width: 1000, height: 700 }),
     useReactFlow: () => ({
       screenToFlowPosition: ({ x, y }: { x: number; y: number }) => ({
         x: (x - 100) / 2,

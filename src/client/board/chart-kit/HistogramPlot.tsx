@@ -1,4 +1,4 @@
-import { svgLocalPoint } from "./svg-point";
+import { isPanningPointer, svgLocalPoint } from "./svg-point";
 import {
   useEffect,
   useId,
@@ -193,6 +193,10 @@ export default function HistogramPlot(props: ChartPlotProps) {
           setFocus((prev) => (prev?.keyboard ? prev : null))
         }
         onPointerMove={(e) => {
+          if (isPanningPointer(e.buttons)) {
+            if (focus) setFocus(null);
+            return;
+          }
           if (loading) return;
           const p = svgLocalPoint(
             e.currentTarget,

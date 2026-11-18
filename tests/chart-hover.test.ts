@@ -91,6 +91,54 @@ describe("board chart inspection", () => {
     host.remove();
     vi.unstubAllGlobals();
   });
+  it("renders a dense line as one path and keeps every original sample keyboard-accessible", async () => {
+    const p = props({ ...base, kind: "line", y: ["n"] });
+    p.series = chartSeries(
+      columns,
+      Array.from({ length: 5000 }, (_, i) => [String(i), i, null]),
+      p.spec,
+    );
+    await act(() => root.render(createElement(CartesianPlot, p)));
+    const marks = host.querySelector(".bk-marks")!;
+    expect(marks.querySelectorAll(".bk-line")).toHaveLength(1);
+    expect(marks.querySelectorAll("g:empty, circle")).toHaveLength(0);
+    const svg = host.querySelector("svg")!;
+    await act(() =>
+      svg.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "End", bubbles: true }),
+      ),
+    );
+    expect(host.querySelector(".bk-category-chip")?.textContent).toBe("4999");
+    expect(host.querySelector(".chart-tooltip-value")?.textContent).toBe(
+      new Intl.NumberFormat("ru-RU").format(4999),
+    );
+  });
+  it("skips pointer geometry during a board pan and resumes inspection on hover", async () => {
+    await act(() => root.render(createElement(CartesianPlot, props())));
+    const svg = host.querySelector("svg")!;
+    const bounds = vi
+      .spyOn(svg, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(0, 0, 460, 240));
+    const move = (buttons: number) =>
+      act(() =>
+        svg.dispatchEvent(
+          new MouseEvent("pointermove", {
+            buttons,
+            clientX: 100,
+            clientY: 80,
+            bubbles: true,
+          }),
+        ),
+      );
+    for (const buttons of [2, 4]) await move(buttons);
+    expect(bounds).not.toHaveBeenCalled();
+    expect(host.querySelector("[role=tooltip]")).toBeNull();
+    await move(0);
+    expect(bounds).toHaveBeenCalled();
+    expect(host.querySelector("[role=tooltip]")).not.toBeNull();
+    await move(4);
+    expect(host.querySelector("[role=tooltip]")).toBeNull();
+  });
   it("keeps each composed series marker and the category chip mounted while scrubbing", async () => {
     const p = props({ ...base, kind: "composed" });
     await act(() => root.render(createElement(CartesianPlot, p)));

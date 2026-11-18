@@ -1,3 +1,4 @@
+import { isPanningPointer } from "./svg-point";
 // Bklit UI's heatmap rectangle layout and column-wave entrance, adapted for
 // SQL categories and signed metrics. bklit/bklit-ui@76299da (MIT).
 import {
@@ -264,6 +265,10 @@ export default function MatrixPlot({
             pointerInspection.current = false;
           }}
           onPointerMove={(event) => {
+            if (isPanningPointer(event.buttons)) {
+              if (focus) setFocus(null);
+              return;
+            }
             pointerInspection.current = true;
             const rect = event.currentTarget.getBoundingClientRect();
             const col = Math.floor(

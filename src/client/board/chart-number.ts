@@ -1,5 +1,14 @@
 import type { ChartSpec } from "../../shared/types";
 
+const auto = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 6 });
+const integer = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+const decimal = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
+const compactFraction = new Intl.NumberFormat("en-US", {
+  maximumSignificantDigits: 4,
+  useGrouping: false,
+});
+const units = ["", "k", "M", "G", "T", "P", "E", "Z", "Y"];
+
 export function formatChartNumber(
   value: number,
   format: ChartSpec["numberFormat"] = "auto",
@@ -9,12 +18,7 @@ export function formatChartNumber(
     if (!Number.isFinite(value)) return String(value);
     const magnitude = Math.abs(value);
     // Keep small nonzero values visible instead of rounding them to zero.
-    if (magnitude < 1)
-      return value.toLocaleString("en-US", {
-        maximumSignificantDigits: 4,
-        useGrouping: false,
-      });
-    const units = ["", "k", "M", "G", "T", "P", "E", "Z", "Y"];
+    if (magnitude < 1) return compactFraction.format(value);
     let unit = Math.min(
       Math.floor(Math.log10(magnitude) / 3),
       units.length - 1,
@@ -27,10 +31,8 @@ export function formatChartNumber(
     }
     return `${value < 0 ? "-" : ""}${rounded}${units[unit]}`;
   }
-  if (format === "percent")
-    return `${(value * 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })}%`;
-  return value.toLocaleString("ru-RU", {
-    maximumFractionDigits:
-      format === "integer" ? 0 : format === "decimal" ? 2 : 6,
-  });
+  if (format === "percent") return `${decimal.format(value * 100)}%`;
+  return (
+    format === "integer" ? integer : format === "decimal" ? decimal : auto
+  ).format(value);
 }

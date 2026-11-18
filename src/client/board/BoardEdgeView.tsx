@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type RefObject,
 } from "react";
 import {
   BaseEdge,
@@ -153,17 +154,77 @@ function EdgeCaption({
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(value, Math.max(min, max)));
 
-export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
-  const data = props.data;
-  const markerId = `board-edge-arrow-${useId().replaceAll(":", "")}`;
+// Only the selected edge has screen-space UI that must follow every pan.
+function EdgeToolbarAnchor({
+  data,
+  x,
+  y,
+  toolbar,
+}: {
+  data: BoardEdgeViewData;
+  x: number;
+  y: number;
+  toolbar: RefObject<HTMLDivElement | null>;
+}) {
   const viewport = useViewport();
   const width = useStore((state) => state.width);
   const height = useStore((state) => state.height);
+  const [toolbarHeight, setToolbarHeight] = useState(42);
+  useLayoutEffect(() => {
+    const element = toolbar.current;
+    if (!element) return;
+    const measure = () => {
+      if (element.offsetHeight) setToolbarHeight(element.offsetHeight);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [toolbar, width]);
+  const centerX = x * viewport.zoom + viewport.x;
+  const centerY = y * viewport.zoom + viewport.y;
+  const toolbarWidth = Math.min(304, Math.max(168, width - 24));
+  const toolbarX = clamp(
+    centerX - toolbarWidth / 2,
+    12,
+    width - toolbarWidth - 12,
+  );
+  const toolbarY = clamp(
+    centerY >= toolbarHeight + 36 ? centerY - toolbarHeight - 24 : centerY + 24,
+    12,
+    height - toolbarHeight - 12,
+  );
+  return (
+    <div
+      ref={toolbar}
+      className="board-edge-toolbar-anchor"
+      style={{
+        left: (toolbarX - viewport.x) / viewport.zoom,
+        top: (toolbarY - viewport.y) / viewport.zoom,
+        width: toolbarWidth,
+        transform: `scale(${1 / viewport.zoom})`,
+      }}
+    >
+      <BoardEdgeToolbar
+        appearance={data.edge.appearance}
+        onEdit={data.onEdit}
+        onClose={data.onClose}
+        onDelete={data.onDelete}
+        onChange={(appearance) => data.onChange({ appearance })}
+      />
+    </div>
+  );
+}
+
+export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
+  const data = props.data;
+  const markerId = `board-edge-arrow-${useId().replaceAll(":", "")}`;
+  const zoom = useStore((state) => state.transform[2]);
   const toolbar = useRef<HTMLDivElement>(null);
   const edgeGroup = useRef<SVGGElement>(null);
   const labelRef = useRef<HTMLElement | null>(null);
   const [labelHeight, setLabelHeight] = useState(18);
-  const [toolbarHeight, setToolbarHeight] = useState(42);
   const canonical = canonicalEdgeGeometry(props, data?.edge);
   const measuredPath = () =>
     edgeGroup.current?.querySelector<SVGPathElement>(".react-flow__edge-path");
@@ -171,7 +232,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
     edge: data?.edge,
     scope: data?.gestureScope,
     geometry: canonical,
-    zoom: viewport.zoom,
+    zoom: zoom,
     enabled: !!data?.editable && !data.editing,
     path: measuredPath,
     bendPoint: edgeBendPoint(canonical, data?.edge.appearance, data?.edge.bend),
@@ -185,9 +246,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
   };
   const renderedBend = gestures.preview?.bend ?? data?.edge.bend;
   const bendPoint = edgeBendPoint(geometry, renderedAppearance, renderedBend);
-  const gripOffset = data?.edge.label
-    ? labelHeight / 2 + 20 / viewport.zoom
-    : 0;
+  const gripOffset = data?.edge.label ? labelHeight / 2 + 20 / zoom : 0;
   const bendGrip = { x: bendPoint.x, y: bendPoint.y + gripOffset };
   const labelPosition =
     gestures.preview?.labelPosition ?? data?.edge.labelPosition ?? 0.5;
@@ -202,26 +261,21 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
     x: number;
     y: number;
   }>();
+  const needsLabelPoint = !!(
+    data?.edge.label ||
+    data?.editing ||
+    data?.work ||
+    (props.selected && data?.editable)
+  );
   useLayoutEffect(() => {
+    if (!needsLabelPoint) return;
     const point = pointAlongPath(measuredPath(), labelPosition);
     if (point) setLabelPoint({ path, position: labelPosition, ...point });
-  }, [path, labelPosition]);
+  }, [path, labelPosition, needsLabelPoint]);
   useLayoutEffect(() => {
     const height = labelRef.current?.offsetHeight;
     if (height) setLabelHeight(height);
-  }, [data?.edge.label, data?.editing, path, viewport.zoom]);
-  useLayoutEffect(() => {
-    const element = toolbar.current;
-    if (!element) return;
-    const measure = () => {
-      if (element.offsetHeight) setToolbarHeight(element.offsetHeight);
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [props.selected, data?.editable, width]);
+  }, [data?.edge.label, data?.editing, path, zoom]);
   if (!data) return null;
   const appearance = edgeAppearance(data.edge.appearance);
   const workColor = data.work?.worker
@@ -231,19 +285,6 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
     labelPoint?.path === path && labelPoint.position === labelPosition;
   const x = measured ? labelPoint.x : fallbackX;
   const y = measured ? labelPoint.y : fallbackY;
-  const centerX = x * viewport.zoom + viewport.x;
-  const centerY = y * viewport.zoom + viewport.y;
-  const toolbarWidth = Math.min(304, Math.max(168, width - 24));
-  const toolbarX = clamp(
-    centerX - toolbarWidth / 2,
-    12,
-    width - toolbarWidth - 12,
-  );
-  const toolbarY = clamp(
-    centerY >= toolbarHeight + 36 ? centerY - toolbarHeight - 24 : centerY + 24,
-    12,
-    height - toolbarHeight - 12,
-  );
   return (
     <>
       <defs>
@@ -323,7 +364,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
             style={{
               left: x,
               top: y - 24,
-              transform: `translate(-50%, -100%) scale(${1 / viewport.zoom})`,
+              transform: `translate(-50%, -100%) scale(${1 / zoom})`,
             }}
           >
             <AgentWorkIndicator work={data.work} />
@@ -333,7 +374,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
           data={data}
           x={x}
           y={y}
-          zoom={viewport.zoom}
+          zoom={zoom}
           gestures={gestures}
           labelRef={labelRef}
           onKeyboardFinish={() => {
@@ -356,7 +397,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
             style={{
               left: bendGrip.x,
               top: bendGrip.y,
-              transform: `translate(-50%, -50%) scale(${1 / viewport.zoom}) rotate(45deg)`,
+              transform: `translate(-50%, -50%) scale(${1 / zoom}) rotate(45deg)`,
             }}
             onPointerDown={(event) => gestures.begin("bend", event)}
             onKeyDown={(event) => gestures.keyboard("bend", event)}
@@ -379,7 +420,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
               style={{
                 left: geometry[`${end}X`],
                 top: geometry[`${end}Y`],
-                transform: `translate(-50%, -50%) scale(${1 / viewport.zoom})`,
+                transform: `translate(-50%, -50%) scale(${1 / zoom})`,
               }}
               onPointerDown={(event) => gestures.begin(end, event)}
               onKeyDown={(event) => gestures.keyboard(end, event)}
@@ -390,24 +431,7 @@ export default function BoardEdgeView(props: EdgeProps<BoardFlowEdge>) {
             />
           ))}
         {props.selected && data.editable && (
-          <div
-            ref={toolbar}
-            className="board-edge-toolbar-anchor"
-            style={{
-              left: (toolbarX - viewport.x) / viewport.zoom,
-              top: (toolbarY - viewport.y) / viewport.zoom,
-              width: toolbarWidth,
-              transform: `scale(${1 / viewport.zoom})`,
-            }}
-          >
-            <BoardEdgeToolbar
-              appearance={data.edge.appearance}
-              onEdit={data.onEdit}
-              onClose={data.onClose}
-              onDelete={data.onDelete}
-              onChange={(appearance) => data.onChange({ appearance })}
-            />
-          </div>
+          <EdgeToolbarAnchor data={data} x={x} y={y} toolbar={toolbar} />
         )}
       </EdgeLabelRenderer>
     </>

@@ -1,4 +1,4 @@
-import { svgLocalPoint } from "./svg-point";
+import { isPanningPointer, svgLocalPoint } from "./svg-point";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { SkeletonMarks } from "../ChartSkeleton";
 import { formatChartNumber } from "../chart-number";
@@ -79,6 +79,10 @@ export default function ScatterPlot(props: ChartPlotProps) {
           setFocus((prev) => (prev?.keyboard ? prev : null))
         }
         onPointerMove={(e) => {
+          if (isPanningPointer(e.buttons)) {
+            if (focus) setFocus(null);
+            return;
+          }
           if (loading) return;
           const cursor = svgLocalPoint(
             e.currentTarget,

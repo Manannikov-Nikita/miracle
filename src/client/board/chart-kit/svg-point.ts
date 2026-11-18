@@ -26,3 +26,8 @@ export function svgLocalPoint(
       }
     : null;
 }
+
+/** The board reserves middle and secondary drags for viewport panning. */
+export function isPanningPointer(buttons: number) {
+  return (buttons & 6) !== 0;
+}
