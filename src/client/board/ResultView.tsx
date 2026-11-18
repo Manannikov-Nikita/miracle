@@ -21,7 +21,6 @@ import type {
 } from "../../shared/types";
 import {
   CHART_METRIC_LIMIT,
-  chartPalette,
   composedMetricStyle,
   supportsChartStacking,
 } from "../../shared/chart-appearance";
@@ -85,13 +84,20 @@ function Chart({
   const waitingForRows = waitingForMetadata || !data;
   const failure =
     !waitingForMetadata && (error || preparationError || prepared?.error);
-  const lastPlot = useRef<ComponentProps<typeof BoardChartPlot> | undefined>(
-    undefined,
-  );
+  const lastPlot = useRef<
+    | {
+        plot: ComponentProps<typeof BoardChartPlot>;
+        savedSpec?: ChartSpec;
+      }
+    | undefined
+  >(undefined);
   // Retain exactly the visible plot while both the metadata and full rows are replaced.
   useLayoutEffect(() => {
-    if (!waitingForRows || failure) lastPlot.current = prepared?.plot;
-  }, [waitingForRows, prepared, failure]);
+    if (!waitingForRows || failure)
+      lastPlot.current = prepared?.plot
+        ? { plot: prepared.plot, savedSpec }
+        : undefined;
+  }, [waitingForRows, prepared, failure, savedSpec]);
 
   if (failure && !refreshing)
     return (
@@ -118,17 +124,35 @@ function Chart({
         }
       />
     );
-  const plot = waitingForRows ? lastPlot.current : prepared?.plot;
+  // A snapshot may change alongside its saved chart settings. Only reuse a
+  // layout when it still describes the requested axes, series and appearance.
+  const retained = lastPlot.current;
+  const sameSettings =
+    waitingForRows &&
+    retained &&
+    (retained.savedSpec === savedSpec ||
+      JSON.stringify(retained.savedSpec) === JSON.stringify(savedSpec));
+  const plot = waitingForRows
+    ? sameSettings
+      ? retained.plot
+      : undefined
+    : prepared?.plot;
   const busy = refreshing || waitingForRows;
   return (
     <ChartLoadFrame
       busy={busy}
       inlineSkeleton={!!plot}
       refreshing={refreshing}
-      horizontal={
-        savedSpec?.kind === "bar" && savedSpec.orientation === "horizontal"
+      spec={savedSpec}
+      count={
+        result &&
+        !waitingForMetadata &&
+        !savedSpec?.series &&
+        !table?.reshape &&
+        !table?.filters?.length
+          ? Math.min(result.rowCount, 32)
+          : undefined
       }
-      color={chartPalette(savedSpec ?? {}).colors[0]}
     >
       {plot ? (
         <BoardChartPlot {...plot} loading={busy} />
@@ -600,14 +624,7 @@ export default function ResultView({
     );
   }
   if (error && view === "chart" && refreshing)
-    return (
-      <ChartLoadFrame
-        busy
-        refreshing
-        horizontal={chart?.kind === "bar" && chart.orientation === "horizontal"}
-        color={chartPalette(chart ?? {}).colors[0]}
-      />
-    );
+    return <ChartLoadFrame busy refreshing spec={chart} />;
   const content = error ? (
     <ErrorBox
       className="board-error nowheel"

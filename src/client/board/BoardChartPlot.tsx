@@ -42,6 +42,7 @@ function CompatibilityPlot({
   return (
     <ChartCanvas
       option={option}
+      spec={spec}
       createOption={createOption}
       label={label}
       loading={loading}
@@ -66,7 +67,8 @@ class PlotBoundary extends Component<
       this.setState({ error: undefined });
   }
   render() {
-    if (this.state.error && this.props.reset.loading) return <ChartSkeleton />;
+    if (this.state.error && this.props.reset.loading)
+      return <ChartSkeleton spec={this.props.reset.spec} />;
     return this.state.error ? (
       <ErrorBox
         className="board-error nowheel"
@@ -160,10 +162,10 @@ function ChartKitPlot(props: Props) {
         </div>
       )}
       <div className="bk-plot">
-        {props.loading && (!data.series.length || Plot !== CartesianPlot) ? (
+        {props.loading && !data.series.length ? (
           <ChartSkeleton
-            color={data.colors[0] ?? entries[0]?.color}
-            count={series[0]?.data.length}
+            spec={spec}
+            count={series[0]?.xCategories?.length ?? series[0]?.data.length}
           />
         ) : data.series.length ? (
           <Plot key={spec.kind} {...props} {...data} />

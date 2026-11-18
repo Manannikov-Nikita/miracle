@@ -7,6 +7,19 @@ import ResultView from "../src/client/board/ResultView";
 import type { ChartSpec, ResultPage, ResultSet } from "../src/shared/types";
 
 vi.mock("../src/client/api", () => ({ api: vi.fn(), getResultRows: vi.fn() }));
+// Native scatter's canvas lifecycle has its own chart-legend-options tests.
+vi.mock("echarts", () => ({
+  init: () => ({
+    getOption: () => ({}),
+    setOption() {},
+    on() {},
+    off() {},
+    clear() {},
+    resize() {},
+    dispose() {},
+  }),
+  getInstanceByDom: () => undefined,
+}));
 const chart: ChartSpec = { kind: "line", x: "x", y: ["y"], legend: true };
 function page(id: string, count: number): ResultPage {
   const rows = Array.from({ length: count }, (_, i) => [String(i), i]);
@@ -37,6 +50,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 function render(id: string, refreshing = false, spec = chart) {
@@ -221,4 +235,127 @@ it("clears the retained chart and loading indicator when replacement rows are em
   expect(host.querySelector(".chart-skeleton")).toBeNull();
   expect(plot()).toBeNull();
   expect(host.textContent).toContain("В результате нет строк.");
+});
+
+it.each([
+  ["bar", ["bar"]],
+  ["line", ["line"]],
+  ["area", ["area"]],
+  ["composed", ["bar", "area"]],
+  ["sparkline", ["sparkline"]],
+  ["heatmap", ["cell"]],
+  ["scatter", ["point"]],
+] as const)(
+  "keeps the %s silhouette through metadata, data and SQL refresh",
+  async (kind, marks) => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(500);
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(300);
+    const spec: ChartSpec = {
+      ...chart,
+      kind,
+      y: ["y", "plan"],
+      metricStyles: { plan: "area" },
+    };
+    const snapshot = page("first", 9);
+    snapshot.result.columns[0].type = "UInt32";
+    snapshot.result.columns.push({ id: "plan", name: "План", type: "Float64" });
+    snapshot.rows = snapshot.rows.map(([, value]) => [value, value, 100]);
+    const metadata = Promise.withResolvers<ResultPage>();
+    const data = Promise.withResolvers<ResultPage>();
+    vi.mocked(getResultRows).mockReturnValueOnce(metadata.promise);
+    vi.mocked(api).mockReturnValueOnce(data.promise);
+    const assertMarks = () => {
+      const seen = [...host.querySelectorAll("[data-skeleton-mark]")].map(
+        (el) => el.getAttribute("data-skeleton-mark"),
+      );
+      expect(new Set(seen)).toEqual(new Set(marks));
+      for (const svg of host.querySelectorAll(".chart-skeleton"))
+        expect(svg.getAttribute("data-kind")).toBe(kind);
+    };
+    await render("first", false, spec);
+    assertMarks();
+    await act(async () => metadata.resolve(snapshot));
+    assertMarks();
+    await act(async () => data.resolve(snapshot));
+    expect(host.querySelector(".chart-skeleton")).toBeNull();
+    await render("first", true, spec);
+    assertMarks();
+    if (kind === "heatmap")
+      expect(
+        host.querySelectorAll('[data-skeleton-mark="cell"] rect'),
+      ).toHaveLength(18);
+    if (kind === "sparkline")
+      expect(
+        host.querySelectorAll('[data-skeleton-mark="sparkline"]'),
+      ).toHaveLength(2);
+    await render("first", false, spec);
+    expect(host.querySelector(".chart-skeleton")).toBeNull();
+  },
+);
+
+it("follows a changed chart configuration while replacement metadata is pending", async () => {
+  const snapshot = page("first", 3);
+  vi.mocked(getResultRows).mockResolvedValueOnce(snapshot);
+  vi.mocked(api).mockResolvedValueOnce(snapshot);
+  await render("first");
+  expectReady();
+  vi.mocked(getResultRows).mockReturnValueOnce(new Promise(() => {}));
+  await render("next");
+  expect(host.querySelector('[data-skeleton-mark="line"]')).toBeTruthy();
+  await render("next", false, { ...chart, kind: "heatmap" });
+  expect(host.querySelector('[data-skeleton-mark="cell"] rect')).toBeTruthy();
+  expect(host.querySelector('[data-skeleton-mark="line"]')).toBeNull();
+});
+
+it("bounds a cold heatmap even when metadata describes a large source table", async () => {
+  const metadata = page("large", 1);
+  metadata.result.rowCount = 40000;
+  metadata.total = 40000;
+  vi.mocked(getResultRows).mockResolvedValueOnce(metadata);
+  vi.mocked(api).mockReturnValueOnce(new Promise(() => {}));
+  await render("large", false, { ...chart, kind: "heatmap", y: ["y", "plan"] });
+  const cells = host.querySelectorAll(
+    '[data-skeleton-mark="cell"] rect',
+  ).length;
+  expect(cells).toBeGreaterThan(0);
+  expect(cells).toBeLessThanOrEqual(64);
+});
+
+it("follows visible composed metric styles and configured colors during a refresh", async () => {
+  const data = page("first", 5);
+  data.result.columns.push({ id: "plan", name: "План", type: "Float64" });
+  data.rows = data.rows.map((row) => [...row, 100]);
+  vi.mocked(getResultRows).mockResolvedValueOnce(data);
+  vi.mocked(api).mockResolvedValueOnce(data);
+  const spec: ChartSpec = {
+    ...chart,
+    kind: "composed",
+    y: ["y", "plan"],
+    metricStyles: { y: "line", plan: "area" },
+    seriesColors: { '["y",null,null]': "#eeaa11" },
+  };
+  await render("first", false, spec);
+  await act(async () =>
+    host
+      .querySelector<HTMLButtonElement>('.bk-legend button[title="План"]')!
+      .click(),
+  );
+  await render("first", true, spec);
+  expect(
+    host.querySelector(
+      '[data-skeleton-mark="area"], [data-skeleton-mark="bar"]',
+    ),
+  ).toBeNull();
+  expect(
+    host
+      .querySelector('[data-skeleton-mark="line"] path')
+      ?.getAttribute("stroke"),
+  ).toBe("#eeaa11");
 });

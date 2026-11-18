@@ -11,8 +11,8 @@ import {
 } from "./cartesian-focus";
 import CartesianMarks from "./CartesianMarks";
 import { cartesianGeometry, truncateTick } from "./cartesian-geometry";
-import type { ChartPlotProps } from "./plot-types";
-import { SkeletonBars } from "../ChartSkeleton";
+import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
+import { SkeletonMarks } from "../ChartSkeleton";
 
 const noSamples: Sample[] = [];
 
@@ -222,14 +222,19 @@ export default function CartesianPlot(props: ChartPlotProps) {
           </text>
         )}
         {loading ? (
-          <SkeletonBars
+          <SkeletonMarks
             x={g.left}
             y={g.top}
             width={g.right - g.left}
             height={g.bottom - g.top}
             count={g.categories.length}
-            color={props.colors[0]}
-            horizontal={g.horizontal}
+            spec={spec}
+            series={plotLoadingSeries(props.series, props.colors)}
+            gridRows={
+              spec.kind === "line" && spec.showGrid !== false
+                ? g.ticks.map((t) => (g.scale(t) - g.top) / (g.bottom - g.top))
+                : undefined
+            }
             baseline={
               g.horizontal
                 ? (g.zero - g.left) / (g.right - g.left)

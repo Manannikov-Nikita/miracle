@@ -1,8 +1,16 @@
 // Bklit UI's heatmap rectangle layout and column-wave entrance, adapted for
 // SQL categories and signed metrics. bklit/bklit-ui@76299da (MIT).
-import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { formatChartNumber } from "../chartOptions";
-import type { ChartPlotProps } from "./plot-types";
+import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
+import { SkeletonMarks } from "../ChartSkeleton";
 import { metricText, usePlotViewport } from "./compact-plot";
 import { heatmapRectCells } from "./bklit/heatmap-rect-cells";
 import ChartTooltip from "./ChartTooltip";
@@ -20,6 +28,7 @@ export default function MatrixPlot({
   colors,
   label,
   presentationBackground,
+  loading,
 }: ChartPlotProps) {
   const focusMask = useId();
   const tooltipId = useId();
@@ -163,7 +172,10 @@ export default function MatrixPlot({
       presentationBackground,
     ],
   );
-  const active = focus && cells[focus.col]?.[focus.row];
+  useEffect(() => {
+    if (loading) setFocus(null);
+  }, [loading]);
+  const active = !loading && focus ? cells[focus.col]?.[focus.row] : null;
   const item = active && series[active.row];
   const titleFor = (col: number) =>
     series[0]?.categoryLabels?.[categories[col]] ?? categories[col];
@@ -294,7 +306,20 @@ export default function MatrixPlot({
               </mask>
             </defs>
           )}
-          <g mask={active ? `url(#${focusMask})` : undefined}>{svgCells}</g>
+          {loading ? (
+            <SkeletonMarks
+              spec={spec}
+              series={plotLoadingSeries(series, colors)}
+              count={categories.length}
+              x={startX}
+              y={startY}
+              width={xStep * categories.length}
+              height={yStep * series.length}
+              gap={gap}
+            />
+          ) : (
+            <g mask={active ? `url(#${focusMask})` : undefined}>{svgCells}</g>
+          )}
           {spec.showYAxis !== false &&
             series.map(
               (item, row) =>

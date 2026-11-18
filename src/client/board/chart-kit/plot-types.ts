@@ -10,3 +10,12 @@ export interface ChartPlotProps {
   presentationBackground?: string;
   loading?: boolean;
 }
+
+/** A loading preview needs the visible series' identities and colors, never their sampled values. */
+export function plotLoadingSeries(series: ChartSeriesItem[], colors: string[]) {
+  return series.map(({ metricId }, index) => ({
+    metricId,
+    color: colors[index],
+    index,
+  }));
+}

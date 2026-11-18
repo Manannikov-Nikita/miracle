@@ -2,17 +2,74 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
 import type { chartOptions } from "./chartOptions";
 import { ErrorBox } from "../components/UI";
-import ChartSkeleton from "./ChartSkeleton";
+import ChartSkeleton, { type ChartSkeletonProps } from "./ChartSkeleton";
+import type { ChartSpec } from "../../shared/types";
 
 type ChartOption = ReturnType<typeof chartOptions>;
 
+function stackBaseline(option: ChartOption, selected: Record<string, boolean>) {
+  let min = 0;
+  let max = 0;
+  for (const item of option.series) {
+    if (item.type !== "bar" || !item.stack || selected[item.name] === false)
+      continue;
+    for (const point of item.data) {
+      const value = (Array.isArray(point) ? point : point.value)[1] ?? 0;
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+      if (min < 0 && max > 0) return 0.5;
+    }
+  }
+  if (min < 0) return option.yAxis.type === "category" ? 1 : 0;
+  return undefined;
+}
+
+function nativeLoadingPreview(
+  option: ChartOption,
+  selected: Record<string, boolean>,
+  spec?: ChartSpec,
+): ChartSkeletonProps {
+  const first = option.series[0];
+  const series = option.series.flatMap((item, index) =>
+    selected[item.name] === false
+      ? []
+      : [
+          {
+            metricId: item.stack?.slice("metric:".length) ?? item.name,
+            color: item.itemStyle.color,
+            index,
+          },
+        ],
+  );
+  return {
+    spec: spec ?? {
+      kind: first?.areaStyle ? "area" : (first?.type ?? "bar"),
+      x: option.xAxis.name ?? "",
+      y: [...new Set(series.map((s) => s.metricId))],
+      stacked: Boolean(first?.stack),
+      series: first?.stack,
+      legend: option.legend.show,
+      orientation: option.yAxis.type === "category" ? "horizontal" : "vertical",
+      showGrid: option.xAxis.splitLine.show || option.yAxis.splitLine.show,
+    },
+    series: series.length ? series : undefined,
+    baseline: stackBaseline(option, selected),
+    count:
+      option.xAxis.data?.length ??
+      option.yAxis.data?.length ??
+      first?.data.length,
+  };
+}
+
 export default function ChartCanvas({
   option,
+  spec,
   label,
   createOption,
   loading = false,
 }: {
   option: ChartOption;
+  spec?: ChartSpec;
   label: string;
   loading?: boolean;
   createOption?: (selected: Record<string, boolean>) => ChartOption;
@@ -25,6 +82,9 @@ export default function ChartCanvas({
   const latestCreateOption = useRef(createOption);
   latestCreateOption.current = createOption;
   const selectedSeries = useRef<Record<string, boolean>>({});
+  const [loadingSelection, setLoadingSelection] = useState<
+    Record<string, boolean>
+  >({});
   const session = useRef<{ update: (next: ChartOption) => void } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const failed = error !== null;
@@ -110,6 +170,7 @@ export default function ChartCanvas({
               ...selectedSeries.current,
               ...state?.selected,
             };
+            setLoadingSelection(selectedSeries.current);
             pageAfterLoading = state?.scrollDataIndex;
             // Remove old series views and their running transitions. The chart
             // instance, its canvas size and its legend event subscription survive.
@@ -239,13 +300,7 @@ export default function ChartCanvas({
       />
       {loading && (
         <ChartSkeleton
-          count={
-            option.xAxis.data?.length ??
-            option.yAxis.data?.length ??
-            option.series[0]?.data.length
-          }
-          color={option.series[0]?.itemStyle.color}
-          horizontal={option.yAxis.type === "category"}
+          {...nativeLoadingPreview(option, loadingSelection, spec)}
         />
       )}
       {failed && !loading && (

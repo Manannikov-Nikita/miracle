@@ -278,6 +278,62 @@ describe("chart legend-dependent options", () => {
     expect(chart().dispose).toHaveBeenCalledOnce();
     expect(chart().setOption).toHaveBeenCalledTimes(earlier + 1);
   });
+  it.each(["vertical", "horizontal"] as const)(
+    "anchors the %s loading stacks to zero for the visible series",
+    async (orientation) => {
+      const spec = {
+        kind: "bar" as const,
+        orientation,
+        x: "category",
+        y: ["amount"],
+        series: "group",
+        stacked: true,
+        legend: true,
+      };
+      const rows = [
+        ["A", 6, "gain"],
+        ["A", -3, "loss"],
+        ["B", 2, "gain"],
+        ["B", -5, "loss"],
+      ];
+      const option = chartOptions(
+        columns,
+        spec,
+        chartSeries(columns, rows, spec, (value) => ({
+          text: String(value),
+          color: typeof value === "number" && value < 0 ? "#e58d59" : undefined,
+        })),
+      );
+      async function bounds(selected: Selection) {
+        await render(option);
+        chart().getOption.mockReturnValue({ legend: [{ selected }] });
+        await render(option, undefined, true);
+        const bars = host.querySelectorAll(
+          '.chart-skeleton [data-skeleton-mark="bar"] rect',
+        );
+        expect(bars.length).toBeGreaterThan(0);
+        const horizontal = orientation === "horizontal";
+        return [...bars].map((bar) => {
+          const start = parseFloat(bar.getAttribute(horizontal ? "x" : "y")!);
+          const length = parseFloat(
+            bar.getAttribute(horizontal ? "width" : "height")!,
+          );
+          return { start, end: start + length };
+        });
+      }
+      const mixed = await bounds({});
+      expect(mixed.some((b) => Math.abs(b.start - 50) < 0.001)).toBe(true);
+      expect(mixed.some((b) => Math.abs(b.end - 50) < 0.001)).toBe(true);
+      const [gain, loss] = option.series.map((s) => s.name);
+      const negative = await bounds({ [gain]: false, [loss]: true });
+      const positive = await bounds({ [gain]: true, [loss]: false });
+      const fromStart = orientation === "horizontal" ? positive : negative;
+      const fromEnd = orientation === "horizontal" ? negative : positive;
+      for (const bar of fromStart) expect(bar.start).toBeCloseTo(0);
+      for (const bar of fromEnd) expect(bar.end).toBeCloseTo(100);
+    },
+  );
+
   it("restores native selections even without a totals builder and skips reveal for reduced motion", async () => {
     vi.stubGlobal("matchMedia", () => ({ matches: true }));
     const option = optionFor();

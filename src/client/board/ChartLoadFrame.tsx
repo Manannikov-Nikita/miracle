@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import ChartSkeleton from "./ChartSkeleton";
+import ChartSkeleton, { type ChartSkeletonProps } from "./ChartSkeleton";
 import "./chart-loading.css";
 
 export default function ChartLoadFrame({
@@ -7,16 +7,14 @@ export default function ChartLoadFrame({
   children,
   inlineSkeleton = false,
   refreshing = false,
-  horizontal = false,
-  color,
+  spec,
+  count,
 }: {
   busy: boolean;
   children?: ReactNode;
   inlineSkeleton?: boolean;
   refreshing?: boolean;
-  horizontal?: boolean;
-  color?: string;
-}) {
+} & Pick<ChartSkeletonProps, "spec" | "count">) {
   return (
     <div className="chart-load-frame">
       <div
@@ -29,9 +27,7 @@ export default function ChartLoadFrame({
       </div>
       {busy && (
         <>
-          {!inlineSkeleton && (
-            <ChartSkeleton horizontal={horizontal} color={color} />
-          )}
+          {!inlineSkeleton && <ChartSkeleton spec={spec} count={count} />}
           <span className="chart-load-announcement" role="status">
             {refreshing || children
               ? "Обновление графика…"

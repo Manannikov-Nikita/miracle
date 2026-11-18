@@ -19,6 +19,10 @@
   overflow: hidden;
   pointer-events: none;
 }
+.chart-skeleton-frame[data-kind="sparkline"],
+.chart-skeleton-frame[data-kind="heatmap"] {
+  inset: 6%;
+}
 .chart-skeleton-frame > svg {
   position: absolute;
   inset: 0;
@@ -53,16 +57,107 @@
     transform: translateX(200%);
   }
 }
+/* The line grows from the left, exits to the right, then rests for 280 ms. */
+@keyframes chart-skeleton-pulse {
+  0% {
+    clip-path: inset(-4% 100% -4% 0);
+  }
+  44.35% {
+    clip-path: inset(-4% 0 -4% 0);
+  }
+  88.7%,
+  100% {
+    clip-path: inset(-4% 0 -4% 100%);
+  }
+}
+@keyframes chart-loading-text {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@keyframes chart-grid-glint {
+  from {
+    transform: translateX(-38%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes chart-skeleton-cell {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  21% {
+    opacity: 0.66;
+  }
+  44% {
+    opacity: 0.26;
+  }
+  68% {
+    opacity: 0.84;
+  }
+  87% {
+    opacity: 0.34;
+  }
+}
 @media (prefers-reduced-motion: no-preference) {
+  .chart-skeleton-glint rect {
+    transform-box: view-box;
+    animation: chart-grid-glint 2.48s linear -0.42s infinite;
+  }
+  .chart-skeleton-pulse {
+    transform-box: view-box;
+    animation: chart-skeleton-pulse 2.48s cubic-bezier(0.45, 0, 0.55, 1) -0.42s
+      infinite;
+  }
+  .chart-skeleton-cell {
+    animation: chart-skeleton-cell 6s ease-in-out infinite;
+  }
+  .chart-load-frame:has(
+      .chart-skeleton:is(
+        [data-kind="line"],
+        [data-kind="area"],
+        [data-kind="heatmap"]
+      )
+    )
+    > .chart-load-announcement {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: auto;
+    height: auto;
+    clip-path: none;
+    color: transparent;
+    background: linear-gradient(
+      95deg,
+      var(--board-muted, #a9adb1) 32%,
+      var(--board-text, #eeeff0) 50%,
+      var(--board-muted, #a9adb1) 68%
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    animation: chart-loading-text 2.48s linear infinite;
+    font:
+      12px/1.4 system-ui,
+      sans-serif;
+    pointer-events: none;
+  }
   .chart-skeleton-sweep {
     transform-box: fill-box;
     animation: chart-skeleton-travel 2s linear -0.3s infinite;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chart-skeleton-bars {
+  .chart-skeleton-glint {
+    display: none;
+  }
+  .chart-skeleton-swept {
     mask: none;
-    fill-opacity: 0.26;
+    opacity: 0.66;
   }
   .chart-load-announcement {
     inset: auto auto 4px 6px;

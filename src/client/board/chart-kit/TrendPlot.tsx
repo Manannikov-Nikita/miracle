@@ -1,11 +1,12 @@
 // Adapted from the Bklit UI LineSparkline (bklit/bklit-ui@76299da, MIT).
-import { memo, useId, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChartSeriesItem } from "../model";
 import type { ChartPlotProps } from "./plot-types";
 import { trendLine } from "./bklit/trend-line";
 import { categoryText, metricText, usePlotViewport } from "./compact-plot";
 import ChartTooltip from "./ChartTooltip";
+import { SkeletonMarks } from "../ChartSkeleton";
 import "./compact-plots.css";
 
 interface Selection {
@@ -261,11 +262,15 @@ export default function TrendPlot({
   colors,
   label,
   presentationBackground,
+  loading,
 }: ChartPlotProps) {
   const { host, width, height } = usePlotViewport();
   const overlay = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  useEffect(() => {
+    if (loading) setSelection(null);
+  }, [loading]);
   const rowHeight = Math.max(
     30,
     Math.floor(height / Math.max(1, series.length)) - 4,
@@ -289,6 +294,32 @@ export default function TrendPlot({
           height > 0 &&
           series.map((item, index) => {
             const key = item.colorKey ?? String(index);
+            const offset = index * (rowHeight + 4) - scrollTop;
+            if (loading) {
+              return (
+                <div
+                  key={key}
+                  className="trend-row"
+                  style={{ height: rowHeight }}
+                >
+                  {offset < height && offset + rowHeight > 0 && (
+                    <SkeletonMarks
+                      spec={spec}
+                      count={item.data.length}
+                      series={[
+                        {
+                          metricId: item.metricId,
+                          color: colors[index],
+                          index,
+                        },
+                      ]}
+                      width="100%"
+                      height={rowHeight}
+                    />
+                  )}
+                </div>
+              );
+            }
             const selected = selection?.key === key;
             return (
               <TrendRow
@@ -305,7 +336,7 @@ export default function TrendPlot({
                 setSelection={setSelection}
                 tooltipHost={overlay.current}
                 viewportHeight={height}
-                offset={selected ? index * (rowHeight + 4) - scrollTop : 0}
+                offset={selected ? offset : 0}
               />
             );
           })}
