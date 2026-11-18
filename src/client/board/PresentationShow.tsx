@@ -11,14 +11,38 @@ import { fitPresentationSlide } from "./presentation-model";
 
 const noop = () => {};
 
+/** Radix captures Escape on the document before the chart receives it. A chart
+ * can also be under the pointer while focus remains on a slide control. */
+function dismissInspections(scene: HTMLElement | null, event?: KeyboardEvent) {
+  const plots = scene?.querySelectorAll<SVGSVGElement>(
+    '[data-inspectable-chart] svg[role="img"][aria-describedby]',
+  );
+  if (!plots?.length) return false;
+  event?.preventDefault();
+  for (const plot of plots) {
+    if (plot === event?.target) continue;
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    // Route this key to the hovered plot without re-entering dialog dismissal.
+    escape.preventDefault();
+    plot.dispatchEvent(escape);
+  }
+  return true;
+}
+
 export default function PresentationShow({
   board,
   initialSlideId,
+  refreshing,
   onClose,
   trigger,
 }: {
   board: Board;
   initialSlideId: string;
+  refreshing?: Record<string, boolean>;
   onClose(): void;
   trigger: HTMLElement;
 }) {
@@ -39,7 +63,11 @@ export default function PresentationShow({
     let live = true;
     const onFullscreenChange = () => {
       if (document.fullscreenElement === target) fullscreen.current = true;
-      else if (fullscreen.current) onClose();
+      else if (fullscreen.current) {
+        fullscreen.current = false;
+        // Native fullscreen can consume Escape before the page sees keydown.
+        if (!dismissInspections(target)) onClose();
+      }
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     void target
@@ -85,6 +113,15 @@ export default function PresentationShow({
           ref={setContent}
           className="board-workspace presentation-show"
           aria-describedby={undefined}
+          onOpenAutoFocus={(event) => {
+            if (event.target instanceof HTMLElement) {
+              event.preventDefault();
+              event.target.focus({ preventScroll: true });
+            }
+          }}
+          onEscapeKeyDown={(event) => {
+            if (!event.defaultPrevented) dismissInspections(content, event);
+          }}
           onCloseAutoFocus={(event) => {
             if (trigger.isConnected) {
               event.preventDefault();
@@ -126,7 +163,6 @@ export default function PresentationShow({
             >
               <div
                 className="presentation-show-scene"
-                inert
                 style={{ background: slide.background }}
               >
                 <PresentationScene
@@ -134,6 +170,8 @@ export default function PresentationShow({
                   boardId={board.id}
                   slide={slide}
                   scale={scale}
+                  refreshing={refreshing}
+                  inspectCharts
                 />
               </div>
             </div>

@@ -1,4 +1,5 @@
 import type { BoardImage } from "./board-images.js";
+import type { ChartMarkStyle, ChartMarkRule } from "./chart-mark-style.js";
 import type { DateRangeOptions, DateBatchProgress } from "./date-batch.js";
 export type {
   DateRangeOptions,
@@ -143,9 +144,25 @@ export interface QueryRun {
   elapsedMs?: number;
   progress?: string;
 }
-export type ChartKind = "bar" | "line" | "area" | "scatter";
+export type ChartMetricStyle = "bar" | "line" | "area";
+export type ChartKind =
+  | ChartMetricStyle
+  | "scatter"
+  | "composed"
+  | "sparkline"
+  | "heatmap"
+  | "histogram";
+export type {
+  ChartMarkStyle,
+  ChartMarkRule,
+  ChartMarkCondition,
+} from "./chart-mark-style.js";
 export interface ChartSpec {
   kind: ChartKind;
+  /** Number of equal-width histogram intervals; omit for automatic binning. */
+  binCount?: number;
+  /** A composed chart uses the same mark for all breakdowns of a metric. */
+  metricStyles?: Record<string, ChartMetricStyle>;
   orientation?: "vertical" | "horizontal";
   x: string;
   y: string[];
@@ -163,6 +180,9 @@ export interface ChartSpec {
   palette?: "default" | "cool" | "warm" | "vivid";
   /** Colors by stable metric / breakdown identity, independent of row order. */
   seriesColors?: Record<string, string>;
+  seriesStyles?: Record<string, ChartMarkStyle>;
+  /** Matching rules override individual properties in array order. */
+  markRules?: ChartMarkRule[];
   xLabel?: string;
   yLabel?: string;
   numberFormat?: "auto" | "integer" | "decimal" | "percent" | "compact";

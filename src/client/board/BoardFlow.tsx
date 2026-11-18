@@ -1,14 +1,47 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ReactFlow, type ReactFlowProps } from "@xyflow/react";
 import type { BoardFlowEdge } from "./BoardEdgeView";
 import type { BoardCanvasNode } from "./edge-flow";
 
+import {
+  CanvasChartDetailContext,
+  chartDetailAtZoom,
+  fullChartDetail,
+} from "./board-chart-overview";
+
 export default function BoardFlow({
   gestureScope,
+  largeChartBoard = false,
   ...props
-}: ReactFlowProps<BoardCanvasNode, BoardFlowEdge> & { gestureScope: string }) {
+}: ReactFlowProps<BoardCanvasNode, BoardFlowEdge> & {
+  gestureScope: string;
+  largeChartBoard?: boolean;
+}) {
   const host = useRef<HTMLDivElement>(null);
   const boardWheel = useRef(false);
+
+  const initialDetail = () => ({
+    scope: gestureScope,
+    detail: chartDetailAtZoom(
+      fullChartDetail,
+      props.defaultViewport?.zoom ?? 1,
+    ),
+  });
+  const [camera, setCamera] = useState(initialDetail);
+  const latestCamera = useRef(camera);
+  if (camera.scope !== gestureScope) {
+    latestCamera.current = initialDetail();
+    setCamera(latestCamera.current);
+  }
+  const syncZoom = (zoom: number) => {
+    const previous = latestCamera.current;
+    if (previous.scope !== gestureScope) return;
+    const next = chartDetailAtZoom(previous.detail, zoom);
+    if (next === previous.detail) return;
+    // Track rapid reversals even if React batches consecutive zoom events.
+    latestCamera.current = { scope: gestureScope, detail: next };
+    setCamera(latestCamera.current);
+  };
 
   useEffect(() => {
     boardWheel.current = false;
@@ -59,21 +92,27 @@ export default function BoardFlow({
   }, [gestureScope]);
 
   return (
-    <ReactFlow<BoardCanvasNode, BoardFlowEdge>
-      {...props}
-      ref={host}
-      onMoveStart={(event, viewport) => {
-        boardWheel.current = event?.type === "wheel";
-        props.onMoveStart?.(event, viewport);
-      }}
-      onMove={(event, viewport) => {
-        if (event?.type === "wheel") boardWheel.current = true;
-        props.onMove?.(event, viewport);
-      }}
-      onMoveEnd={(event, viewport) => {
-        boardWheel.current = false;
-        props.onMoveEnd?.(event, viewport);
-      }}
-    />
+    <CanvasChartDetailContext.Provider
+      value={largeChartBoard ? camera.detail : fullChartDetail}
+    >
+      <ReactFlow<BoardCanvasNode, BoardFlowEdge>
+        {...props}
+        ref={host}
+        onMoveStart={(event, viewport) => {
+          boardWheel.current = event?.type === "wheel";
+          props.onMoveStart?.(event, viewport);
+        }}
+        onMove={(event, viewport) => {
+          if (event?.type === "wheel") boardWheel.current = true;
+          syncZoom(viewport.zoom);
+          props.onMove?.(event, viewport);
+        }}
+        onMoveEnd={(event, viewport) => {
+          boardWheel.current = false;
+          syncZoom(viewport.zoom);
+          props.onMoveEnd?.(event, viewport);
+        }}
+      />
+    </CanvasChartDetailContext.Provider>
   );
 }

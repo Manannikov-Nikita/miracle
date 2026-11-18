@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server, type ServerOptions } from "node:https";
 import type { RequestListener } from "node:http";
@@ -8,6 +8,9 @@ import type { RequestListener } from "node:http";
 /** Disposable test-only certificates. No runtime files, accounts, or trust stores are touched. */
 export function certificates() {
   const dir = mkdtempSync(join(tmpdir(), "miracle-tls-test-"));
+  // LibreSSL can omit authority key identifiers. Distinct issuer names keep
+  // independent test roots unambiguous when loaded into the same trust store.
+  const issuer = basename(dir);
   const run = (...args: string[]) =>
     execFileSync("openssl", args, { cwd: dir, stdio: "ignore" });
   const read = (name: string) => readFileSync(join(dir, name), "utf8");
@@ -24,7 +27,7 @@ export function certificates() {
     "-days",
     "1",
     "-subj",
-    "/CN=Miracle test CA",
+    `/CN=Miracle test CA ${issuer}`,
   );
   for (const name of ["server", "client"]) {
     run(
@@ -76,7 +79,7 @@ export function certificates() {
     "-days",
     "1",
     "-subj",
-    "/CN=Untrusted test CA",
+    `/CN=Untrusted test CA ${issuer}`,
   );
   const certs = {
     caCert: read("ca.pem"),

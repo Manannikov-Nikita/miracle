@@ -1,4 +1,8 @@
 import { boardImageSchema } from "./board-images.js";
+import {
+  chartMarkRulesSchema,
+  chartSeriesStylesSchema,
+} from "./chart-mark-style.js";
 import { z } from "zod";
 import { tableSpecSchema } from "./table-schema.js";
 import { visualTableSpecSchema } from "./visual-table.js";
@@ -8,6 +12,8 @@ import { boardKind, PRESENTATION_MAX_SLIDES } from "./presentation.js";
 import { shapeSpecSchema } from "./shapes.js";
 import { textStyleSchema } from "./text-style.js";
 import {
+  CHART_METRIC_LIMIT,
+  HISTOGRAM_BIN_LIMIT,
   CHART_SERIES_COLOR_KEY_LIMIT,
   CHART_SERIES_COLOR_LIMIT,
 } from "./chart-appearance.js";
@@ -38,10 +44,27 @@ export const sourceSchema = z.object({
 const identifier = z.string().min(1).max(200);
 const finite = z.number().finite().min(-1000000).max(1000000);
 export const chartSpecSchema = z.object({
-  kind: z.enum(["bar", "line", "area", "scatter"]),
+  kind: z.enum([
+    "bar",
+    "line",
+    "area",
+    "scatter",
+    "composed",
+    "sparkline",
+    "heatmap",
+    "histogram",
+  ]),
+  binCount: z.number().int().min(1).max(HISTOGRAM_BIN_LIMIT).optional(),
+  metricStyles: z
+    .record(identifier, z.enum(["bar", "line", "area"]))
+    .refine(
+      (styles) => Object.keys(styles).length <= CHART_METRIC_LIMIT,
+      "Не более 20 стилей метрик",
+    )
+    .optional(),
   orientation: z.enum(["vertical", "horizontal"]).optional(),
   x: z.string().max(200),
-  y: z.array(z.string().max(200)).max(20),
+  y: z.array(z.string().max(200)).max(CHART_METRIC_LIMIT),
   series: z.string().max(200).optional(),
   stacked: z.boolean().optional(),
   legend: z.boolean(),
@@ -54,6 +77,8 @@ export const chartSpecSchema = z.object({
   showTotals: z.boolean().optional(),
   labelPosition: z.enum(["auto", "outside", "inside"]).optional(),
   palette: z.enum(["default", "cool", "warm", "vivid"]).optional(),
+  seriesStyles: chartSeriesStylesSchema.optional(),
+  markRules: chartMarkRulesSchema.optional(),
   seriesColors: z
     .record(
       z.string().min(1).max(CHART_SERIES_COLOR_KEY_LIMIT),

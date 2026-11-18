@@ -435,7 +435,7 @@ export const miracleTools = [
   ),
   tool(
     "board_patch",
-    "Apply atomic board or presentation operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Presentations also support add_slide {slide:{id,title,background}}, update_slide {id,patch:{title?,background?}}, remove_slide {id} (includes children), reorder_slides {slideIds} (a complete permutation). Use slideId on every new presentation node and edge, including free-ended links; an edge cannot span slides. Presentation coordinates are 1600×900. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart/shape/textStyle/image are replaced as complete objects; read_board and preserve their unchanged fields. " +
+    "Apply atomic board or presentation operations at expected revision. Types: add_node {node}, update_node {id,patch:{position,width,height,data}}, remove_node {id}, add_edge {edge}, update_edge {id,patch}, remove_edge {id}. Presentations also support add_slide {slide:{id,title,background}}, update_slide {id,patch:{title?,background?}}, remove_slide {id} (includes children), reorder_slides {slideIds} (a complete permutation). Use slideId on every new presentation node and edge, including free-ended links; an edge cannot span slides. Presentation coordinates are 1600×900. Standard chart controls include showXAxis/showYAxis/showGrid, showLabels/labelPosition, palette/seriesColors, seriesStyles and conditional markRules (color, opacity, border and pattern), orientation, stacking, legend and number formatting. Read chart_guide for exact controls, color keys and proportional width/height resizing. Read custom_chart_guide before creating custom source. Data is merged one level only: chart/table/customChart/shape/textStyle/image are replaced as complete objects; read_board and preserve their unchanged fields. " +
       shapeGuide +
       textGuide,
     {
@@ -499,7 +499,7 @@ export const miracleTools = [
   ),
   tool(
     "chart_guide",
-    "Read standard chart controls: axes, auxiliary grid lines, value labels, palettes and individual series colors; binding, defaults, full chart replacement, and proportional block resizing via width/height. Use before editing standard chart settings or chart dimensions.",
+    "Read standard chart controls: axes, auxiliary grid lines, value labels, palettes, per-series paint and conditional mark rules (color, opacity, border, pattern); binding, defaults, full chart replacement, and proportional block resizing via width/height. Use before editing standard chart settings or chart dimensions.",
   ),
   tool(
     "custom_chart_guide",

@@ -35,6 +35,8 @@ import {
 } from "@phosphor-icons/react";
 import type { BoardNodeData, ResultSet } from "../../shared/types";
 import ResultView from "./ResultView";
+import { BoardChartOverviewContext } from "./board-chart-overview";
+import { useCanvasChartViewport } from "./useCanvasChartViewport";
 import { agentWorkColor, type AgentEntityWork } from "../../shared/agent-work";
 import { AgentWorkIndicator } from "../agents/AgentWorkIndicator";
 import MarkdownEditor from "./MarkdownEditor";
@@ -67,6 +69,7 @@ export const BoardActions = createContext<{
   boardId: string;
   editable: boolean;
   presentation?: boolean;
+  inspectPresentationCharts?: boolean;
   slideBackground?: string;
   reportChartStatus?: boolean;
   canEditNode?: (id: string) => boolean;
@@ -84,6 +87,7 @@ export const BoardActions = createContext<{
   shapeTransform?: (id: string, patch: ShapeTransformPatch) => void;
   shapeTransformEnd?: (id: string, cancelled: boolean) => void;
   busy: Record<string, boolean>;
+  refreshing?: Record<string, boolean>;
 }>({
   boardId: "",
   editable: false,
@@ -98,7 +102,59 @@ export const BoardActions = createContext<{
   busy: {},
 });
 const selectZoom = (state: ReactFlowState) => state.transform[2];
+const unitZoom = () => 1;
 const SqlTableView = lazy(() => import("./SqlTableView"));
+
+// Selected handles track zoom even when the chart itself has no new props.
+const ArtifactResult = memo(function ArtifactResult({
+  id,
+  data,
+  inlineEditable,
+}: {
+  id: string;
+  data: BoardNodeData;
+  inlineEditable: boolean;
+}) {
+  const actions = useContext(BoardActions);
+  const presentation = actions.presentation === true;
+  return (
+    <ResultView
+      refreshing={actions.refreshing?.[id]}
+      boardId={actions.boardId}
+      nodeId={id}
+      id={data.resultSetId!}
+      view={data.view ?? "table"}
+      chart={data.chart}
+      customChart={data.customChart}
+      visibleColumns={data.visibleColumns}
+      table={data.table}
+      visualTable={data.visualTable}
+      visualTableEnabled={data.visualTableEnabled}
+      onVisualTableChange={
+        inlineEditable
+          ? (visualTable) => actions.update(id, { visualTable })
+          : undefined
+      }
+      onVisualTableToggle={
+        inlineEditable
+          ? (enabled, visualTable) =>
+              actions.update(id, {
+                visualTableEnabled: enabled,
+                ...(visualTable ? { visualTable } : {}),
+              })
+          : undefined
+      }
+      onMetadata={actions.metadata}
+      reportChartStatus={actions.reportChartStatus}
+      presentationBackground={
+        presentation ? (actions.slideBackground ?? "#ffffff") : undefined
+      }
+      onTableChange={
+        inlineEditable ? (table) => actions.update(id, { table }) : undefined
+      }
+    />
+  );
+});
 
 function ArtifactNode({
   id,
@@ -112,6 +168,10 @@ function ArtifactNode({
   const actions = useContext(BoardActions);
   const editable = actions.editable && (actions.canEditNode?.(id) ?? true);
   const presentation = actions.presentation === true;
+  const inspectable =
+    actions.inspectPresentationCharts &&
+    data.kind === "result" &&
+    data.view === "chart";
   const freeform =
     data.kind === "shape" || data.kind === "text" || data.kind === "image";
   const inlineEditable = editable && !presentation;
@@ -122,10 +182,23 @@ function ArtifactNode({
   const workColor = work?.worker
     ? agentWorkColor(work.worker.color)
     : undefined;
-  const zoom = useStore(selectZoom);
   const content = useRef<HTMLDivElement>(null);
   const updateNodeInternals = useUpdateNodeInternals();
   const shapeType = data.kind === "shape" ? data.shape?.type : undefined;
+  const needsZoom =
+    (selected && editable) ||
+    shapeType === "line" ||
+    (!!work?.worker && (freeform || presentation));
+  const zoom = useStore(needsZoom ? selectZoom : unitZoom);
+  const canvasChart =
+    data.kind === "result" && data.view === "chart" && !presentation;
+  const chartViewport = useCanvasChartViewport(
+    content,
+    canvasChart,
+    data.kind === "result" &&
+      (!canvasChart || !!selected || !!actions.refreshing?.[id]),
+    `${actions.boardId}:${id}`,
+  );
   const shapeFrame = data.kind === "shape" ? data.shapeFrame : undefined;
   const rectangle = {
     x: positionAbsoluteX + (shapeFrame?.x ?? 0),
@@ -151,14 +224,21 @@ function ArtifactNode({
     const preventTabStops = () => {
       for (const control of element.querySelectorAll<HTMLElement>(
         "a[href],button,input,select,textarea,iframe,[tabindex],[contenteditable]",
-      ))
+      )) {
+        if (
+          inspectable &&
+          control.closest(".board-chart") &&
+          control.matches('svg[role="img"], .bk-legend button')
+        )
+          continue;
         control.tabIndex = -1;
+      }
     };
     preventTabStops();
     const observer = new MutationObserver(preventTabStops);
     observer.observe(element, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, [presentation]);
+  }, [presentation, inspectable]);
   // Keep these handlers stable: XYFlow installs its raw resize calculation in
   // an effect keyed by the callback identities, including during the gesture.
   const resizeStart = useCallback<OnResizeStart>(
@@ -194,6 +274,8 @@ function ArtifactNode({
     <article
       className={`board-artifact board-artifact-${data.kind}${presentation ? " presentation-artifact" : ""}${selected ? " board-artifact-selected" : ""}${work ? " agent-work-active" : ""}`}
       aria-label={data.title}
+      data-chart-overview={chartViewport.overview || undefined}
+      inert={actions.inspectPresentationCharts && !inspectable}
       data-agent-worker={work?.worker?.id}
       style={
         {
@@ -400,6 +482,8 @@ function ArtifactNode({
       )}
       <div
         ref={content}
+        data-inspectable-chart={inspectable || undefined}
+        data-canvas-chart={canvasChart || undefined}
         className={`board-node-body${presentation ? " presentation-node-content" : freeform ? "" : " nodrag nopan"}${freeform || (data.kind === "result" && data.view === "chart") ? "" : " nowheel"}`}
       >
         {data.kind === "table" && data.visualTable && (
@@ -423,43 +507,15 @@ function ArtifactNode({
             />
           </Suspense>
         )}
-        {data.kind === "result" && data.resultSetId && (
-          <ResultView
-            boardId={actions.boardId}
-            nodeId={id}
-            id={data.resultSetId}
-            view={data.view ?? "table"}
-            chart={data.chart}
-            customChart={data.customChart}
-            visibleColumns={data.visibleColumns}
-            table={data.table}
-            visualTable={data.visualTable}
-            visualTableEnabled={data.visualTableEnabled}
-            onVisualTableChange={
-              inlineEditable
-                ? (visualTable) => actions.update(id, { visualTable })
-                : undefined
-            }
-            onVisualTableToggle={
-              inlineEditable
-                ? (enabled, visualTable) =>
-                    actions.update(id, {
-                      visualTableEnabled: enabled,
-                      ...(visualTable ? { visualTable } : {}),
-                    })
-                : undefined
-            }
-            onMetadata={actions.metadata}
-            reportChartStatus={actions.reportChartStatus}
-            presentationBackground={
-              presentation ? (actions.slideBackground ?? "#ffffff") : undefined
-            }
-            onTableChange={
-              inlineEditable
-                ? (table) => actions.update(id, { table })
-                : undefined
-            }
-          />
+        {data.kind === "result" && data.resultSetId && chartViewport.mount && (
+          <BoardChartOverviewContext.Provider value={chartViewport.overview}>
+            <ArtifactResult
+              key={`${actions.boardId}:${id}`}
+              id={id}
+              data={data}
+              inlineEditable={inlineEditable}
+            />
+          </BoardChartOverviewContext.Provider>
         )}
         {data.kind === "image" && data.image && (
           <ImageContent

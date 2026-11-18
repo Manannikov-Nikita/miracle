@@ -6,37 +6,49 @@ import { acquireTableSnapshot } from "./tableSnapshot";
 
 /** Chart and inspector share immutable source rows, but prepare each card's own table settings. */
 export function useChartTableData(
-  result: ResultSet,
+  result: ResultSet | null,
   table?: TableSpec,
   visibleColumns?: string[],
-  loadRows = true,
+  mode: "chart" | "histogram" | "metadata" = "chart",
 ) {
   const transformed = table !== undefined || visibleColumns !== undefined;
-  const needsRows = loadRows || transformed;
-  const [snapshot, setSnapshot] = useState<{ id: string; rows: Cell[][] }>();
-  const [failure, setFailure] = useState<{ id: string; error: Error }>();
+  const source = transformed || mode === "histogram" ? "table" : mode;
+  const needsRows = source !== "metadata";
+  const resultId = result?.id;
+  const [snapshot, setSnapshot] = useState<{
+    id: string;
+    source: typeof source;
+    rows: Cell[][];
+  }>();
+  const [failure, setFailure] = useState<{
+    id: string;
+    source: typeof source;
+    error: Error;
+  }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (!needsRows) return;
+    if (!needsRows || !resultId) return;
     let live = true;
     setSnapshot(undefined);
     setFailure(undefined);
-    const read = transformed ? acquireTableSnapshot(result.id) : undefined;
+    const read =
+      source === "table" ? acquireTableSnapshot(resultId) : undefined;
     const controller = new AbortController();
     const pending =
       read?.promise ??
       api<{ rows: Cell[][] }>(
-        `/api/result-sets/${encodeURIComponent(result.id)}/chart`,
+        `/api/result-sets/${encodeURIComponent(resultId)}/chart`,
         { signal: controller.signal },
       );
     pending
       .then(({ rows }) => {
-        if (live) setSnapshot({ id: result.id, rows });
+        if (live) setSnapshot({ id: resultId, source, rows });
       })
       .catch((cause: unknown) => {
         if (live)
           setFailure({
-            id: result.id,
+            id: resultId,
+            source,
             error: cause instanceof Error ? cause : new Error(String(cause)),
           });
       });
@@ -45,14 +57,18 @@ export function useChartTableData(
       controller.abort();
       read?.release();
     };
-  }, [result.id, transformed, needsRows, attempt]);
+  }, [resultId, source, needsRows, attempt]);
   const prepared = useMemo(() => {
-    if (needsRows && snapshot?.id !== result.id) return null;
+    if (
+      !result ||
+      (needsRows && (snapshot?.id !== result.id || snapshot.source !== source))
+    )
+      return null;
     try {
       return {
         data: chartTableData(
           result.columns,
-          snapshot?.rows ?? [],
+          needsRows ? (snapshot?.rows ?? []) : [],
           table,
           visibleColumns,
         ),
@@ -60,10 +76,13 @@ export function useChartTableData(
     } catch (cause) {
       return { error: cause instanceof Error ? cause.message : String(cause) };
     }
-  }, [result.id, result.columns, snapshot, needsRows, table, visibleColumns]);
+  }, [result, snapshot, needsRows, source, table, visibleColumns]);
   return {
     data: prepared?.data,
-    error: failure?.id === result.id ? failure.error : undefined,
+    error:
+      failure && failure.id === resultId && failure.source === source
+        ? failure.error
+        : undefined,
     preparationError: prepared?.error,
     retry: () => setAttempt((value) => value + 1),
   };

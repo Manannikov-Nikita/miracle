@@ -41,7 +41,7 @@ const fail = (message: string): never => {
   throw new Error(`Таблица: ${message}`);
 };
 
-function decimal(value: Cell | undefined): Decimal | null {
+export function decimal(value: Cell | undefined): Decimal | null {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const raw = String(value).trim();
   if (!decimalPattern.test(raw) || raw.length > 10000) return null;

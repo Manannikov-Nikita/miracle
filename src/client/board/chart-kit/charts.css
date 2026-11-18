@@ -1,0 +1,283 @@
+.bk-chart {
+  --bk-inspect-duration: 125ms;
+  --bk-inspect-ease: cubic-bezier(0.2, 0.65, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  gap: 4px;
+  padding: 6px;
+  color: var(--bk-text);
+  font:
+    11px/1.35 system-ui,
+    sans-serif;
+}
+.bk-chart[data-legend-position="bottom"] {
+  flex-direction: column-reverse;
+}
+/* Scale the SVG layout and HTML overlays together so their coordinates agree
+   at every board zoom. */
+@container chart-content (min-width: 640px) and (min-height: 365px) {
+  .bk-chart:not([data-detail="thumbnail"]) {
+    zoom: 1.3;
+  }
+}
+.bk-chart[data-legend-position="left"] {
+  flex-direction: row;
+}
+.bk-chart[data-legend-position="right"] {
+  flex-direction: row-reverse;
+}
+.bk-legend {
+  display: flex;
+  align-items: center;
+  justify-content: safe center;
+  gap: 4px;
+  flex: 0 1 auto;
+  max-height: 30%;
+  min-width: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.bk-chart:is([data-legend-position="left"], [data-legend-position="right"])
+  .bk-legend {
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 35%;
+  max-height: 100%;
+}
+.bk-legend[data-align="start"] {
+  justify-content: flex-start;
+}
+.bk-legend[data-align="end"] {
+  justify-content: safe end;
+}
+.bk-chart .bk-legend button {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 22px;
+  padding: 2px 5px;
+  background: transparent;
+  color: var(--bk-muted);
+  border: 0;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+.bk-legend button span:last-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.bk-legend button:hover,
+.bk-legend button:focus-visible {
+  color: var(--bk-text);
+  background: color-mix(in srgb, var(--bk-muted) 12%, transparent);
+}
+.bk-legend button[aria-pressed="false"] {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.bk-key {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.bk-plot {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+.bk-no-series {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  text-align: center;
+  color: var(--bk-muted);
+}
+.bk-cartesian {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.bk-cartesian > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.bk-cartesian svg:focus-visible {
+  outline: 1px solid var(--bk-muted);
+  outline-offset: -2px;
+}
+.bk-cartesian svg text {
+  fill: var(--bk-muted);
+  font-size: 10px;
+}
+.bk-cartesian text.bk-value {
+  fill: var(--bk-text);
+  paint-order: stroke;
+  stroke-width: 2px;
+}
+.bk-cartesian text.bk-inside {
+  fill: #101318;
+  stroke: #fff9;
+  stroke-width: 1.5px;
+  paint-order: stroke;
+}
+.bk-cartesian text.bk-stack-total {
+  fill: var(--bk-text);
+  font-weight: 650;
+}
+.bk-cartesian .bk-axis-name {
+  font-size: 9px;
+}
+.bk-grid {
+  stroke: var(--bk-grid);
+  stroke-dasharray: 3 4;
+}
+.bk-crosshair {
+  pointer-events: none;
+  stroke: var(--bk-muted);
+  stroke-dasharray: 3;
+}
+.bk-focus {
+  pointer-events: none;
+}
+.bk-focus-dot:not([stroke]) {
+  stroke: var(--bk-surface);
+  stroke-width: 2.25;
+}
+.bk-category-tick[data-inspected] {
+  opacity: 0;
+}
+.bk-category-chip rect {
+  fill: var(--bk-text);
+}
+.bk-cartesian .bk-category-chip text {
+  fill: var(--bk-surface);
+  font-size: 11px;
+  font-weight: 600;
+}
+@keyframes bk-sweep {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes bk-rise {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes bk-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bk-cartesian:not([data-keyboard]) .bk-category-tick {
+    transition: opacity 80ms ease-out;
+  }
+  .bk-cartesian:not([data-keyboard]) .bk-category-tick[data-inspected] {
+    transition-duration: 45ms;
+  }
+  .bk-cartesian:not([data-keyboard])
+    :is(.bk-category-chip, .bk-focus-dot, .bk-focus-guide) {
+    transition: transform var(--bk-inspect-duration) var(--bk-inspect-ease);
+  }
+  .bk-cartesian:not([data-keyboard]) .bk-category-chip rect {
+    transition:
+      x var(--bk-inspect-duration) var(--bk-inspect-ease),
+      width var(--bk-inspect-duration) var(--bk-inspect-ease);
+  }
+  .bk-cartesian .bk-reveal {
+    animation: bk-sweep 0.52s cubic-bezier(0.2, 0.68, 0.2, 1) backwards;
+  }
+  .bk-cartesian .bk-bar {
+    animation: bk-rise 0.42s cubic-bezier(0.2, 0.68, 0.2, 1)
+      var(--bk-delay, 0ms) backwards;
+  }
+  .bk-chart[data-kind="bar"] .bk-reveal {
+    animation: none;
+  }
+  .bk-chart[data-kind="bar"] .bk-bar {
+    animation-duration: 1.1s;
+    animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1);
+    animation-delay: calc(2 * var(--bk-delay, 0ms));
+  }
+  .bk-cartesian[data-horizontal="true"] .bk-bar {
+    animation-name: bk-sweep;
+  }
+  /* The shared category transform grows a signed stack from zero. Individual
+     segments stay flush, including when a breakdown has missing categories. */
+  .bk-cartesian .bk-stack-category {
+    transform-box: view-box;
+    animation: bk-rise 1.1s cubic-bezier(0.45, 0, 0.25, 1) var(--bk-delay)
+      backwards;
+  }
+  .bk-cartesian[data-horizontal="true"] .bk-stack-category {
+    animation-name: bk-sweep;
+  }
+  .bk-cartesian .bk-stack-category .bk-bar {
+    animation: none;
+  }
+  .bk-chart[data-kind="bar"]
+    .bk-stack-category
+    :is(.bk-stack-value, .bk-stack-total) {
+    animation: bk-appear 140ms ease-out calc(750ms + var(--bk-delay)) backwards;
+  }
+}
+
+/* World-space sizes keep titles distinct even at the board's minimum zoom. */
+.board-artifact[data-chart-overview] .board-node-header {
+  height: 54px;
+  min-height: 54px;
+  padding-inline: 16px;
+  gap: 10px;
+}
+.board-artifact[data-chart-overview] .board-node-header strong {
+  font-size: 34px;
+  line-height: 1.2;
+}
+.board-artifact[data-chart-overview] .board-node-kind {
+  display: none;
+}
+.board-artifact[data-chart-overview]:not(
+    :hover,
+    :focus-within,
+    .board-artifact-selected
+  )
+  .board-node-toolbar {
+  position: absolute;
+  right: 16px;
+  pointer-events: none;
+}
+.bk-chart[data-detail="thumbnail"] {
+  padding: 4% 5%;
+  min-height: 0;
+}
+.bk-chart[data-detail="thumbnail"] .bk-no-series {
+  font-size: 24px;
+}
+
+/* Zooming back to a snapshot already on screen should immediately show its
+   finished geometry. A new result still gets its normal entrance animation. */
+.bk-chart[data-zoom-restored] .bk-plot svg * {
+  animation: none !important;
+}

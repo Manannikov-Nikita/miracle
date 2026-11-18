@@ -1,0 +1,134 @@
+.trend-plot,
+.matrix-plot {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.trend-scroll {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+}
+.trend-row {
+  position: relative;
+  flex: none;
+  min-width: 0;
+}
+.trend-row svg,
+.matrix-plot svg {
+  display: block;
+}
+.trend-row svg:focus-visible,
+.matrix-plot svg:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+  border-radius: 3px;
+}
+.trend-line:not([data-styled]) {
+  animation: trend-draw 750ms cubic-bezier(0.65, 0, 0.35, 1) backwards;
+}
+@keyframes trend-draw {
+  from {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+}
+.trend-latest {
+  pointer-events: none;
+  position: absolute;
+  right: 6px;
+  top: 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.matrix-column {
+  animation: matrix-enter 450ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+@keyframes matrix-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.matrix-tick,
+.matrix-value {
+  pointer-events: none;
+  fill: currentColor;
+  font-family: inherit;
+  font-size: 11px;
+}
+.matrix-scale {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  position: absolute;
+  inset: auto 0 2px;
+  height: 20px;
+  pointer-events: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.matrix-scale i {
+  display: block;
+  width: 50px;
+  height: 7px;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, currentColor 20%, transparent),
+    currentColor
+  );
+}
+.trend-scroll:has(.trend-row[data-active]) .trend-context {
+  opacity: 0.64;
+}
+.trend-guide {
+  stroke: var(--bk-muted, currentColor);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.trend-row svg,
+.matrix-plot svg {
+  cursor: crosshair;
+}
+@keyframes trend-reveal {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .trend-reveal {
+    animation: trend-reveal 750ms cubic-bezier(0.65, 0, 0.35, 1) backwards;
+  }
+  .trend-scroll:has([data-pointer]) .trend-context {
+    transition: opacity 120ms ease-out;
+  }
+  .trend-row[data-pointer]
+    :is(.trend-guide, .trend-marker, .trend-highlight-window),
+  .matrix-plot[data-pointer] .matrix-focus {
+    transition: transform var(--bk-inspect-duration, 125ms)
+      var(--bk-inspect-ease, cubic-bezier(0.2, 0.65, 0.3, 1));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trend-line:not([data-styled]),
+  .matrix-column {
+    animation: none;
+  }
+}

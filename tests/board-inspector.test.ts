@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Inspector from "../src/client/board/Inspector";
+import { createResultNode } from "../src/client/board/model";
 import {
   createTableSpec,
   formatTableCell,
@@ -182,6 +183,95 @@ describe("board inspector settings integration", () => {
     expect(found, `checkbox ${text}`).toBeDefined();
     return found!;
   }
+  it("enlarges a default result once when its first chart is created", async () => {
+    const node = createResultNode(result);
+    expect(node).toMatchObject({ width: 540, height: 350 });
+    await render(node);
+    await click(button("График"));
+    expect(current).toMatchObject({
+      width: 702,
+      height: 455,
+      position: node.position,
+    });
+    await click(button("Таблица"));
+    await click(button("График"));
+    expect(current).toMatchObject({
+      width: 702,
+      height: 455,
+      position: node.position,
+    });
+  });
+  it.each([
+    { width: 400, height: 350 },
+    { width: 540, height: 600 },
+  ])("keeps the manually sized result frame %j", async (size) => {
+    await render({ ...createResultNode(result), ...size });
+    await click(button("График"));
+    expect(current).toMatchObject(size);
+  });
+  it.each([
+    [
+      { x: 530, y: 275 },
+      { x: 449, y: 222.5 },
+    ],
+    [
+      { x: 1060, y: 550 },
+      { x: 898, y: 445 },
+    ],
+  ])(
+    "fits the enlarged chart on its slide at %j",
+    async (position, expected) => {
+      await render(
+        { ...createResultNode(result, position), slideId: "slide" },
+        { presentation: true },
+      );
+      await click(button("График"));
+      expect(current).toMatchObject({
+        width: 702,
+        height: 455,
+        position: expected,
+      });
+    },
+  );
+  it.each([
+    [5000, "bar"],
+    [5001, "histogram"],
+  ] as const)(
+    "opens the first chart from a raw table of %i rows using %s",
+    async (rowCount, kind) => {
+      const raw = { ...result, rowCount };
+      const node = createResultNode(raw);
+      await render(node, { result: raw });
+      await click(button("График"));
+      expect(current.data.view).toBe("chart");
+      expect(current.data.chart).toMatchObject(
+        kind === "histogram"
+          ? { kind, x: "revenue", y: [] }
+          : { kind, x: "month", y: ["revenue"] },
+      );
+      expect(current.data.resultSetId).toBe(raw.id);
+      expect(uncaught).toEqual([]);
+    },
+  );
+  it("keeps a saved chart type and its bindings when reopening a large snapshot", async () => {
+    const raw = { ...result, rowCount: 7000 };
+    const node = createResultNode(raw);
+    node.data.chart = {
+      kind: "area",
+      x: "month",
+      y: ["revenue"],
+      legend: true,
+    };
+    await render(node, { result: raw });
+    await click(button("График"));
+    expect(current.data.chart).toEqual(node.data.chart);
+  });
+
+  it("keeps a previously configured chart at its saved size", async () => {
+    await render({ ...fixture("table"), width: 540, height: 350 });
+    await click(button("График"));
+    expect(current).toMatchObject({ width: 540, height: 350 });
+  });
   async function click(element: HTMLElement) {
     await act(async () => element.click());
   }
@@ -892,6 +982,202 @@ describe("board inspector settings integration", () => {
     expect(uncaught).toEqual([]);
   });
 
+  async function chooseChartType(label: string) {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      ".board-chart-type-trigger",
+    )!;
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    const option = document.querySelector<HTMLElement>(
+      `[role="menuitemradio"][aria-label="${label}"]`,
+    )!;
+    expect(option.textContent).toContain(label);
+    await act(async () => {
+      option.focus();
+      option.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+  }
+  it.each([
+    ["Комбинированный", "composed"],
+    ["Спарклайн", "sparkline"],
+    ["Тепловая карта", "heatmap"],
+  ])("selects %s using the chart type menu", async (label, kind) => {
+    const node = fixture();
+    await render(node);
+    await chooseChartType(label);
+    expect(current.data.chart).toEqual({ ...node.data.chart, kind });
+    expect(
+      container.querySelector(`[aria-label="Тип графика: ${label}"]`),
+    ).not.toBeNull();
+  });
+
+  it.each([true, false])(
+    "keeps the saved legend preference %s and placement through histogram mode",
+    async (legend) => {
+      const node = fixture();
+      node.data.chart = {
+        ...node.data.chart!,
+        legend,
+        legendPosition: "bottom",
+        legendAlign: "end",
+      };
+      await render(node);
+      await chooseChartType("Гистограмма");
+      expect(container.querySelector(".board-chart-legend")).toBeNull();
+      expect(
+        container.querySelector('[aria-label="Положение легенды"]'),
+      ).toBeNull();
+      expect(current.data.chart).toMatchObject({
+        legend,
+        legendPosition: "bottom",
+        legendAlign: "end",
+      });
+      await chooseChartType("Линии");
+      expect(checkbox("Легенда").checked).toBe(legend);
+      if (!legend) await click(checkbox("Легенда"));
+      expect(
+        container.querySelector<HTMLInputElement>(
+          'input[type="radio"][aria-label="Снизу справа"]',
+        )?.checked,
+      ).toBe(true);
+    },
+  );
+
+  it("binds a histogram to the numeric observation column, stores an optional bin count and returns to a plottable line chart", async () => {
+    const node = fixture();
+    node.data.chart = {
+      ...node.data.chart!,
+      series: "month",
+      legendPosition: "bottom",
+      palette: "warm",
+    };
+    await render(node);
+    await chooseChartType("Гистограмма");
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      kind: "histogram",
+      x: "revenue",
+      y: [],
+    });
+    expect(select("Числовой столбец").textContent).toContain("Выручка");
+    expect(container.querySelector('[aria-label="Порядок X"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Тип данных X"]')).toBeNull();
+    expect(container.querySelector(".board-y-fields")).toBeNull();
+    const bins = container.querySelector<HTMLInputElement>(
+      '.board-chart-settings input[type="number"]',
+    )!;
+    const typeBins = async (text: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value",
+        )!.set!.call(bins, text);
+        bins.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    expect(bins.placeholder).toBe("Авто");
+    expect(bins.value).toBe("");
+    await typeBins("17");
+    expect(current.data.chart?.binCount).toBe(17);
+    await typeBins("101");
+    expect(bins.getAttribute("aria-invalid")).toBe("true");
+    expect(current.data.chart?.binCount).toBe(17);
+    await typeBins("");
+    expect(current.data.chart?.binCount).toBeUndefined();
+    await click(checkbox("С накоплением"));
+    expect(current.data.chart?.stacked).toBe(true);
+    await typeBins("9");
+    await chooseChartType("Линии");
+    expect(current.data.chart).toMatchObject({
+      kind: "line",
+      x: "month",
+      y: ["revenue"],
+      binCount: 9,
+      palette: "warm",
+      legendPosition: "bottom",
+    });
+    await chooseChartType("Гистограмма");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '.board-chart-settings input[type="number"]',
+      )?.value,
+    ).toBe("9");
+    expect(uncaught).toEqual([]);
+  });
+
+  it("recovers usable numeric axes when leaving a saved histogram for scatter", async () => {
+    const node = fixture();
+    node.data.table = undefined;
+    node.data.visibleColumns = undefined;
+    node.data.chart = {
+      kind: "histogram",
+      x: "revenue",
+      y: [],
+      binCount: 100,
+      legend: true,
+    };
+    await render(node);
+    await chooseChartType("Точки");
+    expect(current.data.chart).toEqual({
+      kind: "scatter",
+      x: "revenue",
+      y: ["revenue"],
+      binCount: 100,
+      legend: true,
+    });
+    expect(uncaught).toEqual([]);
+  });
+  it("offers the latest value label on a sparkline while omitting axis controls", async () => {
+    const node = fixture();
+    node.data.chart = { ...node.data.chart!, kind: "sparkline" };
+    await render(node);
+    expect(
+      container.querySelector('[aria-label="Показывать ось X"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Показывать ось Y"]'),
+    ).toBeNull();
+    const latest = checkbox("Последнее значение");
+    expect(latest.checked).toBe(false);
+    await click(latest);
+    expect(current.data.chart?.showLabels).toBe(true);
+    expect(checkbox("Последнее значение").checked).toBe(true);
+  });
+
+  it("saves a composed metric's mark by ID and keeps legend placement when toggling views", async () => {
+    const node = fixture();
+    node.data.chart = {
+      ...node.data.chart!,
+      kind: "composed",
+      legendPosition: "bottom",
+      legendAlign: "end",
+    };
+    await render(node);
+    const label = "Вид метрики · Выручка";
+    expect(select(label).textContent).toBe("Столбцы");
+    await choose(label, "Область");
+    await click(button("Таблица"));
+    await click(button("График"));
+    expect(select(label).textContent).toBe("Область");
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      metricStyles: { revenue: "area" },
+    });
+  });
+
   it.each(["bar", "line", "area"] as const)(
     "toggles %s stacking and preserves it when switching table/chart views",
     async (kind) => {
@@ -913,6 +1199,9 @@ describe("board inspector settings integration", () => {
 
   it.each([
     { kind: "scatter" as const, series: "month" },
+    { kind: "composed" as const, series: "month" },
+    { kind: "heatmap" as const, series: "month" },
+    { kind: "sparkline" as const, series: "month" },
     { kind: "bar" as const, series: undefined },
     { kind: "line" as const, series: undefined },
     { kind: "area" as const, series: undefined },

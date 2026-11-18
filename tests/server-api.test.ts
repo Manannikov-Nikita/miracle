@@ -400,13 +400,15 @@ it("persists chart appearance on a real result and rejects invalid color updates
     palette: "warm",
     seriesColors: { [colorKey]: "#c46d42" },
   };
-  const document = (settings: ChartSpec) => ({
+  const frame = { width: 702, height: 455 };
+  const document = (settings: ChartSpec, size?: typeof frame) => ({
     schemaVersion: 1,
     nodes: [
       {
         id: "appearance",
         type: "artifact",
         position: { x: 0, y: 0 },
+        ...size,
         data: {
           kind: "result",
           title: "Chart appearance",
@@ -425,7 +427,9 @@ it("persists chart appearance on a real result and rejects invalid color updates
   });
   expect(created.statusCode, created.body).toBe(201);
   const url = `/api/boards/${created.json().id}`;
-  expect((await request("GET", url)).json().document).toEqual(document(chart));
+  const initial = document(chart, frame);
+  expect(created.json().document).toEqual(initial);
+  expect((await request("GET", url)).json().document).toEqual(initial);
 
   const revised: ChartSpec = {
     ...chart,
@@ -437,24 +441,26 @@ it("persists chart appearance on a real result and rejects invalid color updates
     palette: "vivid",
     seriesColors: {},
   };
+  const revisedDocument = document(revised, frame);
   const updated = await request("PATCH", url, {
     baseRevision: created.json().revision,
-    document: document(revised),
+    document: revisedDocument,
   });
   expect(updated.statusCode, updated.body).toBe(200);
   const revision = updated.json().revision;
-  expect((await request("GET", url)).json().document).toEqual(
-    document(revised),
-  );
+  expect((await request("GET", url)).json().document).toEqual(revisedDocument);
 
   const rejected = await request("PATCH", url, {
     baseRevision: revision,
-    document: document({ ...revised, seriesColors: { [colorKey]: "red" } }),
+    document: document(
+      { ...revised, seriesColors: { [colorKey]: "red" } },
+      frame,
+    ),
   });
   expect(rejected.statusCode, rejected.body).toBe(400);
   const saved = (await request("GET", url)).json();
   expect(saved.revision).toBe(revision);
-  expect(saved.document).toEqual(document(revised));
+  expect(saved.document).toEqual(revisedDocument);
 });
 it("rejects malformed multibyte CSRF tokens without server errors", async () => {
   const res = await app.inject({

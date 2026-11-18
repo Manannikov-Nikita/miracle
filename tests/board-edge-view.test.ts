@@ -9,20 +9,24 @@ import BoardEdgeView, {
 } from "../src/client/board/BoardEdgeView";
 import type { BoardEdge } from "../src/shared/types";
 
+const toolbarViewport = vi.hoisted(() =>
+  vi.fn(() => ({ x: 0, y: 0, zoom: 1 })),
+);
+
 vi.mock("@xyflow/react", async (original) => {
   const actual = await original<typeof import("@xyflow/react")>();
   return {
     ...actual,
     EdgeLabelRenderer: ({ children }: { children: React.ReactNode }) =>
       createPortal(children, document.body),
-    useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
+    useViewport: toolbarViewport,
     useReactFlow: () => ({
       screenToFlowPosition: (point: { x: number; y: number }) => point,
       getNodes: () => [],
       getInternalNode: () => undefined,
     }),
     useStore: (select: (state: unknown) => unknown) =>
-      select({ width: 800, height: 600 }),
+      select({ transform: [0, 0, 1], width: 800, height: 600 }),
   };
 });
 
@@ -176,6 +180,17 @@ describe("inline board edge editing", () => {
     expect(document.activeElement?.getAttribute("aria-label")).toBe(
       "Изменить подпись стрелки",
     );
+  });
+  it("tracks the panning camera only while the floating toolbar is open", async () => {
+    toolbarViewport.mockClear();
+    await render(false);
+    expect(toolbarViewport).not.toHaveBeenCalled();
+    await render(true);
+    expect(toolbarViewport).toHaveBeenCalled();
+    toolbarViewport.mockClear();
+    await click("Закрыть свойства стрелки");
+    await act(async () => externalLabel!("Новая подпись"));
+    expect(toolbarViewport).not.toHaveBeenCalled();
   });
   it("does not save unchanged text on blur", async () => {
     await render();

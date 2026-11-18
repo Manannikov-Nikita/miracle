@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
-import * as echarts from "echarts";
-import type GlobalModel from "echarts/lib/model/Global.js";
-import type SeriesModel from "echarts/lib/model/Series.js";
-import type CartesianAxisModel from "echarts/lib/coord/cartesian/AxisModel.js";
 import type { Cell, ChartSpec } from "../src/shared/types";
 import { chartSeries } from "../src/client/board/model";
-import { chartOptions } from "../src/client/board/chartOptions";
+import { cartesianGeometry } from "../src/client/board/chart-kit/cartesian-geometry";
 
 const columns = [
   { id: "x", name: "Категория", type: "String" },
@@ -33,174 +29,71 @@ const rows: Cell[][] = [
   ["A", -3, -30, "negative"],
   ["A", -4, -40, "negative2"],
 ];
-function computedStacks(next: ChartSpec, sourceRows = rows) {
-  const plotted = chartSeries(columns, sourceRows, next);
-  const option = chartOptions(columns, next, plotted);
-  const chart = echarts.init(null, undefined, {
-    renderer: "svg",
-    ssr: true,
-    width: 700,
-    height: 300,
-  }) as echarts.ECharts & {
-    getModel(): GlobalModel;
-    getViewOfSeriesModel(model: SeriesModel): {
-      _polyline?: { shape: { points: ArrayLike<number> } };
-      _polygon?: { shape: { stackedOnPoints: ArrayLike<number> } };
-    };
-  };
-  try {
-    chart.setOption(option);
-    return chart
-      .getModel()
-      .getSeries()
-      .map((model, index) => {
-        const data = model.getData();
-        const resultDimension = data.getCalculationInfo("stackResultDimension");
-        const baseDimension = data.getCalculationInfo("stackedOverDimension");
-        const linePoints =
-          chart.getViewOfSeriesModel(model)._polyline?.shape.points;
-        const baselinePoints =
-          chart.getViewOfSeriesModel(model)._polygon?.shape.stackedOnPoints;
-        return {
-          categories: (
-            chart.getModel().getComponent("xAxis") as CartesianAxisModel
-          ).getCategories(),
-          metricId: plotted[index].metricId,
-          name: plotted[index].name,
-          results: plotted[index].data.map(([x], rowIndex) => ({
-            x,
-            total: resultDimension
-              ? data.get(resultDimension, rowIndex)
-              : undefined,
-            base: baseDimension ? data.get(baseDimension, rowIndex) : undefined,
-            layout: data.getItemLayout(rowIndex),
-            point: linePoints
-              ? [linePoints[rowIndex * 2], linePoints[rowIndex * 2 + 1]]
-              : undefined,
-            baselinePoint: baselinePoints
-              ? [baselinePoints[rowIndex * 2], baselinePoints[rowIndex * 2 + 1]]
-              : undefined,
-            expectedPoint: resultDimension
-              ? chart.convertToPixel({ seriesIndex: index }, [
-                  x,
-                  data.get(resultDimension, rowIndex),
-                ])
-              : undefined,
-            expectedBaselinePoint: baseDimension
-              ? chart.convertToPixel({ seriesIndex: index }, [
-                  x,
-                  Number.isNaN(data.get(baseDimension, rowIndex))
-                    ? 0
-                    : data.get(baseDimension, rowIndex),
-                ])
-              : undefined,
-          })),
-        };
-      });
-  } finally {
-    chart.dispose();
-  }
+
+function plot(settings: ChartSpec, data: Cell[][] = rows) {
+  const series = chartSeries(columns, data, settings);
+  return cartesianGeometry(
+    { spec: settings, series, colors: series.map(() => "#aabbcc") },
+    700,
+    360,
+  );
 }
-
 describe("stacked breakdown charts", () => {
-  it("stacks sparse categories by X and keeps metrics with identical names independent", () => {
-    const stacks = computedStacks(spec);
-    const metric = (metricId: string, group: string) =>
-      stacks.find(
-        (item) =>
-          item.metricId === metricId && item.name.endsWith(` · ${group}`),
-      )!;
-    expect(
-      metric("revenue", "two").results.map(({ x, total }) => [x, total]),
-    ).toEqual([
-      ["B", 7],
-      ["A", 7],
-      ["D", 7],
-      ["C", 8],
-    ]);
-    expect(
-      metric("visits", "two").results.map(({ x, total }) => [x, total]),
-    ).toEqual([
-      ["B", 70],
-      ["A", 70],
-      ["D", 70],
-      ["C", NaN],
-    ]);
-    expect(
-      metric("revenue", "one").results.find((item) => item.x === "C")?.total,
-    ).toBeNaN();
-    expect(
-      metric("revenue", "two").results.find((item) => item.x === "C")?.base,
-    ).toBeNaN();
-    // The two breakdown categories occupy the same bar slot for their metric;
-    // another metric occupies a separate slot even when its label is identical.
-    const first = metric("revenue", "one").results.find(
-      (item) => item.x === "A",
-    )!;
-    const second = metric("revenue", "two").results.find(
-      (item) => item.x === "A",
-    )!;
-    const other = metric("visits", "one").results.find(
-      (item) => item.x === "A",
-    )!;
-    expect(first.layout.x).toBe(second.layout.x);
-    expect(first.layout.x).not.toBe(other.layout.x);
-  });
-
   it.each(["bar", "line", "area"] as const)(
-    "keeps positive and negative %s stacks on their respective sides of zero",
+    "groups %s by metric ID and splits positive and negative breakdowns at zero",
     (kind) => {
-      const stacks = computedStacks({ ...spec, kind });
-      const negative = stacks.find(
-        (item) =>
-          item.metricId === "revenue" && item.name.endsWith(" · negative"),
-      )!;
-      const nextNegative = stacks.find(
-        (item) =>
-          item.metricId === "revenue" && item.name.endsWith(" · negative2"),
-      )!;
-      expect(negative.results[0].total).toBe(-3);
-      expect(negative.results[0].base).toBeNaN();
-      expect(nextNegative.results[0].total).toBe(-7);
-      expect(nextNegative.results[0].base).toBe(-3);
-      if (kind !== "bar") {
-        expect(nextNegative.results[0].point![1]).toBeCloseTo(
-          nextNegative.results[0].expectedPoint![1],
-          4,
-        );
-        if (kind === "area")
-          expect(nextNegative.results[0].baselinePoint![1]).toBeCloseTo(
-            nextNegative.results[0].expectedBaselinePoint![1],
-            4,
-          );
+      const g = plot({ ...spec, kind });
+      const at = (id: string, group: string) => {
+        const mark = g.marks.find(
+          (m) => m.metricId === id && m.name.endsWith(" · " + group),
+        )!;
+        return mark.points.find(
+          (p) => p.category === g.categories.indexOf("A"),
+        )!;
+      };
+      for (const [metric, mul] of [
+        ["revenue", 1],
+        ["visits", 10],
+      ] as const) {
+        const a = at(metric, "one"),
+          b = at(metric, "two"),
+          n = at(metric, "negative"),
+          n2 = at(metric, "negative2");
+        expect([a.basePx, a.endPx, b.basePx, b.endPx]).toEqual([
+          g.zero,
+          g.scale(2 * mul),
+          g.scale(2 * mul),
+          g.scale(7 * mul),
+        ]);
+        expect([n.basePx, n.endPx, n2.basePx, n2.endPx]).toEqual([
+          g.zero,
+          g.scale(-3 * mul),
+          g.scale(-3 * mul),
+          g.scale(-7 * mul),
+        ]);
+        expect(b.value).toBe(5 * mul);
       }
     },
   );
-
   it.each([
     { ...spec, stacked: undefined },
     { ...spec, stacked: false },
     { ...spec, series: undefined },
     { ...spec, kind: "line" as const, stacked: false },
     { ...spec, kind: "area" as const, stacked: false },
-    { ...spec, kind: "scatter" as const, x: "visits" },
   ])(
-    "does not stack without a supported kind + enabled setting + breakdown: %j",
-    (next) => {
-      const plotted = chartSeries(columns, rows, next);
-      expect(
-        chartOptions(columns, next, plotted).series.every(
-          (item) => item.stack === undefined,
-        ),
-      ).toBe(true);
-      expect(
-        computedStacks(next).every((item) =>
-          item.results.every((point) => point.total === undefined),
-        ),
-      ).toBe(true);
+    "plots ordinary values for a disabled stack or absent breakdown: %j",
+    (settings) => {
+      const g = plot(settings);
+      expect(g.stacked).toBe(false);
+      for (const mark of g.marks)
+        for (const point of mark.points) {
+          expect(point.basePx).toBe(g.zero);
+          if (point.value !== null)
+            expect(point.endPx).toBe(g.scale(point.value));
+        }
     },
   );
-
   it.each([
     ["none", ["10", "2", "30", "1"]],
     ["asc", ["1", "2", "10", "30"]],
@@ -215,10 +108,12 @@ describe("stacked breakdown charts", () => {
         ["1", 4, 40, "two"],
       ];
       for (const kind of ["bar", "line", "area"] as const) {
-        const result = computedStacks({ ...spec, sort, kind }, sparse)[0];
+        const result = plot({ ...spec, sort, kind }, sparse);
         expect(result.categories).toEqual(expected);
         if (kind !== "bar")
-          expect(result.results.map((point) => point.x)).toEqual(expected);
+          expect(
+            result.marks[0].points.map((p) => result.categories[p.category]),
+          ).toEqual(expected);
       }
     },
   );
@@ -243,9 +138,9 @@ describe("stacked breakdown charts", () => {
   });
 
   it.each(["line", "area"] as const)(
-    "renders %s at cumulative totals and keeps missing/null categories as gaps",
+    "breaks %s paths at missing and null categories, keeping each band's own baseline",
     (kind) => {
-      const sparse: Cell[][] = [
+      const data: Cell[][] = [
         ["A", 2, 20, "one"],
         ["B", null, 40, "one"],
         ["C", 4, 40, "one"],
@@ -253,68 +148,22 @@ describe("stacked breakdown charts", () => {
         ["A", 3, 30, "two"],
         ["D", 8, 80, "two"],
       ];
-      const stacks = computedStacks({ ...spec, kind }, sparse);
-      const first = stacks.find(
-        (item) => item.metricId === "revenue" && item.name.endsWith(" · one"),
+      const g = plot({ ...spec, kind }, data);
+      const second = g.marks.find(
+        (m) => m.metricId === "revenue" && m.name.endsWith(" · two"),
       )!;
-      const second = stacks.find(
-        (item) => item.metricId === "revenue" && item.name.endsWith(" · two"),
-      )!;
-      const otherMetric = stacks.find(
-        (item) => item.metricId === "visits" && item.name.endsWith(" · two"),
-      )!;
-      expect(otherMetric.results.map(({ total }) => total)).toEqual([
-        50,
-        NaN,
-        100,
-        80,
-      ]);
-      expect(second.results.map(({ x, total }) => [x, total])).toEqual([
-        ["A", 5],
-        ["B", NaN],
-        ["C", 10],
-        ["D", 8],
-      ]);
-      expect(first.results.map(({ x, total }) => [x, total])).toEqual([
-        ["A", 2],
-        ["B", NaN],
-        ["C", 4],
-        ["D", NaN],
-      ]);
-      for (const result of second.results) {
-        if (Number.isNaN(result.total)) {
-          expect(result.point![1]).toBeNaN();
-          continue;
-        }
-        expect(result.point![0]).toBeCloseTo(result.expectedPoint![0], 4);
-        expect(result.point![1]).toBeCloseTo(result.expectedPoint![1], 4);
-        if (kind === "area") {
-          expect(result.baselinePoint![0]).toBeCloseTo(
-            result.expectedBaselinePoint![0],
-            4,
-          );
-          expect(result.baselinePoint![1]).toBeCloseTo(
-            result.expectedBaselinePoint![1],
-            4,
-          );
-          if (result.x !== "D")
-            expect(result.baselinePoint![1]).not.toBe(
-              second.results.find((point) => point.x === "D")!
-                .baselinePoint![1],
-            );
-        } else expect(result.baselinePoint).toBeUndefined();
-      }
-      expect(sparse).toEqual([
-        ["A", 2, 20, "one"],
-        ["B", null, 40, "one"],
-        ["C", 4, 40, "one"],
-        ["C", 6, 60, "two"],
-        ["A", 3, 30, "two"],
-        ["D", 8, 80, "two"],
-      ]);
+      expect(second.points.map((p) => p.value)).toEqual([3, null, 6, 8]);
+      expect(
+        second.points.filter((p) => p.value !== null).map((p) => p.endPx),
+      ).toEqual([g.scale(5), g.scale(10), g.scale(8)]);
+      expect(
+        second.points.filter((p) => p.value !== null).map((p) => p.basePx),
+      ).toEqual([g.scale(2), g.scale(4), g.zero]);
+      expect(second.stroke.match(/M/g)).toHaveLength(2);
+      if (kind === "area") expect(second.fill.match(/Z/g)).toHaveLength(2);
+      else expect(second.fill).toBe("");
     },
   );
-
   it.each(["line", "area"] as const)(
     "limits sparse %s expansion before allocating gaps",
     (kind) => {
@@ -334,43 +183,9 @@ describe("stacked breakdown charts", () => {
     },
   );
 
-  it("clears stacks and area bands while switching types and disabling stacking", () => {
-    const chart = echarts.init(null, undefined, {
-      renderer: "svg",
-      ssr: true,
-      width: 700,
-      height: 300,
-    }) as echarts.ECharts & { getModel(): GlobalModel };
-    try {
-      for (const next of [
-        { ...spec, kind: "line" as const },
-        { ...spec, kind: "area" as const },
-        spec,
-        { ...spec, kind: "area" as const, stacked: false },
-        { ...spec, kind: "scatter" as const, x: "visits" },
-        { ...spec, kind: "area" as const },
-      ]) {
-        chart.setOption(
-          chartOptions(columns, next, chartSeries(columns, rows, next)),
-          { notMerge: true },
-        );
-        const models = chart.getModel().getSeries();
-        const active = next.kind !== "scatter" && next.stacked;
-        for (const model of models) {
-          expect(
-            Boolean(model.getData().getCalculationInfo("stackResultDimension")),
-          ).toBe(Boolean(active));
-          expect(Boolean(model.get("areaStyle"))).toBe(next.kind === "area");
-        }
-      }
-    } finally {
-      chart.dispose();
-    }
-  });
-
   it("preserves source rows and null values when preparing and rendering stacks", () => {
     const original = structuredClone(rows);
-    computedStacks({ ...spec, sort: "asc" });
+    plot({ ...spec, sort: "asc" });
     expect(rows).toEqual(original);
     expect(chartSeries(columns, rows, spec)[0].data[2]).toEqual(["C", null]);
   });

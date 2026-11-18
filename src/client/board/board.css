@@ -509,6 +509,15 @@
   overflow: hidden;
   border-radius: 0 0 6px 6px;
 }
+/* The node's flex body already has a definite size. Retain visited SVGs, focus
+   and searchable text, and let the browser skip offscreen layout and paint. */
+.board-node-body[data-canvas-chart] {
+  content-visibility: auto;
+}
+.board-node-body[data-chart-away]
+  :is(.chart-skeleton, .chart-skeleton *, .chart-load-announcement) {
+  animation-play-state: paused !important;
+}
 .board-table-with-formulas {
   height: 100%;
   min-height: 0;
@@ -672,8 +681,11 @@
   pointer-events: none;
 }
 .presentation-node-content,
-.presentation-node-content * {
+.presentation-node-content:not([data-inspectable-chart]) * {
   pointer-events: none;
+}
+.presentation-node-content[data-inspectable-chart] .board-chart {
+  pointer-events: auto;
 }
 .presentation-artifact .board-note-text {
   color: var(--board-text);
@@ -867,7 +879,7 @@ textarea.board-inspector-content-editor {
 .board-chart-type-menu {
   width: 248px;
   max-width: calc(100vw - 16px);
-  max-height: min(280px, var(--radix-dropdown-menu-content-available-height));
+  max-height: min(360px, var(--radix-dropdown-menu-content-available-height));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -878,18 +890,18 @@ textarea.board-inspector-content-editor {
 }
 .board-chart-type-options {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
+  gap: 2px;
 }
 .board-chart-type-option {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 10px;
   min-width: 0;
-  height: 52px;
-  padding: 5px;
-  border: 1px solid var(--menu-border);
+  height: 36px;
+  padding: 2px 8px;
+  font-size: 13px;
+  border: 1px solid transparent;
   border-radius: 4px;
   color: var(--menu-text);
   background: var(--surface);
@@ -917,8 +929,7 @@ textarea.board-inspector-content-editor {
 }
 .board-chart-type-check {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  right: 10px;
   display: flex;
 }
 .board-chart-type-option[data-disabled] {
@@ -931,6 +942,25 @@ textarea.board-inspector-content-editor {
   gap: 5px;
   font-size: 13px;
   color: var(--board-muted);
+}
+.board-chart-metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.board-chart-metric label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.board-chart-metric .select-trigger {
+  flex: none;
+}
+.board-chart-legend {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--board-border-subtle);
 }
 .board-y-fields label,
 .board-inspector .board-column-option,

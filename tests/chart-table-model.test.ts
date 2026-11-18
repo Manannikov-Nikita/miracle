@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
-import * as echarts from "echarts";
-import type GlobalModel from "echarts/lib/model/Global.js";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { mountChart } from "./helpers/chart-view";
+import {
+  categoryText,
+  metricText,
+} from "../src/client/board/chart-kit/compact-plot";
 import type { Cell, ChartSpec, Column } from "../src/shared/types";
 import type { TableSpec } from "../src/shared/tableTypes";
 import { createTableSpec } from "../src/client/board/tableModel";
 import { chartSeries } from "../src/client/board/model";
-import { chartOptions } from "../src/client/board/chartOptions";
 import {
   chartTableData,
   normalizeChartSpec,
@@ -27,6 +31,40 @@ const spec: ChartSpec = {
 };
 
 describe("charts built from table data", () => {
+  let view: Awaited<ReturnType<typeof mountChart>> | undefined;
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(700);
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(300);
+  });
+  afterEach(async () => {
+    await view?.unmount();
+    view = undefined;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+  async function draw(
+    table: ReturnType<typeof chartTableData>,
+    saved: ChartSpec,
+  ) {
+    const props = {
+      columns: table.columns,
+      spec: saved,
+      series: tableChartSeries(table, saved),
+      label: "Revenue",
+    };
+    if (view) await view.render(props);
+    else view = await mountChart(props);
+    return view.host;
+  }
+  async function inspect(host: Element, key: string) {
+    const svg = host.querySelector('svg[role="img"]')!;
+    await act(async () => {
+      svg.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+    return host.querySelector('[role="tooltip"]')!;
+  }
+
   it("uses the filtered, sorted, ordered, visible table columns and display names", () => {
     const table = chartTableData(
       columns,
@@ -161,7 +199,7 @@ describe("charts built from table data", () => {
     ).toBe("amount");
   });
 
-  it("formats labels and tooltip values without replacing raw geometry or merging mapped groups", () => {
+  it("formats labels and tooltip values without replacing raw geometry or merging mapped groups", async () => {
     const table = chartTableData(
       columns,
       [
@@ -200,19 +238,15 @@ describe("charts built from table data", () => {
     ]);
     expect(series.map((s) => s.data)).toEqual([[["A", 1.23]], [["B", 2.5]]]);
     expect(new Set(series.map((s) => s.colorKey)).size).toBe(2);
-    const option = chartOptions(
-      table.columns,
-      { ...spec, showLabels: true },
-      series,
-    );
-    expect(option.xAxis.axisLabel.formatter?.("A")).toBe("Same");
-    expect(option.xAxis.axisLabel.formatter?.("B")).toBe("Same");
+    const host = await draw(table, { ...spec, showLabels: true });
+    expect(host.querySelectorAll(".bk-category-tick title")).toHaveLength(2);
     expect(
-      option.series[0].label.formatter({ value: ["A", 1.23], dataIndex: 0 }),
-    ).toBe("€1.23");
-    expect(
-      option.tooltip.formatter?.([{ seriesIndex: 1, dataIndex: 0 }]),
-    ).toContain("€2.50");
+      [...host.querySelectorAll(".bk-category-tick title")].map(
+        (el) => el.textContent,
+      ),
+    ).toEqual(["Same", "Same"]);
+    expect(host.querySelector(".bk-value")?.textContent).toBe("€1.23");
+    expect((await inspect(host, "End")).textContent).toContain("€2.50");
   });
 
   it("retains exact raw auto display and mapped nulls through sorted sparse stacks", () => {
@@ -238,16 +272,11 @@ describe("charts built from table data", () => {
       ["A", null],
       ["B", 2.5],
     ]);
-    const option = chartOptions(table.columns, next, series);
-    expect(
-      option.tooltip.formatter?.([{ seriesIndex: 0, dataIndex: 0 }]),
-    ).toContain("Missing");
-    expect(
-      option.tooltip.formatter?.([{ seriesIndex: 0, dataIndex: 1 }]),
-    ).toContain("2.5000");
+    expect(metricText(series[0], 0, next.numberFormat)).toBe("Missing");
+    expect(metricText(series[0], 1, next.numberFormat)).toBe("2.5000");
   });
 
-  it("formats scatter coordinates and per-cell colors without changing positions", () => {
+  it("formats scatter coordinates and per-cell colors without changing positions", async () => {
     const table = chartTableData(columns, [["A", "1.25", "one", 4]], {
       ...createTableSpec(columns),
       columns: {
@@ -263,36 +292,22 @@ describe("charts built from table data", () => {
     const next = { ...spec, kind: "scatter" as const, x: "other" };
     const series = tableChartSeries(table, next);
     expect(series[0].data).toEqual([[4, 1.25]]);
-    const option = chartOptions(table.columns, next, series);
-    expect(option.series[0].data[0]).toEqual({
-      value: [4, 1.25],
-      itemStyle: { color: "#ef9c9c" },
-    });
-    const tooltip = option.tooltip.formatter?.({
-      seriesIndex: 0,
-      dataIndex: 0,
-    });
-    expect(tooltip).toContain("x=4");
-    expect(tooltip).toContain("125.0%");
+    const host = await draw(table, next);
+    expect(host.querySelector('circle[fill="#ef9c9c"]')).toBeTruthy();
+    const tooltip = await inspect(host, "Home");
+    expect(tooltip.textContent).toContain("x=4");
+    expect(tooltip.textContent).toContain("125.0%");
   });
 
-  it("escapes table-authored labels inside HTML chart tooltips", () => {
+  it("escapes table-authored labels inside HTML chart tooltips", async () => {
     const table = chartTableData(columns, [["<img src=x>", "1", "one", 1]], {
       ...createTableSpec(columns),
       columns: { amount: { mappings: [{ value: "1", text: "<script>&" }] } },
     });
-    const option = chartOptions(
-      table.columns,
-      spec,
-      tableChartSeries(table, spec),
-    );
-    const tooltip = option.tooltip.formatter?.({
-      seriesIndex: 0,
-      dataIndex: 0,
-    });
-    expect(tooltip).toContain("&lt;img src=x&gt;");
-    expect(tooltip).toContain("&lt;script&gt;&amp;");
-    expect(tooltip).not.toContain("<img");
+    const tooltip = await inspect(await draw(table, spec), "Home");
+    expect(tooltip.textContent).toContain("<img src=x>");
+    expect(tooltip.textContent).toContain("<script>&");
+    expect(tooltip.querySelector("img, script")).toBeNull();
   });
 
   it("keeps chart numeric safety checks after table formatting", () => {
@@ -309,7 +324,7 @@ describe("charts built from table data", () => {
     expect(() => tableChartSeries(table, spec)).toThrow(/точност/);
   });
 
-  it("keeps chart number formatting unless a table format or matching mapping overrides it", () => {
+  it("keeps chart number formatting unless a table format or matching mapping overrides it", async () => {
     const next = {
       ...spec,
       numberFormat: "percent" as const,
@@ -327,21 +342,13 @@ describe("charts built from table data", () => {
           amount: structuredClone(settings) as TableSpec["columns"][string],
         },
       });
-      const option = chartOptions(
-        table.columns,
-        next,
-        tableChartSeries(table, next),
-      );
-      expect(
-        option.series[0].label.formatter({ value: ["A", 0.125], dataIndex: 0 }),
-      ).toBe(expected);
-      expect(
-        option.tooltip.formatter?.({ seriesIndex: 0, dataIndex: 0 }),
-      ).toContain(expected);
+      const host = await draw(table, next);
+      expect(host.querySelector(".bk-value")?.textContent).toBe(expected);
+      expect((await inspect(host, "Home")).textContent).toContain(expected);
     }
   });
 
-  it("renders mapped categories and preserves independent legend controls for identical mapped group names", () => {
+  it("renders mapped categories and preserves independent legend controls for identical mapped group names", async () => {
     const table = chartTableData(
       columns,
       [
@@ -361,45 +368,29 @@ describe("charts built from table data", () => {
         },
       },
     );
-    const option = chartOptions(
-      table.columns,
-      spec,
-      tableChartSeries(table, spec),
+    const host = await draw(table, spec);
+    expect(host.querySelector(".bk-category-tick title")?.textContent).toBe(
+      "First category",
     );
-    const chart = echarts.init(null, undefined, {
-      renderer: "svg",
-      ssr: true,
-      width: 700,
-      height: 300,
-    }) as echarts.ECharts & { getModel(): GlobalModel };
-    try {
-      chart.setOption(option);
-      expect(chart.renderToSVGString()).toContain("First category");
-      const legendNames = (chart.getModel().getComponent("legend") as any)
-        .getData()
-        .map((item: any) => item.get("name"));
-      expect(legendNames).toHaveLength(2);
-      expect(legendNames.map(option.legend.formatter)).toEqual([
-        "Amount · Mapped",
-        "Amount · Mapped",
-      ]);
-      chart.dispatchAction({ type: "legendUnSelect", name: legendNames[0] });
-      expect(
-        chart
-          .getModel()
-          .getSeries()
-          .map((series) => chart.getModel().isSeriesFiltered(series)),
-      ).toEqual([true, false]);
-    } finally {
-      chart.dispose();
-    }
+    const buttons = [
+      ...host.querySelectorAll<HTMLButtonElement>(".bk-legend button"),
+    ];
+    expect(buttons.map((b) => b.textContent)).toEqual([
+      "Amount · Mapped",
+      "Amount · Mapped",
+    ]);
+    await act(async () => buttons[0].click());
+    expect(buttons.map((b) => b.getAttribute("aria-pressed"))).toEqual([
+      "false",
+      "true",
+    ]);
+    expect(host.querySelectorAll(".bk-bar")).toHaveLength(1);
   });
 
   it("leaves the plain chart series contract unchanged", () => {
     const series = chartSeries(columns, [["A", "1.2300", "one", 1]], spec);
     expect(series[0]).not.toHaveProperty("displayData");
-    expect(
-      chartOptions(columns, spec, series).tooltip.formatter,
-    ).toBeUndefined();
+    expect(categoryText(series[0], 0)).toBe("A");
+    expect(metricText(series[0], 0, spec.numberFormat)).toBe("1,23");
   });
 });

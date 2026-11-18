@@ -1,16 +1,31 @@
 import { isDateColumn, isNumericColumn } from "../../shared/column-types";
 import { compareDateValues } from "../../shared/date-values";
+import { applyChartMarkRules, type ChartSourceRows } from "./chart-mark-rules";
+import { DEFAULT_RESULT_SIZE } from "../../shared/chart-size";
+import {
+  autoHistogramBins,
+  histogramBins,
+  histogramBinIndex,
+  type HistogramBin,
+} from "./histogram-bins";
+export type { HistogramBin } from "./histogram-bins";
 import type { TableColumnOptions } from "../../shared/tableTypes";
 export { isNumericColumn } from "../../shared/column-types";
 import type {
   BoardDocument,
   BoardNode,
   Cell,
+  ChartMarkStyle,
   ChartSpec,
   Column,
   ResultSet,
 } from "../../shared/types";
-import { chartSeriesColorKey } from "../../shared/chart-appearance";
+import {
+  chartSeriesColorKey,
+  HISTOGRAM_BIN_LIMIT,
+  CHART_POINT_LIMIT,
+  supportsChartStacking,
+} from "../../shared/chart-appearance";
 
 export const emptyDocument = (): BoardDocument => ({
   schemaVersion: 1,
@@ -29,8 +44,7 @@ export function createResultNode(
     id: crypto.randomUUID(),
     type: "artifact",
     position,
-    width: 540,
-    height: 350,
+    ...DEFAULT_RESULT_SIZE,
     data: {
       title: `Результат запроса (${number})`,
       kind: "result",
@@ -128,9 +142,14 @@ export interface ChartPointDisplay {
   color?: string;
 }
 export interface ChartSeriesItem {
+  seriesStyle?: ChartMarkStyle;
+  /** Only matching marks have an entry, with series defaults already merged. */
+  pointStyles?: (ChartMarkStyle | undefined)[];
   metricId?: string;
   colorKey?: string;
   xCategories?: string[];
+  /** Shared interval edges for all frequency series; data[i] is [lower, count]. */
+  histogramBins?: HistogramBin[];
   name: string;
   data: [string | number | null, number | null][];
   displayData?: ChartPointDisplay[];
@@ -142,12 +161,101 @@ export type ChartCellFormatter = (
   role: "category" | "metric" | "series",
 ) => { text: string; color?: string };
 
+function histogramSeries(
+  columns: Column[],
+  rows: Cell[][],
+  spec: ChartSpec,
+  formatCell?: ChartCellFormatter,
+): ChartSeriesItem[] {
+  const xi = columns.findIndex((c) => c.id === spec.x);
+  const si = spec.series ? columns.findIndex((c) => c.id === spec.series) : -1;
+  if (xi < 0 || !isNumericColumn(columns[xi]))
+    throw new Error("Выберите числовой столбец X для гистограммы.");
+  if (spec.series && si < 0)
+    throw new Error("Выберите существующий столбец для разбивки.");
+  const requested = spec.binCount;
+  if (
+    requested !== undefined &&
+    (!Number.isInteger(requested) ||
+      requested < 1 ||
+      requested > HISTOGRAM_BIN_LIMIT)
+  )
+    throw new Error(
+      `Число интервалов должно быть целым от 1 до ${HISTOGRAM_BIN_LIMIT}.`,
+    );
+
+  const groupValues = new Map<Cell | undefined, number[]>();
+  const limitError =
+    "Гистограмма ограничена 5 000 значений частоты. Уменьшите число интервалов или групп разбивки.";
+  let count = 0,
+    min = Infinity,
+    max = -Infinity;
+  for (const row of rows) {
+    const value = chartNumber(row[xi] ?? null, columns[xi]);
+    if (value === null) continue;
+    const group = si < 0 ? undefined : (row[si] ?? null);
+    if (group !== null && typeof group === "object")
+      throw new Error("Разбивка не поддерживает массивы и объекты.");
+    let values = groupValues.get(group);
+    if (!values) {
+      if (groupValues.size >= CHART_POINT_LIMIT) throw new Error(limitError);
+      values = [];
+      groupValues.set(group, values);
+    }
+    values.push(value);
+    count++;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  if (!count) return [];
+  const bins =
+    requested === undefined
+      ? autoHistogramBins(
+          min,
+          max,
+          count,
+          Math.min(
+            HISTOGRAM_BIN_LIMIT,
+            Math.floor(CHART_POINT_LIMIT / groupValues.size),
+          ),
+        )
+      : histogramBins(min, max, requested);
+  if (groupValues.size * bins.length > CHART_POINT_LIMIT)
+    throw new Error(limitError);
+  const result: ChartSeriesItem[] = [];
+  for (const [group, values] of groupValues) {
+    const data: [number, number][] = bins.map((bin) => [bin.lower, 0]);
+    for (const value of values) data[histogramBinIndex(bins, value)][1]++;
+    let name = columns[xi].name;
+    if (group !== undefined)
+      name = formatCell
+        ? formatCell(group, columns[si], "series").text
+        : group === null
+          ? "∅ NULL"
+          : String(group);
+    result.push({
+      metricId: spec.x,
+      colorKey: chartSeriesColorKey(spec.x, spec.series, group),
+      name,
+      histogramBins: bins,
+      data,
+    });
+  }
+  return result;
+}
+
 export function chartSeries(
   columns: (Column & { options?: Pick<TableColumnOptions, "dataType"> })[],
   rows: Cell[][],
   spec: ChartSpec,
   formatCell?: ChartCellFormatter,
 ) {
+  if (spec.kind === "histogram")
+    return applyChartMarkRules(
+      histogramSeries(columns, rows, spec, formatCell),
+      spec,
+      columns,
+    );
   const categoryAxis =
     spec.kind === "bar" && spec.orientation === "horizontal" ? "Y" : "X";
   const xi = columns.findIndex((c) => c.id === spec.x);
@@ -155,20 +263,25 @@ export function chartSeries(
   const si = spec.series ? columns.findIndex((c) => c.id === spec.series) : -1;
   if (xi < 0 || !ys.length || ys.some((i) => i < 0) || (spec.series && si < 0))
     throw new Error("Выберите существующие столбцы X и Y.");
-  if (rows.length * ys.length > 5000)
+  if (rows.length * ys.length > CHART_POINT_LIMIT)
     throw new Error(
       "График ограничен 5 000 точками во всём сохранённом результате. Агрегируйте данные в SQL.",
     );
   const groups = new Map<string, ChartSeriesItem>();
+  const source: ChartSourceRows | undefined = spec.markRules?.some(
+    ({ when }) => when.field === "x" || when.field === "column",
+  )
+    ? new WeakMap()
+    : undefined;
   const categoryLabels: Record<string, string> | undefined = formatCell
     ? Object.create(null)
     : undefined;
   const stacked =
-    spec.kind !== "scatter" && spec.stacked && Boolean(spec.series);
+    supportsChartStacking(spec.kind) && spec.stacked && Boolean(spec.series);
+  const heatmap = spec.kind === "heatmap";
   const dateCategory =
     spec.kind !== "scatter" &&
     isDateColumn(columns[xi], columns[xi].options?.dataType);
-  const orderedDates = dateCategory && spec.sort && spec.sort !== "none";
   const compareCategories = (
     a: string | number | null,
     b: string | number | null,
@@ -179,7 +292,8 @@ export function chartSeries(
           ? a - b
           : String(a).localeCompare(String(b), undefined, { numeric: true })) *
         (spec.sort === "desc" ? -1 : 1);
-  const stackedCategories = new Map<string, Set<string | number | null>>();
+  const needsSharedCategories = spec.kind !== "scatter";
+  const seenCategories = new Map<string, Set<string | number | null>>();
   const xCategories = new Set<string>();
   for (const row of rows) {
     const rawX = row[xi];
@@ -195,7 +309,7 @@ export function chartSeries(
       spec.kind === "scatter" ? "metric" : "category",
     ).text;
     if (categoryLabels) categoryLabels[String(x)] = displayX!;
-    if (stacked || orderedDates) xCategories.add(String(x));
+    if (needsSharedCategories) xCategories.add(String(x));
     for (const yi of ys) {
       const rawGroup = si < 0 ? undefined : row[si];
       if (
@@ -213,14 +327,16 @@ export function chartSeries(
               ? "∅ NULL"
               : String(rawGroup);
       const key = `${columns[yi].id}\u0000${JSON.stringify(rawGroup)}`;
-      if (stacked) {
-        const categories = stackedCategories.get(key) ?? new Set();
+      if (stacked || heatmap) {
+        const categories = seenCategories.get(key) ?? new Set();
         if (categories.has(x))
           throw new Error(
-            `Для накопления нужна одна строка на сочетание ${categoryAxis} и разбивки. Сгруппируйте значения в SQL (GROUP BY).`,
+            heatmap
+              ? "Ячейке тепловой карты соответствует несколько значений. Добавьте разбивку или сгруппируйте значения в SQL (GROUP BY)."
+              : `Для накопления нужна одна строка на сочетание ${categoryAxis} и разбивки. Сгруппируйте значения в SQL (GROUP BY).`,
           );
         categories.add(x);
-        stackedCategories.set(key, categories);
+        seenCategories.set(key, categories);
       }
       if (!groups.has(key))
         groups.set(key, {
@@ -231,7 +347,12 @@ export function chartSeries(
           ...(formatCell ? { displayData: [], categoryLabels } : {}),
         });
       const series = groups.get(key)!;
-      series.data.push([x, chartNumber(row[yi], columns[yi])]);
+      const datum: ChartSeriesItem["data"][number] = [
+        x,
+        chartNumber(row[yi], columns[yi]),
+      ];
+      series.data.push(datum);
+      source?.set(datum, row);
       if (formatCell) {
         const display = formatCell(row[yi], columns[yi], "metric");
         series.displayData!.push({
@@ -255,14 +376,13 @@ export function chartSeries(
       if (series.displayData)
         series.displayData = ordered.map(({ display }) => display!);
     }
-  if (stacked || orderedDates) {
+  if (needsSharedCategories) {
     // A sparse first series may not contain the globally first category.
     // Keep one shared union in source order, or sort the whole union together.
     const categories = [...xCategories];
     if (
-      stacked &&
-      spec.kind !== "bar" &&
-      result.length * categories.length > 5000
+      (heatmap || (stacked && spec.kind !== "bar")) &&
+      result.length * categories.length > CHART_POINT_LIMIT
     )
       throw new Error(
         "График ограничен 5 000 точками с учётом пропусков. Агрегируйте данные в SQL.",
@@ -273,7 +393,9 @@ export function chartSeries(
       if (stacked && spec.kind !== "bar") {
         // Line/area paths must follow the shared axis order. Explicit nulls
         // also prevent a lower band from bridging a missing breakdown value.
-        const byCategory = new Map(series.data);
+        const byCategory = new Map(
+          series.data.map((point) => [point[0], point]),
+        );
         if (formatCell && series.displayData) {
           const displayByCategory = new Map(
             series.data.map(([x], index) => [x, series.displayData![index]]),
@@ -289,11 +411,11 @@ export function chartSeries(
               },
           );
         }
-        series.data = categories.map((x) => [x, byCategory.get(x) ?? null]);
+        series.data = categories.map((x) => byCategory.get(x) ?? [x, null]);
       }
     }
   }
-  return result;
+  return applyChartMarkRules(result, spec, columns, source);
 }
 export function cellText(value: Cell | undefined) {
   return value === null || value === undefined

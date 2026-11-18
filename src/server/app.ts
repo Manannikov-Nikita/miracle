@@ -1,3 +1,4 @@
+import { CHART_POINT_LIMIT } from "../shared/chart-appearance.js";
 import { registerBoardImageRoutes } from "./board-image-routes.js";
 import {
   checkCustomChartMetadata,
@@ -1206,7 +1207,7 @@ export async function buildApp(
       need(req);
       const id = uuid(req);
       const result = await getResult(id);
-      if (result.rowCount > 5000)
+      if (result.rowCount > CHART_POINT_LIMIT)
         throw err(
           422,
           "Для графика допустимо не более 5000 точек. Агрегируйте данные в SQL",

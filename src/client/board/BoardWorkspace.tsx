@@ -70,6 +70,7 @@ import type {
   ResultSet,
 } from "../../shared/types";
 import { api, waitForRun } from "../api";
+import { DEFAULT_RESULT_SIZE } from "../../shared/chart-size";
 import {
   readCanvasSearchText,
   type CanvasSearchTarget,
@@ -125,6 +126,7 @@ import {
   removeNode,
 } from "./model";
 import { useBoard } from "./useBoard";
+import { isLargeChartBoard } from "./board-chart-overview";
 import { readBoardViewport, saveBoardViewport } from "./viewport";
 import { applyBoardNodeChanges } from "./flow-nodes";
 import { getNodeVisualBounds } from "./shape-geometry";
@@ -275,6 +277,10 @@ function Workspace({
           (presentation ? undefined : board?.document.viewport))
         : undefined,
     [workspaceId, cameraId],
+  );
+  const largeChartBoard = useMemo(
+    () => !presentation && !!board && isLargeChartBoard(board.document.nodes),
+    [presentation, board?.document.nodes],
   );
   const visibleContent = useMemo(
     () =>
@@ -1236,8 +1242,8 @@ function Workspace({
         const id = insertionSlide(target.document, destination);
         const centerPoint = id
           ? {
-              x: (PRESENTATION_WIDTH - 540) / 2,
-              y: (PRESENTATION_HEIGHT - 350) / 2,
+              x: (PRESENTATION_WIDTH - DEFAULT_RESULT_SIZE.width) / 2,
+              y: (PRESENTATION_HEIGHT - DEFAULT_RESULT_SIZE.height) / 2,
             }
           : destination
             ? center
@@ -2578,6 +2584,7 @@ function Workspace({
       inspect: inspectNode,
       metadata: recordMetadata,
       busy: nodeBusy,
+      refreshing: busy,
     }),
     [
       board?.id,
@@ -2597,6 +2604,7 @@ function Workspace({
       inspectNode,
       recordMetadata,
       nodeBusy,
+      busy,
     ],
   );
   const saveState = editable ? store.state : "Только просмотр";
@@ -2965,6 +2973,7 @@ function Workspace({
             <BoardActions.Provider value={actionContext}>
               <BoardFlow
                 id={flowId}
+                largeChartBoard={largeChartBoard}
                 gestureScope={`${workspaceId}:${cameraId}`}
                 colorMode="dark"
                 nodes={renderedBoard.nodes}
@@ -3676,6 +3685,7 @@ function Workspace({
       {show && store.persisted?.id === show.boardId && (
         <PresentationShow
           board={store.persisted}
+          refreshing={busy}
           initialSlideId={show.slideId}
           onClose={closeShow}
           trigger={show.trigger}

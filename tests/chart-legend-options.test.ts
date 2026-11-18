@@ -1,233 +1,177 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ChartCanvas from "../src/client/board/ChartCanvas";
-import { chartOptions } from "../src/client/board/chartOptions";
+import { act } from "react";
+import { expect, it } from "vitest";
+import type { Cell, ChartSpec } from "../src/shared/types";
 import { chartSeries } from "../src/client/board/model";
-import type { Column } from "../src/shared/types";
+import { mountBoardChart, textNodes } from "./helpers/chart-render";
 
-type ChartOption = ReturnType<typeof chartOptions>;
-type Selection = Record<string, boolean>;
-type LegendEvent = { selected: Selection };
-type LegendHandler = (event: LegendEvent) => void;
-type Instance = {
-  on: ReturnType<typeof vi.fn>;
-  off: ReturnType<typeof vi.fn>;
-  setOption: ReturnType<typeof vi.fn>;
-  getOption: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  dispose: ReturnType<typeof vi.fn>;
-  listeners: Map<string, Set<LegendHandler>>;
-};
-const renderer = vi.hoisted(() => ({ instances: [] as Instance[] }));
-vi.mock("echarts", () => ({
-  init() {
-    const listeners = new Map<string, Set<LegendHandler>>();
-    const chart: Instance = {
-      listeners,
-      on: vi.fn((event: string, handler: LegendHandler) => {
-        const handlers = listeners.get(event) ?? new Set();
-        handlers.add(handler);
-        listeners.set(event, handlers);
-      }),
-      off: vi.fn((event: string, handler: LegendHandler) => {
-        listeners.get(event)?.delete(handler);
-      }),
-      setOption: vi.fn(),
-      getOption: vi.fn(() => ({ legend: [{ scrollDataIndex: 0 }] })),
-      resize: vi.fn(),
-      dispose: vi.fn(),
-    };
-    renderer.instances.push(chart);
-    return chart;
-  },
-  getInstanceByDom: vi.fn(),
-}));
-
-const columns: Column[] = [
-  { id: "category", name: "Категория", type: "String" },
-  { id: "amount", name: "Сумма", type: "Float64" },
+const columns = [
+  { id: "period", name: "Период", type: "String" },
+  { id: "value", name: "Значение", type: "Float64" },
   { id: "group", name: "Группа", type: "String" },
 ];
-function optionFor(groups = ["one", "two"]) {
-  const spec = {
-    kind: "bar" as const,
-    x: "category",
-    y: ["amount"],
-    series: "group",
-    stacked: true,
-    legend: true,
-  };
-  return chartOptions(
+const spec: ChartSpec = {
+  kind: "bar",
+  x: "period",
+  y: ["value"],
+  series: "group",
+  stacked: true,
+  legend: true,
+};
+const chart = mountBoardChart();
+const before: Cell[][] = [
+  ["A", 12, "one"],
+  ["A", 3, "two"],
+];
+function render(rows: Cell[][], saved = spec, loading = false) {
+  return chart.render({
     columns,
-    spec,
-    chartSeries(
-      columns,
-      groups.map((group, i) => ["A", i + 1, group]),
-      spec,
+    spec: saved,
+    series: chartSeries(columns, rows, saved),
+    loading,
+  });
+}
+function button(name: string) {
+  const found = [
+    ...chart.host.querySelectorAll<HTMLButtonElement>(".bk-legend button"),
+  ].find((b) => b.title === name);
+  if (!found) throw Error("Missing legend button: " + name);
+  return found;
+}
+const toggle = (name: string) => act(async () => button(name).click());
+const totals = () => textNodes(chart.host, ".bk-stack-total");
+
+it("shows every histogram group and its tooltip after a saved chart had filtered matching series", async () => {
+  await render(before);
+  await toggle("Значение · two");
+  expect(totals()).toEqual(["12"]);
+  const histogram: ChartSpec = {
+    kind: "histogram",
+    x: "value",
+    y: [],
+    series: "group",
+    legend: true,
+    binCount: 1,
+  };
+  await render(before, histogram);
+  expect(chart.host.querySelector(".bk-legend")).toBeNull();
+  const counts = [
+    ...chart.host.querySelectorAll<SVGPathElement>(".bk-histogram-bar"),
+  ].map((mark) => mark.dataset.count);
+  expect(counts).toEqual(["1", "1"]);
+  const svg = chart.host.querySelector('svg[role="img"]')!;
+  await act(async () =>
+    svg.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
     ),
   );
-}
-function builderFor(option: ChartOption, backgroundColor = "transparent") {
-  return vi.fn((selected: Selection) => ({
-    ...option,
-    backgroundColor,
-    legend: { ...option.legend, selected: { ...selected } },
-  }));
-}
+  expect(textNodes(chart.host, ".chart-tooltip-name")).toEqual(["one", "two"]);
+  expect(textNodes(chart.host, ".chart-tooltip-value")).toEqual(["1", "1"]);
+});
 
-describe("chart legend-dependent options", () => {
-  let host: HTMLDivElement;
-  let root: Root;
-  let observers: Set<ResizeObserverCallback>;
-
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    renderer.instances = [];
-    observers = new Set();
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private callback: ResizeObserverCallback) {}
-        observe() {
-          observers.add(this.callback);
-        }
-        disconnect() {
-          observers.delete(this.callback);
-        }
-      },
-    );
-    host = document.createElement("div");
-    document.body.append(host);
-    root = createRoot(host);
-  });
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    host.remove();
-    vi.unstubAllGlobals();
-  });
-
-  async function render(
-    option: ChartOption,
-    createOption?: (selected: Selection) => ChartOption,
-  ) {
-    await act(async () =>
-      root.render(
-        createElement(ChartCanvas, {
-          option,
-          createOption,
-          label: "График",
-        }),
-      ),
-    );
-  }
-  function chart() {
-    return renderer.instances[0];
-  }
-  function applied() {
-    return chart().setOption.mock.lastCall![0] as ChartOption & {
-      legend: { selected?: Selection };
+it("keeps selection across resize and refresh while showing new series and recalculating visible totals", async () => {
+  await render(before);
+  expect(totals()).toEqual(["15"]);
+  await toggle("Значение · one");
+  expect(totals()).toEqual(["3"]);
+  const selected = button("Значение · one");
+  await chart.resize(300, 180);
+  expect(button("Значение · one")).toBe(selected);
+  expect(selected.getAttribute("aria-pressed")).toBe("false");
+  await render(before, spec, true);
+  expect(chart.host.querySelector(".chart-skeleton")).not.toBeNull();
+  expect(chart.host.querySelector(".bk-bar")).toBeNull();
+  await render([
+    ["A", 800, "three"],
+    ["A", 50, "one"],
+  ]);
+  expect(chart.host.querySelector(".chart-skeleton")).toBeNull();
+  expect(selected.getAttribute("aria-pressed")).toBe("false");
+  expect(button("Значение · three").getAttribute("aria-pressed")).toBe("true");
+  expect(chart.host.querySelector('[title="Значение · two"]')).toBeNull();
+  expect(totals()).toEqual(["800"]);
+  await toggle("Значение · one");
+  expect(totals()).toEqual(["850"]);
+});
+it("keeps typed groups with identical labels independently selectable", async () => {
+  await render([
+    ["A", 8, 1],
+    ["A", 5, "1"],
+  ]);
+  const keys = [
+    ...chart.host.querySelectorAll<HTMLButtonElement>(".bk-legend button"),
+  ];
+  expect(keys.map((b) => b.title)).toEqual(["Значение · 1", "Значение · 1"]);
+  await act(async () => keys[0].click());
+  expect(keys.map((b) => b.getAttribute("aria-pressed"))).toEqual([
+    "false",
+    "true",
+  ]);
+  expect(totals()).toEqual(["5"]);
+});
+it("restores all data while the legend is off and respects the prior selection when it returns", async () => {
+  await render(before);
+  await toggle("Значение · one");
+  await toggle("Значение · two");
+  expect(chart.host.querySelector(".bk-no-series")).not.toBeNull();
+  expect(totals()).toEqual([]);
+  await render(before, { ...spec, legend: false });
+  expect(chart.host.querySelector(".bk-legend")).toBeNull();
+  expect(totals()).toEqual(["15"]);
+  await render(before);
+  expect(chart.host.querySelector(".bk-no-series")).not.toBeNull();
+  await toggle("Значение · one");
+  expect(totals()).toEqual(["12"]);
+});
+it.each(["vertical", "horizontal"] as const)(
+  "anchors %s loading stacks to the zero of the visible data",
+  async (orientation) => {
+    const rows: Cell[][] = [
+      ["A", 10, "gain"],
+      ["A", -10, "loss"],
+      ["B", 2, "gain"],
+      ["B", -4, "loss"],
+    ];
+    const saved = { ...spec, orientation };
+    const bounds = async () => {
+      await render(rows, saved, true);
+      const shapes = [
+        ...chart.host.querySelectorAll('[data-skeleton-mark="bar"] rect'),
+      ];
+      expect(shapes.length).toBeGreaterThan(0);
+      return shapes.map((rect) => {
+        const start = parseFloat(
+          rect.getAttribute(orientation === "horizontal" ? "x" : "y")!,
+        );
+        const length = parseFloat(
+          rect.getAttribute(orientation === "horizontal" ? "width" : "height")!,
+        );
+        return { start, end: start + length };
+      });
     };
-  }
-  async function select(selected: Selection) {
-    await act(async () => {
-      for (const handler of chart().listeners.get("legendselectchanged") ?? [])
-        handler({ selected });
-    });
-  }
+    await render(rows, saved);
+    const mixed = await bounds();
+    expect(mixed.some((b) => Math.abs(b.start - 50) < 0.001)).toBe(true);
+    expect(mixed.some((b) => Math.abs(b.end - 50) < 0.001)).toBe(true);
+    await render(rows, saved);
+    await toggle("Значение · gain");
+    const negatives = await bounds();
+    await render(rows, saved);
+    await toggle("Значение · gain");
+    await toggle("Значение · loss");
+    const positives = await bounds();
+    for (const b of orientation === "horizontal" ? positives : negatives)
+      expect(b.start).toBeCloseTo(0);
+    for (const b of orientation === "horizontal" ? negatives : positives)
+      expect(b.end).toBeCloseTo(100);
+  },
+);
 
-  it("rebuilds with the legend selection and subscribes only once across settings updates", async () => {
-    const option = optionFor();
-    const builder = builderFor(option);
-    await render(option, builder);
-    const [one, two] = option.series.map((series) => series.name);
-    const selected = { [one]: false, [two]: true };
-    chart().getOption.mockReturnValue({ legend: [{ scrollDataIndex: 8 }] });
-    await select(selected);
-    expect(builder).toHaveBeenLastCalledWith(selected);
-    expect(applied().legend.selected).toEqual(selected);
-    expect(applied().legend).toHaveProperty("scrollDataIndex", 8);
-    selected[one] = true;
-    expect(applied().legend.selected?.[one]).toBe(false);
-    await render({ ...option, animation: false }, builder);
-    expect(applied().legend.selected?.[one]).toBe(false);
-    expect(
-      chart().on.mock.calls.filter(
-        ([event]) => event === "legendselectchanged",
-      ),
-    ).toHaveLength(1);
-    expect(renderer.instances).toHaveLength(1);
-  });
-
-  it("retains hidden series across new options, drops removed names and shows new series", async () => {
-    const initial = optionFor();
-    await render(initial, builderFor(initial));
-    const [one, two] = initial.series.map((series) => series.name);
-    await select({ [one]: false, [two]: false });
-    const next = optionFor(["one", "three"]);
-    const builder = builderFor(next);
-    await render(next, builder);
-    const selected = builder.mock.lastCall![0];
-    expect(selected[one]).toBe(false);
-    expect(selected).not.toHaveProperty(two);
-    expect(selected[next.series[1].name]).not.toBe(false);
-    expect(applied().legend.selected?.[one]).toBe(false);
-    expect(applied().series.map((series) => series.name)).toEqual(
-      next.series.map((series) => series.name),
-    );
-  });
-
-  it("uses a replaced builder instead of the closure captured when the chart mounted", async () => {
-    const option = optionFor();
-    const first = builderFor(option, "first");
-    await render(option, first);
-    const second = builderFor(option, "second");
-    await render(option, second);
-    const firstCalls = first.mock.calls.length;
-    const selected = { [option.series[0].name]: false };
-    await select(selected);
-    expect(second).toHaveBeenLastCalledWith(selected);
-    expect(first).toHaveBeenCalledTimes(firstCalls);
-    expect(applied().backgroundColor).toBe("second");
-  });
-
-  it("supports enabling and disabling legend rebuilding without remounting the chart", async () => {
-    const option = optionFor();
-    await render(option);
-    const builder = builderFor(option);
-    await render(option, builder);
-    const selected = { [option.series[0].name]: false };
-    await select(selected);
-    expect(builder).toHaveBeenLastCalledWith(selected);
-    await render(option);
-    const calls = builder.mock.calls.length;
-    await select({ [option.series[0].name]: true });
-    expect(builder).toHaveBeenCalledTimes(calls);
-    expect(renderer.instances).toHaveLength(1);
-  });
-
-  it("keeps selection on resize, detaches the handler and ignores events after disposal", async () => {
-    const option = optionFor();
-    const builder = builderFor(option);
-    await render(option, builder);
-    const selected = { [option.series[0].name]: false };
-    await select(selected);
-    const handler = [...chart().listeners.get("legendselectchanged")!][0];
-    const beforeResize = chart().setOption.mock.calls.length;
-    await act(async () => {
-      for (const callback of observers) callback([], {} as ResizeObserver);
-    });
-    expect(chart().resize).toHaveBeenCalledTimes(1);
-    expect(chart().setOption).toHaveBeenCalledTimes(beforeResize);
-    expect(applied().legend.selected).toEqual(selected);
-    await act(async () => root.render(null));
-    expect(chart().off).toHaveBeenCalledWith("legendselectchanged", handler);
-    expect(chart().dispose).toHaveBeenCalledTimes(1);
-    expect(observers.size).toBe(0);
-    const builderCalls = builder.mock.calls.length;
-    await act(async () => handler({ selected: {} }));
-    expect(builder).toHaveBeenCalledTimes(builderCalls);
-    expect(chart().setOption).toHaveBeenCalledTimes(beforeResize);
-  });
+it("forgets a hidden series after a completed result removes it", async () => {
+  await render(before);
+  await toggle("Значение · two");
+  await render([before[0]]);
+  await render(before);
+  expect(button("Значение · two").getAttribute("aria-pressed")).toBe("true");
+  expect(totals()).toEqual(["15"]);
 });

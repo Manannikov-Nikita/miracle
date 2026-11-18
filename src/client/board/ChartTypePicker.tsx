@@ -1,12 +1,17 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { CaretDown, Check } from "@phosphor-icons/react";
-import type { ChartSpec } from "../../shared/types";
+import type { ChartSpec, Column } from "../../shared/types";
+import { isNumericColumn } from "../../shared/column-types";
 
 const types = [
   { kind: "bar", label: "Столбцы" },
+  { kind: "histogram", label: "Гистограмма" },
   { kind: "line", label: "Линии" },
   { kind: "area", label: "Область" },
   { kind: "scatter", label: "Точки" },
+  { kind: "composed", label: "Комбинированный" },
+  { kind: "sparkline", label: "Спарклайн" },
+  { kind: "heatmap", label: "Тепловая карта" },
 ] as const;
 
 function Preview({
@@ -18,7 +23,52 @@ function Preview({
 }) {
   return (
     <svg viewBox="0 0 48 36" fill="none" aria-hidden="true" focusable="false">
-      <path d="M5 4V31H44" stroke="currentColor" opacity="0.35" />
+      {kind !== "sparkline" && kind !== "heatmap" && (
+        <path d="M5 4V31H44" stroke="currentColor" opacity="0.35" />
+      )}
+      {kind === "histogram" && (
+        <path d="M9 30v-5h5v-7h5V9h5V5h5v8h5v9h5v5h4v3Z" fill="currentColor" />
+      )}
+      {kind === "composed" && (
+        <>
+          <path
+            d="M10 30V20h6v10m6 0V13h6v17m6 0V17h6v13"
+            fill="currentColor"
+            opacity=".48"
+          />
+          <path
+            d="m10 17 13-8 10 3 9-7"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+        </>
+      )}
+      {kind === "sparkline" && (
+        <path
+          d="m3 24 7-3 5 3 7-11 5 5 5-7 5 3 7-8"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
+      )}
+      {kind === "heatmap" && (
+        <g fill="currentColor">
+          {[
+            0.22, 0.48, 0.72, 1, 0.65, 0.34, 0.88, 0.52, 0.4, 0.84, 0.57, 0.28,
+          ].map((opacity, i) => (
+            <rect
+              key={i}
+              x={5 + (i % 4) * 10}
+              y={5 + Math.floor(i / 4) * 9}
+              width="8"
+              height="7"
+              rx="1"
+              opacity={opacity}
+            />
+          ))}
+        </g>
+      )}
       {kind === "bar" &&
         (horizontal ? (
           <g fill="currentColor">
@@ -66,16 +116,50 @@ function Preview({
 }
 
 export default function ChartTypePicker({
-  value,
-  orientation,
+  spec,
+  columns,
   onChange,
   disabled,
 }: {
-  value: ChartSpec["kind"];
-  orientation?: ChartSpec["orientation"];
-  onChange: (kind: ChartSpec["kind"]) => void;
+  spec: ChartSpec;
+  columns: Column[];
+  onChange: (spec: ChartSpec) => void;
   disabled: boolean;
 }) {
+  const { kind: value, orientation } = spec;
+  function changeKind(kind: ChartSpec["kind"]) {
+    if (kind === value) return;
+    if (kind !== "histogram" && value !== "histogram") {
+      onChange({ ...spec, kind });
+      return;
+    }
+    const numeric = columns.filter(isNumericColumn);
+    const available = (id: string) =>
+      numeric.some((column) => column.id === id);
+    const sample = available(spec.x)
+      ? spec.x
+      : (spec.y.find(available) ?? numeric[0]?.id ?? "");
+    if (kind === "histogram") {
+      onChange({ ...spec, kind, x: sample, y: [] });
+      return;
+    }
+    // A saved histogram has no Y metric. Reuse its observations when returning
+    // to a regular chart; scatter needs numeric bindings on both axes.
+    const category =
+      columns.find((c) => !isNumericColumn(c))?.id ??
+      columns.find((c) => c.id !== sample)?.id ??
+      sample;
+    const metric =
+      kind === "scatter"
+        ? (numeric.find((c) => c.id !== sample)?.id ?? sample)
+        : sample;
+    onChange({
+      ...spec,
+      kind,
+      x: kind === "scatter" ? sample : category,
+      y: metric ? [metric] : [],
+    });
+  }
   const selected = types.find(({ kind }) => kind === value)!;
   const horizontal = orientation === "horizontal";
   const selectedLabel =
@@ -111,7 +195,7 @@ export default function ChartTypePicker({
               className="board-chart-type-options"
               aria-label="Тип графика"
               value={value}
-              onValueChange={(kind) => onChange(kind as ChartSpec["kind"])}
+              onValueChange={(kind) => changeKind(kind as ChartSpec["kind"])}
             >
               {types.map(({ kind, label }) => (
                 <DropdownMenu.RadioItem
@@ -126,6 +210,7 @@ export default function ChartTypePicker({
                   <span className="board-chart-type-preview">
                     <Preview kind={kind} horizontal={horizontal} />
                   </span>
+                  <span>{label}</span>
                   <DropdownMenu.ItemIndicator className="board-chart-type-check">
                     <Check size={10} weight="bold" aria-hidden="true" />
                   </DropdownMenu.ItemIndicator>

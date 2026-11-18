@@ -7,7 +7,7 @@ import {
   defaultChart,
   isNumericColumn,
 } from "./model";
-import { formatChartNumber } from "./chartOptions";
+import { formatChartNumber } from "./chart-number";
 
 export const chartTableData = prepareTableData;
 
@@ -27,6 +27,17 @@ export function normalizeChartSpec(
   const defaults = defaultChart(columns);
   if (!saved) return defaults;
   const exists = (id: string) => columns.some((column) => column.id === id);
+  if (saved.kind === "histogram") {
+    const column =
+      columns.find((c) => c.id === saved.x && isNumericColumn(c)) ??
+      columns.find(isNumericColumn);
+    return {
+      ...saved,
+      x: column?.id ?? "",
+      y: [],
+      series: saved.series && exists(saved.series) ? saved.series : undefined,
+    };
+  }
   const y = saved.y.filter(exists);
   return {
     ...saved,
