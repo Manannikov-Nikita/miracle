@@ -5,6 +5,7 @@ type Mark = Geometry["marks"][number];
 type Point = Mark["points"][number];
 
 export interface Sample {
+  key: string;
   mark: Mark;
   point: Point;
   x: number;
@@ -24,12 +25,16 @@ export function focusColumns(g: Geometry) {
     (a, b) => a.seriesIndex - b.seriesIndex,
   );
   for (const mark of seriesOrder) {
+    const occurrences = new Map<number, number>();
     for (const point of mark.points) {
+      const occurrence = occurrences.get(point.category) ?? 0;
+      occurrences.set(point.category, occurrence + 1);
       const center = g.center(point.category);
       const at =
         mark.style === "bar" ? center + mark.offset + g.barWidth / 2 : center;
       const value = point.value === null ? g.zero : g.scale(point.value);
       columns[point.category].push({
+        key: `${occurrence}/${mark.key}`,
         mark,
         point,
         x: g.horizontal ? value : at,

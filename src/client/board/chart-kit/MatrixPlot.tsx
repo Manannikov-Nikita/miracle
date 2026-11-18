@@ -25,7 +25,11 @@ export default function MatrixPlot({
   const tooltipId = useId();
   const pointerInspection = useRef(false);
   const { host, width, height } = usePlotViewport();
-  const [focus, setFocus] = useState<{ col: number; row: number } | null>(null);
+  const [focus, setFocus] = useState<{
+    col: number;
+    row: number;
+    pointer: boolean;
+  } | null>(null);
   const { categories, bins, min, max } = useMemo(() => {
     const categories = series[0]?.xCategories ?? [
       ...new Set(series.flatMap((item) => item.data.map(([x]) => String(x)))),
@@ -198,12 +202,17 @@ export default function MatrixPlot({
     event.preventDefault();
     event.stopPropagation();
     setFocus({
+      pointer: false,
       col: Math.max(0, Math.min(categories.length - 1, col)),
       row: Math.max(0, Math.min(series.length - 1, row)),
     });
   };
   return (
-    <div ref={host} className="matrix-plot">
+    <div
+      ref={host}
+      className="matrix-plot"
+      data-pointer={focus?.pointer || undefined}
+    >
       {width > 0 && height > 0 && (
         <svg
           role="img"
@@ -215,7 +224,11 @@ export default function MatrixPlot({
           height="100%"
           viewBox={`0 0 ${width} ${height}`}
           onKeyDown={onKeyDown}
-          onFocus={() => setFocus((previous) => previous ?? { col: 0, row: 0 })}
+          onFocus={() =>
+            setFocus(
+              (previous) => previous ?? { col: 0, row: 0, pointer: false },
+            )
+          }
           onBlur={() => {
             pointerInspection.current = false;
             setFocus(null);
@@ -245,9 +258,11 @@ export default function MatrixPlot({
               row < series.length
             )
               setFocus((previous) =>
-                previous?.col === col && previous.row === row
+                previous?.col === col &&
+                previous.row === row &&
+                previous.pointer
                   ? previous
-                  : { col, row },
+                  : { col, row, pointer: true },
               );
             else setFocus(null);
           }}
@@ -334,10 +349,13 @@ export default function MatrixPlot({
             </text>
           )}
           {active && (
-            <g className="matrix-focus" pointerEvents="none" fill="none">
+            <g
+              style={{ transform: `translate(${active.x}px, ${active.y}px)` }}
+              className="matrix-focus"
+              pointerEvents="none"
+              fill="none"
+            >
               <rect
-                x={active.x}
-                y={active.y}
                 width={active.width}
                 height={active.height}
                 rx={Math.min(2, active.width / 4, active.height / 4)}
@@ -345,8 +363,6 @@ export default function MatrixPlot({
                 strokeWidth={3.5}
               />
               <rect
-                x={active.x}
-                y={active.y}
                 width={active.width}
                 height={active.height}
                 rx={Math.min(2, active.width / 4, active.height / 4)}
@@ -374,6 +390,7 @@ export default function MatrixPlot({
       {active && item && (
         <ChartTooltip
           id={tooltipId}
+          motion={focus?.pointer}
           x={active.x + active.width / 2}
           y={active.y + active.height / 2}
           width={width}

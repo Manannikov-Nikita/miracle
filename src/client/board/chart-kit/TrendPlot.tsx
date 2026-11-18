@@ -11,6 +11,7 @@ import "./compact-plots.css";
 interface Selection {
   key: string;
   index: number;
+  pointer: boolean;
 }
 
 const TrendRow = memo(function TrendRow({
@@ -22,6 +23,7 @@ const TrendRow = memo(function TrendRow({
   height,
   rowKey,
   activeIndex,
+  pointerMotion,
   setSelection,
   tooltipHost,
   viewportHeight,
@@ -35,6 +37,7 @@ const TrendRow = memo(function TrendRow({
   height: number;
   rowKey: string;
   activeIndex: number | null;
+  pointerMotion: boolean;
   setSelection: React.Dispatch<React.SetStateAction<Selection | null>>;
   tooltipHost: HTMLDivElement | null;
   viewportHeight: number;
@@ -59,12 +62,14 @@ const TrendRow = memo(function TrendRow({
   const ink = (active !== null && item.displayData?.[active]?.color) || color;
   const valueText = (index: number) =>
     metricText(item, index, spec.numberFormat);
-  const choose = (index: number) =>
+  const choose = (index: number) => {
+    const pointer = pointerInspection.current;
     setSelection((prev) =>
-      prev?.key === rowKey && prev.index === index
+      prev?.key === rowKey && prev.index === index && prev.pointer === pointer
         ? prev
-        : { key: rowKey, index },
+        : { key: rowKey, index, pointer },
     );
+  };
   const clear = () =>
     setSelection((prev) => (prev?.key === rowKey ? null : prev));
   // SVG strokes skip isolated defined points between gaps. Keep those points visible.
@@ -92,6 +97,7 @@ const TrendRow = memo(function TrendRow({
       className="trend-row"
       style={{ height }}
       data-active={active !== null || undefined}
+      data-pointer={pointerMotion || undefined}
     >
       <svg
         width="100%"
@@ -177,7 +183,9 @@ const TrendRow = memo(function TrendRow({
             <defs>
               <clipPath id={clip}>
                 <rect
-                  x={point.x - highlightWidth / 2}
+                  className="trend-highlight-window"
+                  x={-highlightWidth / 2}
+                  style={{ transform: `translateX(${point.x}px)` }}
                   y={0}
                   width={highlightWidth}
                   height={height}
@@ -194,15 +202,16 @@ const TrendRow = memo(function TrendRow({
             />
             <line
               className="trend-guide"
-              x1={point.x}
-              x2={point.x}
+              x1={0}
+              x2={0}
+              style={{ transform: `translateX(${point.x}px)` }}
               y1={1}
               y2={height - 1}
             />
             {Number.isFinite(point.y) && (
               <g
                 className="trend-marker"
-                transform={`translate(${point.x} ${point.y})`}
+                style={{ transform: `translate(${point.x}px, ${point.y}px)` }}
               >
                 <circle r={6} fill={ink} fillOpacity={0.23} />
                 <circle
@@ -224,6 +233,7 @@ const TrendRow = memo(function TrendRow({
         createPortal(
           <ChartTooltip
             id={tooltipId}
+            motion={pointerMotion}
             x={point.x}
             y={anchorY}
             width={width}
@@ -291,6 +301,7 @@ export default function TrendPlot({
                 width={width}
                 height={rowHeight}
                 activeIndex={selected ? selection.index : null}
+                pointerMotion={selected && selection.pointer}
                 setSelection={setSelection}
                 tooltipHost={overlay.current}
                 viewportHeight={height}

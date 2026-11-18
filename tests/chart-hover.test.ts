@@ -91,6 +91,31 @@ describe("board chart inspection", () => {
     host.remove();
     vi.unstubAllGlobals();
   });
+  it("keeps each composed series marker and the category chip mounted while scrubbing", async () => {
+    const p = props({ ...base, kind: "composed" });
+    await act(() => root.render(createElement(CartesianPlot, p)));
+    const svg = host.querySelector("svg")!;
+    await act(() => svg.focus());
+    const markers = () => [...svg.querySelectorAll(".bk-focus-dot")];
+    const initial = markers();
+    expect(initial).toHaveLength(2);
+    const chip = svg.querySelector(".bk-category-chip");
+    const move = async (key: string) =>
+      act(() => {
+        svg.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      });
+    await move("ArrowRight");
+    expect(markers()[0]).toBe(initial[0]);
+    expect(markers()[1]).toBe(initial[1]);
+    expect(svg.querySelector(".bk-category-chip")).toBe(chip);
+    await move("ArrowRight");
+    expect(markers()).toHaveLength(1);
+    expect(markers()[0]).toBe(initial[0]);
+    await move("End");
+    expect(markers()).toHaveLength(2);
+    expect(chip?.textContent).toBe("Апр");
+  });
+
   it("exposes a focused label, formatted series and a value marker, then clears all emphasis", async () => {
     const p = props();
     p.series[0].displayData = rows.map((row) => ({

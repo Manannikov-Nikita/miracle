@@ -7,15 +7,19 @@ import {
   pointerFocus,
   keyboardFocus,
   type PlotFocus,
+  type Sample,
 } from "./cartesian-focus";
 import CartesianMarks from "./CartesianMarks";
 import { cartesianGeometry, truncateTick } from "./cartesian-geometry";
 import type { ChartPlotProps } from "./plot-types";
 
+const noSamples: Sample[] = [];
+
 export default function CartesianPlot(props: ChartPlotProps) {
   const { spec, label, columns } = props;
   const [size, setSize] = useState({ width: 460, height: 240 });
   const [focus, setFocus] = useState<PlotFocus | null>(null);
+  const [keyboard, setKeyboard] = useState(false);
   const host = useRef<HTMLDivElement>(null);
   const clip = useId();
   const tooltipId = useId();
@@ -46,12 +50,26 @@ export default function CartesianPlot(props: ChartPlotProps) {
   );
   const byCategory = useMemo(() => focusColumns(g), [g]);
   const active = focus && byCategory[focus.category] ? focus : null;
-  const samples = active ? byCategory[active.category] : [];
+  const samples = active ? byCategory[active.category] : noSamples;
   const selected = active ? (samples[active.sample] ?? samples[0]) : undefined;
+  const shared = spec.kind === "composed";
+  const highlighted = useMemo(() => {
+    if (shared) return samples.filter((sample) => sample.point.value !== null);
+    return selected && selected.point.value !== null ? [selected] : noSamples;
+  }, [shared, samples, selected]);
+  // Keep comparisons anchored above the category even when the pointer crosses
+  // another series within the same column.
+  const anchor =
+    shared && active && highlighted.length
+      ? {
+          x: g.center(active.category),
+          y: Math.min(...highlighted.map((s) => s.y)),
+        }
+      : selected;
   const tooltipRows = useMemo(
     () =>
-      samples.map((sample, index) => ({
-        key: `${sample.mark.key}:${index}`,
+      samples.map((sample) => ({
+        key: sample.key,
         name: sample.mark.name,
         color: sample.color,
         value:
@@ -72,7 +90,12 @@ export default function CartesianPlot(props: ChartPlotProps) {
   const nameX = g.horizontal ? metricTitle : categoryTitle;
   const nameY = g.horizontal ? categoryTitle : metricTitle;
   return (
-    <div className="bk-cartesian" ref={host} data-horizontal={g.horizontal}>
+    <div
+      className="bk-cartesian"
+      ref={host}
+      data-horizontal={g.horizontal}
+      data-keyboard={keyboard || undefined}
+    >
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
@@ -80,11 +103,12 @@ export default function CartesianPlot(props: ChartPlotProps) {
         aria-describedby={active ? tooltipId : undefined}
         aria-roledescription="график"
         tabIndex={0}
-        onFocus={() =>
-          setFocus(
-            (current) => current ?? keyboardFocus("Home", g, byCategory, null),
-          )
-        }
+        onFocus={() => {
+          if (!focus) {
+            setKeyboard(true);
+            setFocus(keyboardFocus("Home", g, byCategory, null));
+          }
+        }}
         onBlur={() => setFocus(null)}
         onPointerLeave={() => setFocus(null)}
         onPointerMove={(event) => {
@@ -92,6 +116,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
           if (!rect.width || !rect.height) return;
           const x = ((event.clientX - rect.left) * width) / rect.width;
           const y = ((event.clientY - rect.top) * height) / rect.height;
+          setKeyboard(false);
           const next = pointerFocus(g, byCategory, x, y);
           setFocus((prev) =>
             prev?.category === next?.category && prev?.sample === next?.sample
@@ -114,6 +139,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
             return;
           event.preventDefault();
           event.stopPropagation();
+          setKeyboard(true);
           setFocus((prev) => keyboardFocus(event.key, g, byCategory, prev));
         }}
       >
@@ -149,10 +175,11 @@ export default function CartesianPlot(props: ChartPlotProps) {
         {(g.horizontal ? g.showY : g.showX) &&
           g.categories.map(
             (name, i) =>
-              i % categoryStride === 0 &&
-              i !== active?.category && (
+              i % categoryStride === 0 && (
                 <text
                   key={i}
+                  className="bk-category-tick"
+                  data-inspected={i === active?.category || undefined}
                   x={g.horizontal ? g.axisLeft - 5 : g.center(i)}
                   y={
                     g.horizontal
@@ -190,16 +217,23 @@ export default function CartesianPlot(props: ChartPlotProps) {
         )}
         <g
           className="bk-marks"
-          data-dimmed={!!selected && selected.point.value !== null}
+          data-dimmed={highlighted.length > 0}
+          data-keyboard={keyboard || undefined}
           clipPath={`url(#${clip})`}
         >
-          <CartesianMarks geometry={g} spec={spec} width={width} />
+          <CartesianMarks
+            geometry={g}
+            spec={spec}
+            width={width}
+            emphasizedBars={highlighted}
+          />
         </g>
         {active && (
           <CartesianFocus
             g={g}
             category={active.category}
-            sample={selected}
+            shared={shared}
+            highlighted={highlighted}
             width={width}
             height={height}
           />
@@ -208,8 +242,9 @@ export default function CartesianPlot(props: ChartPlotProps) {
       {active && (
         <ChartTooltip
           id={tooltipId}
-          x={selected?.x ?? (g.horizontal ? g.zero : g.center(active.category))}
-          y={selected?.y ?? (g.horizontal ? g.center(active.category) : g.zero)}
+          motion={!keyboard}
+          x={anchor?.x ?? (g.horizontal ? g.zero : g.center(active.category))}
+          y={anchor?.y ?? (g.horizontal ? g.center(active.category) : g.zero)}
           width={width}
           height={height}
           title={g.categories[active.category]}

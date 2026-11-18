@@ -155,3 +155,59 @@ it("keeps a densely populated row visible at subpixel column widths", async () =
   expect(Number(cell.getAttribute("width"))).toBeLessThan(1);
   expect(Number(cell.getAttribute("height"))).toBeGreaterThan(12);
 });
+
+it.each(["sparkline", "heatmap"] as const)(
+  "retargets the existing %s focus overlay while pointer scrubbing and snaps it on a keyboard command",
+  async (kind) => {
+    await act(async () =>
+      root.render(
+        createElement(kind === "heatmap" ? MatrixPlot : TrendPlot, {
+          ...props,
+          spec: { ...props.spec, kind },
+        }),
+      ),
+    );
+    const svg = host.querySelector("svg")!;
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 500, 300),
+    );
+    const mark = kind === "heatmap" ? ".matrix-focus" : ".trend-marker";
+    const gotoPoint = async (index: number) => {
+      const cell = host
+        .querySelectorAll(".matrix-column")
+        [index]?.querySelector("rect");
+      const x = cell
+        ? Number(cell.getAttribute("x")) +
+          Number(cell.getAttribute("width")) / 2
+        : 5 + 245 * index;
+      const y = cell
+        ? Number(cell.getAttribute("y")) +
+          Number(cell.getAttribute("height")) / 2
+        : 30;
+      await act(async () => {
+        svg.dispatchEvent(
+          new MouseEvent("pointermove", {
+            bubbles: true,
+            clientX: x,
+            clientY: y,
+          }),
+        );
+      });
+    };
+    await gotoPoint(0);
+    const overlay = host.querySelector<SVGGraphicsElement>(mark)!;
+    const initial = overlay.style.transform;
+    await gotoPoint(1);
+    expect(host.querySelector(mark)).toBe(overlay);
+    expect(overlay.style.transform).not.toBe(initial);
+    expect(overlay.closest("[data-pointer]")).toBeTruthy();
+    expect(tooltipText()).toContain("0 шт.");
+    await key("Home");
+    expect(overlay.closest("[data-pointer]")).toBeNull();
+    expect(
+      host.querySelector('[role="tooltip"]')?.hasAttribute("data-motion"),
+    ).toBe(false);
+    expect(overlay.style.transform).toBe(initial);
+    expect(tooltipText()).toContain("−30 шт.");
+  },
+);

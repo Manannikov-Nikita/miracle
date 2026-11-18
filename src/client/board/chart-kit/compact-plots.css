@@ -105,8 +105,14 @@
   cursor: crosshair;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .trend-context {
+  .trend-scroll:has([data-pointer]) .trend-context {
     transition: opacity 120ms ease-out;
+  }
+  .trend-row[data-pointer]
+    :is(.trend-guide, .trend-marker, .trend-highlight-window),
+  .matrix-plot[data-pointer] .matrix-focus {
+    transition: transform var(--bk-inspect-duration, 125ms)
+      var(--bk-inspect-ease, cubic-bezier(0.2, 0.65, 0.3, 1));
   }
 }
 @media (prefers-reduced-motion: reduce) {

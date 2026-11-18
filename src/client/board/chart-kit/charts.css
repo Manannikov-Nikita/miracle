@@ -1,4 +1,6 @@
 .bk-chart {
+  --bk-inspect-duration: 125ms;
+  --bk-inspect-ease: cubic-bezier(0.2, 0.65, 0.3, 1);
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -135,15 +137,15 @@
   stroke: var(--bk-muted);
   stroke-dasharray: 3;
 }
-.bk-marks[data-dimmed="true"] {
-  opacity: 0.3;
-}
 .bk-focus {
   pointer-events: none;
 }
 .bk-focus-dot {
   stroke: var(--bk-surface);
   stroke-width: 2.25;
+}
+.bk-category-tick[data-inspected] {
+  opacity: 0;
 }
 .bk-category-chip rect {
   fill: var(--bk-text);
@@ -178,13 +180,20 @@
   }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .bk-focus-dot {
-    transition:
-      cx 95ms ease-out,
-      cy 95ms ease-out;
+  .bk-cartesian:not([data-keyboard]) .bk-category-tick {
+    transition: opacity 80ms ease-out;
   }
-  .bk-marks {
-    transition: opacity 0.14s ease-out;
+  .bk-cartesian:not([data-keyboard]) .bk-category-tick[data-inspected] {
+    transition-duration: 45ms;
+  }
+  .bk-cartesian:not([data-keyboard])
+    :is(.bk-category-chip, .bk-focus-dot, .bk-focus-guide) {
+    transition: transform var(--bk-inspect-duration) var(--bk-inspect-ease);
+  }
+  .bk-cartesian:not([data-keyboard]) .bk-category-chip rect {
+    transition:
+      x var(--bk-inspect-duration) var(--bk-inspect-ease),
+      width var(--bk-inspect-duration) var(--bk-inspect-ease);
   }
   .bk-cartesian .bk-reveal {
     animation: bk-sweep 0.52s cubic-bezier(0.2, 0.68, 0.2, 1) both;

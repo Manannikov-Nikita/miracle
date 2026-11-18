@@ -1,5 +1,7 @@
 .chart-tooltip {
   position: absolute;
+  left: 0;
+  top: 0;
   z-index: 4;
   box-sizing: border-box;
   width: max-content;
@@ -98,4 +100,11 @@
 
 .chart-tooltip[data-compact] .chart-tooltip-rows {
   flex: 1 1 auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chart-tooltip[data-motion] {
+    transition: transform var(--bk-inspect-duration, 125ms)
+      var(--bk-inspect-ease, cubic-bezier(0.2, 0.65, 0.3, 1));
+  }
 }

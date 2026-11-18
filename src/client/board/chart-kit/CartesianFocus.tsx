@@ -1,5 +1,5 @@
 import { truncateTick } from "./cartesian-geometry";
-import { barRect, type Geometry, type Sample } from "./cartesian-focus";
+import { type Geometry, type Sample } from "./cartesian-focus";
 
 function CategoryChip({
   g,
@@ -41,12 +41,17 @@ function CategoryChip({
   return (
     <g
       className="bk-category-chip"
-      transform={`translate(${left} ${top})`}
+      style={{ transform: `translate(${left + chipWidth / 2}px, ${top}px)` }}
       aria-hidden="true"
     >
-      <rect width={chipWidth} height={chipHeight} rx={chipHeight / 2} />
+      <rect
+        x={-chipWidth / 2}
+        width={chipWidth}
+        height={chipHeight}
+        rx={chipHeight / 2}
+      />
       <text
-        x={chipWidth / 2}
+        x={0}
         y={chipHeight / 2}
         dominantBaseline="central"
         textAnchor="middle"
@@ -60,70 +65,69 @@ function CategoryChip({
 export default function CartesianFocus({
   g,
   category,
-  sample,
+  shared,
+  highlighted,
   width,
   height,
 }: {
   g: Geometry;
   category: number;
-  sample?: Sample;
+  shared: boolean;
+  highlighted: Sample[];
   width: number;
   height: number;
 }) {
   const center = g.center(category);
-  const marked = sample && sample.point.value !== null ? sample : undefined;
-  const bar = marked?.mark.style === "bar";
+  const selected = highlighted[0];
+  const guide = shared || selected?.mark.style !== "bar";
   return (
     <g className="bk-focus" aria-hidden="true">
-      {!bar && (
-        <line
-          className="bk-crosshair"
-          x1={g.horizontal ? g.left : center}
-          x2={g.horizontal ? g.right : center}
-          y1={g.horizontal ? center : g.top}
-          y2={g.horizontal ? center : g.bottom}
-        />
-      )}
-      {marked && (
-        <>
-          {bar ? (
-            <rect
-              className="bk-active-bar"
-              {...barRect(
-                g,
-                center + marked.mark.offset,
-                g.scale(marked.point.value!),
-              )}
-              fill={marked.color}
-            />
-          ) : (
-            <>
-              {marked.mark.fill && (
-                <path
-                  d={marked.mark.fill}
-                  fill={marked.mark.color}
-                  fillOpacity=".15"
-                />
-              )}
-              <path
-                d={marked.mark.stroke}
-                fill="none"
-                stroke={marked.mark.color}
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </>
-          )}
-          <circle
-            className="bk-focus-dot"
-            cx={marked.x}
-            cy={marked.y}
-            r="4.2"
-            fill={marked.color}
+      {guide && (
+        <g
+          className="bk-focus-guide"
+          style={{
+            transform: g.horizontal
+              ? `translateY(${center}px)`
+              : `translateX(${center}px)`,
+          }}
+        >
+          <line
+            className="bk-crosshair"
+            x1={g.horizontal ? g.left : 0}
+            x2={g.horizontal ? g.right : 0}
+            y1={g.horizontal ? 0 : g.top}
+            y2={g.horizontal ? 0 : g.bottom}
           />
-        </>
+        </g>
       )}
+      {!shared && selected?.mark.stroke && (
+        <g>
+          {selected.mark.fill && (
+            <path
+              d={selected.mark.fill}
+              fill={selected.mark.color}
+              fillOpacity=".15"
+            />
+          )}
+          <path
+            d={selected.mark.stroke}
+            fill="none"
+            stroke={selected.mark.color}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </g>
+      )}
+      {highlighted.map((sample) => (
+        <circle
+          key={shared ? sample.key : "selected"}
+          className="bk-focus-dot"
+          style={{ transform: `translate(${sample.x}px, ${sample.y}px)` }}
+          r="4.2"
+          fill={sample.color}
+        />
+      ))}
       <CategoryChip g={g} category={category} width={width} height={height} />
     </g>
   );

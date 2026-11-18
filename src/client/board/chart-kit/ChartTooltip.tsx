@@ -11,6 +11,7 @@ type TooltipRow = {
 
 type Props = {
   id?: string;
+  motion?: boolean;
   x: number;
   y: number;
   width: number;
@@ -26,6 +27,7 @@ function place(
   limit: number,
   inset: number,
   preferForward: boolean,
+  previousSide?: boolean,
 ) {
   const gap = 12;
   const forward = anchor + gap;
@@ -35,12 +37,31 @@ function place(
   const fitsBackward = backward >= inset;
   let useForward = preferForward;
   if (fitsForward !== fitsBackward) useForward = fitsForward;
-  else if (!fitsForward) useForward = limit - anchor >= anchor;
-  return Math.min(max, Math.max(inset, useForward ? forward : backward));
+  else {
+    // A small dead band keeps neighbouring values of slightly different widths
+    // on the same side of the pointer when it hovers at the flip threshold.
+    const hysteresis = 8;
+    if (fitsForward) {
+      const preferredSlack = preferForward ? max - forward : backward - inset;
+      if (previousSide !== undefined && preferredSlack < hysteresis)
+        useForward = previousSide;
+    } else {
+      const balance = limit - 2 * anchor;
+      useForward =
+        previousSide !== undefined && Math.abs(balance) < hysteresis
+          ? previousSide
+          : balance >= 0;
+    }
+  }
+  return {
+    forward: useForward,
+    position: Math.min(max, Math.max(inset, useForward ? forward : backward)),
+  };
 }
 
 export default function ChartTooltip({
   id,
+  motion = true,
   x,
   y,
   width,
@@ -55,6 +76,63 @@ export default function ChartTooltip({
   const maxWidth = Math.max(0, width - 2 * inset);
   const maxHeight = Math.max(0, height - 2 * inset);
   const compact = maxHeight < 49;
+  const lastPlacement = useRef<{
+    x: number;
+    y: number;
+    horizontalForward: boolean;
+    verticalForward: boolean;
+    following: boolean;
+  } | null>(null);
+  const measuredBounds = useRef<{
+    inset: number;
+    maxX: number;
+    maxY: number;
+  } | null>(null);
+  const snapAt = useRef<{ x: number; y: number } | null>(null);
+  const previous = lastPlacement.current;
+  const horizontal = place(
+    x,
+    layout.width,
+    width,
+    inset,
+    true,
+    previous?.horizontalForward,
+  );
+  const vertical = place(
+    y,
+    layout.height,
+    height,
+    inset,
+    false,
+    previous?.verticalForward,
+  );
+  // Initial measurement may change both the size and the side before first paint.
+  // Start following only after observing a second distinct anchor.
+  const following = Boolean(
+    previous && (previous.following || x !== previous.x || y !== previous.y),
+  );
+  const snapped = snapAt.current?.x === x && snapAt.current?.y === y;
+  useLayoutEffect(() => {
+    if (!snapped) snapAt.current = null;
+    if (layout.width && layout.height) {
+      lastPlacement.current = {
+        x,
+        y,
+        horizontalForward: horizontal.forward,
+        verticalForward: vertical.forward,
+        following,
+      };
+    }
+  }, [
+    x,
+    y,
+    horizontal.forward,
+    vertical.forward,
+    following,
+    snapped,
+    layout.width,
+    layout.height,
+  ]);
 
   const measure = useCallback(() => {
     const el = card.current;
@@ -64,25 +142,54 @@ export default function ChartTooltip({
       (body.firstElementChild instanceof HTMLElement &&
         body.firstElementChild.offsetHeight) ||
       20;
+    const computed = getComputedStyle(el);
+    const cardHeight = el.offsetHeight;
+    const cardWidth = el.offsetWidth;
     const bottom =
-      (parseFloat(getComputedStyle(el).paddingBottom) || 0) +
-      el.offsetHeight -
-      el.clientHeight;
+      (parseFloat(computed.paddingBottom) || 0) + cardHeight - el.clientHeight;
     const capacity = !compact
       ? Math.max(
           1,
           Math.floor((maxHeight - body.offsetTop - bottom) / rowHeight),
         )
       : 1;
-    const next = { width: el.offsetWidth, height: el.offsetHeight, capacity };
+    const next = { width: cardWidth, height: cardHeight, capacity };
+    const maxX = Math.max(inset, width - inset - cardWidth);
+    const maxY = Math.max(inset, height - inset - cardHeight);
+    const bounds = measuredBounds.current;
+    const placement = lastPlacement.current;
+    let mustSnap = false;
+    if (
+      bounds &&
+      placement?.following &&
+      (inset > bounds.inset || maxX < bounds.maxX || maxY < bounds.maxY)
+    ) {
+      // A longer label can grow past an edge in the middle of a glide. Check
+      // the actual interpolated translation before paint, only when space shrinks.
+      const transform =
+        typeof DOMMatrixReadOnly === "undefined"
+          ? null
+          : new DOMMatrixReadOnly(
+              computed.transform === "none" ? undefined : computed.transform,
+            );
+      mustSnap =
+        !transform ||
+        transform.m41 < inset ||
+        transform.m41 > maxX ||
+        transform.m42 < inset ||
+        transform.m42 > maxY;
+      if (mustSnap) snapAt.current = { x: placement.x, y: placement.y };
+    }
+    measuredBounds.current = { inset, maxX, maxY };
     setLayout((prev) =>
+      !mustSnap &&
       prev.width === next.width &&
       prev.height === next.height &&
       prev.capacity === capacity
         ? prev
         : next,
     );
-  }, [maxHeight, compact]);
+  }, [maxHeight, compact, width, height, inset]);
 
   useLayoutEffect(measure, [measure, maxWidth, title, rows, layout.capacity]);
   useLayoutEffect(() => {
@@ -112,11 +219,11 @@ export default function ChartTooltip({
       aria-live="polite"
       aria-atomic="true"
       data-compact={compact || undefined}
+      data-motion={(motion && following && !snapped) || undefined}
       style={{
         maxWidth,
         maxHeight,
-        left: place(x, layout.width, width, inset, true),
-        top: place(y, layout.height, height, inset, false),
+        transform: `translate3d(${horizontal.position}px, ${vertical.position}px, 0)`,
       }}
     >
       <div className="chart-tooltip-heading">
