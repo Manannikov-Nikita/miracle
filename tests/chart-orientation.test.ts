@@ -1,16 +1,13 @@
+// @vitest-environment jsdom
+import { act } from "react";
 import { describe, expect, it } from "vitest";
-import * as echarts from "echarts";
-import type GlobalModel from "echarts/lib/model/Global.js";
-import type CartesianAxisModel from "echarts/lib/coord/cartesian/AxisModel.js";
 import type { Cell, ChartSpec } from "../src/shared/types";
 import { chartSeries } from "../src/client/board/model";
-import { chartOptions } from "../src/client/board/chartOptions";
+import { mountBoardChart, textNodes } from "./helpers/chart-render";
 
 const columns = [
   { id: "category", name: "Категория", type: "String" },
   { id: "value", name: "Выручка", type: "Float64" },
-  { id: "other", name: "Визиты", type: "Float64" },
-  { id: "group", name: "Группа", type: "String" },
 ];
 const horizontal: ChartSpec = {
   kind: "bar",
@@ -20,177 +17,89 @@ const horizontal: ChartSpec = {
   legend: true,
 };
 const rows: Cell[][] = [
-  ["B", 10, 100, "one"],
-  ["A", -5, 50, "one"],
-  ["C", null, 75, "one"],
+  ["B", 34100],
+  ["A", -12000],
+  ["C", null],
 ];
-type InspectableChart = echarts.ECharts & { getModel(): GlobalModel };
+const chart = mountBoardChart();
+const render = (spec: ChartSpec) =>
+  chart.render({ spec, columns, series: chartSeries(columns, rows, spec) });
 
-function inspect(
-  spec: ChartSpec,
-  sourceRows: Cell[][],
-  verify: (chart: InspectableChart) => void,
-) {
-  const chart = echarts.init(null, undefined, {
-    renderer: "svg",
-    ssr: true,
-    width: 700,
-    height: 320,
-  }) as InspectableChart;
-  try {
-    chart.setOption(
-      chartOptions(columns, spec, chartSeries(columns, sourceRows, spec)),
-    );
-    verify(chart);
-  } finally {
-    chart.dispose();
-  }
-}
-
-describe("horizontal bar charts", () => {
-  it("renders values along X, categories top to bottom, and nulls as gaps", () => {
-    inspect(horizontal, rows, (chart) => {
-      const x = chart.getModel().getComponent("xAxis") as CartesianAxisModel;
-      const y = chart.getModel().getComponent("yAxis") as CartesianAxisModel;
-      expect(x.get("type")).toBe("value");
-      expect(y.get("type")).toBe("category");
-      expect(y.getCategories()).toEqual(["B", "A", "C"]);
-      const data = chart.getModel().getSeries()[0].getData();
-      const first = data.getItemLayout(0);
-      const negative = data.getItemLayout(1);
-      const zero = chart.convertToPixel({ xAxisIndex: 0 }, 0) as number;
-      expect(first.x).toBeCloseTo(zero, 4);
-      expect(first.x + first.width).toBeCloseTo(
-        chart.convertToPixel({ xAxisIndex: 0 }, 10) as number,
-        4,
-      );
-      expect(negative.x + negative.width).toBeCloseTo(
-        chart.convertToPixel({ xAxisIndex: 0 }, -5) as number,
-        4,
-      );
-      expect(first.y).toBeLessThan(negative.y);
-      expect(first.height).toBeGreaterThan(0);
-      expect(data.hasValue(2)).toBe(false);
-      expect(chart.renderToSVGString()).toContain("Категория");
-      expect(chart.renderToSVGString()).toContain("Выручка");
-    });
-  });
-
+describe("horizontal charts", () => {
   it.each([
     ["none", ["B", "A", "C"]],
     ["asc", ["A", "B", "C"]],
     ["desc", ["C", "B", "A"]],
   ] as const)(
-    "preserves %s category order from top to bottom",
-    (sort, expected) => {
-      inspect({ ...horizontal, sort }, rows, (chart) => {
-        const y = chart.getModel().getComponent("yAxis") as CartesianAxisModel;
-        expect(y.getCategories()).toEqual(expected);
-        const positions = expected.map(
-          (category) =>
-            chart.convertToPixel({ yAxisIndex: 0 }, category) as number,
-        );
-        expect(positions[0]).toBeLessThan(positions[1]);
-        expect(positions[1]).toBeLessThan(positions[2]);
-      });
+    "lays out %s categories top to bottom and leaves null gaps",
+    async (sort, expected) => {
+      await render({ ...horizontal, sort });
+      const labels = [...chart.host.querySelectorAll("svg text")].filter((t) =>
+        ["A", "B", "C"].includes(t.firstChild?.textContent ?? ""),
+      );
+      expect(labels.map((el) => el.firstChild?.textContent)).toEqual(expected);
+      const ys = labels.map((el) => Number(el.getAttribute("y")));
+      expect(ys[0]).toBeLessThan(ys[1]);
+      expect(ys[1]).toBeLessThan(ys[2]);
+      const bars = [...chart.host.querySelectorAll(".bk-bar")];
+      expect(bars).toHaveLength(2);
+      const negative = bars[sort === "asc" ? 0 : 1],
+        positive = bars[sort === "asc" ? 1 : 0];
+      expect(
+        Number(negative.getAttribute("x")) +
+          Number(negative.getAttribute("width")),
+      ).toBeCloseTo(Number(positive.getAttribute("x")), 6);
+      expect(textNodes(chart.host, ".bk-axis-name")).toEqual([
+        "Выручка",
+        "Категория",
+      ]);
     },
   );
-
-  it("keeps sparse stacks, negative totals and independent metrics on horizontal bars", () => {
-    const source: Cell[][] = [
-      ["B", 2, 20, "one"],
-      ["A", 4, 40, "one"],
-      ["C", null, 100, "one"],
-      ["A", 3, 30, "two"],
-      ["B", 5, 50, "two"],
-      ["D", 7, 70, "two"],
-      ["C", 8, null, "two"],
-      ["B", -3, -30, "negative"],
-      ["B", -4, -40, "negative2"],
-    ];
-    inspect(
-      { ...horizontal, y: ["value", "other"], series: "group", stacked: true },
-      source,
-      (chart) => {
-        const series = chart.getModel().getSeries();
-        const data = (name: string) =>
-          series.find((item) => item.name === name)!.getData();
-        const totals = (name: string) => {
-          const values = data(name);
-          const dimension = values.getCalculationInfo("stackResultDimension");
-          return Array.from({ length: values.count() }, (_, index) =>
-            values.get(dimension, index),
-          );
-        };
-        const y = chart.getModel().getComponent("yAxis") as CartesianAxisModel;
-        expect(y.getCategories()).toEqual(["B", "A", "C", "D"]);
-        expect(totals("Выручка · two")).toEqual([7, 7, 7, 8]);
-        expect(totals("Визиты · two")).toEqual([70, 70, 70, NaN]);
-        expect(totals("Выручка · negative2")).toEqual([-7]);
-        const first = data("Выручка · one").getItemLayout(0);
-        const second = data("Выручка · two").getItemLayout(1);
-        const other = data("Визиты · one").getItemLayout(0);
-        expect(first.y).toBe(second.y);
-        expect(first.y).not.toBe(other.y);
-        expect(second.x).toBeCloseTo(first.x + first.width, 4);
-      },
+  it("keeps category text and formats both numeric ticks and the focused value", async () => {
+    await render({ ...horizontal, numberFormat: "compact" });
+    expect(
+      textNodes(chart.host, "svg text").some((text) => text.endsWith("k")),
+    ).toBe(true);
+    await act(async () =>
+      chart.host
+        .querySelector("svg[role=img]")!
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+        ),
     );
+    expect(textNodes(chart.host, ".chart-tooltip-heading strong")).toEqual([
+      "B",
+    ]);
+    expect(textNodes(chart.host, ".chart-tooltip-value")).toEqual(["34.1k"]);
   });
-
-  it("moves names and number formatting with the value axis", () => {
-    const spec = { ...horizontal, numberFormat: "compact" as const };
-    const option = chartOptions(
-      columns,
-      spec,
-      chartSeries(columns, rows, spec),
-    );
-    expect(option.xAxis.name).toBe("Выручка");
-    expect(option.yAxis.name).toBe("Категория");
-    expect(option.xAxis.axisLabel.formatter?.(34100)).toBe("34.1k");
-    expect(option.yAxis.axisLabel.formatter).toBeUndefined();
-    expect(option.tooltip.valueFormatter(["B", 34100])).toBe("B, 34.1k");
-  });
-
-  it.each(["line", "area", "scatter"] as const)(
-    "ignores saved bar orientation for %s",
-    (kind) => {
-      const spec = {
-        ...horizontal,
-        kind,
-        ...(kind === "scatter" ? { x: "other" } : {}),
-      };
-      const option = chartOptions(
-        columns,
-        spec,
-        chartSeries(columns, rows, spec),
-      );
-      expect(option.xAxis.type).toBe(kind === "scatter" ? "value" : "category");
-      expect(option.yAxis.type).toBe("value");
-      expect(option.xAxis.name).toBe(
-        kind === "scatter" ? "Визиты" : "Категория",
-      );
-      expect(option.yAxis.name).toBe("Выручка");
+  it.each(["line", "area"] as const)(
+    "retains a saved horizontal preference while %s uses ordinary axes",
+    async (kind) => {
+      await render({ ...horizontal, kind });
+      expect(textNodes(chart.host, ".bk-axis-name")).toEqual([
+        "Категория",
+        "Выручка",
+      ]);
+      await render(horizontal);
+      expect(textNodes(chart.host, ".bk-axis-name")).toEqual([
+        "Выручка",
+        "Категория",
+      ]);
     },
   );
-
   it.each([undefined, "vertical"] as const)(
-    "retains vertical bars for orientation %s",
-    (orientation) => {
-      inspect({ ...horizontal, orientation }, rows, (chart) => {
-        const x = chart.getModel().getComponent("xAxis") as CartesianAxisModel;
-        const y = chart.getModel().getComponent("yAxis") as CartesianAxisModel;
-        expect(x.get("type")).toBe("category");
-        expect(y.get("type")).toBe("value");
-        const first = chart
-          .getModel()
-          .getSeries()[0]
-          .getData()
-          .getItemLayout(0);
-        expect(first.y + first.height).toBeCloseTo(
-          chart.convertToPixel({ yAxisIndex: 0 }, 10) as number,
-          4,
-        );
-      });
+    "keeps ordinary column charts vertical with orientation %s",
+    async (orientation) => {
+      await render({ ...horizontal, orientation });
+      const [first, second] = Array.from(
+        chart.host.querySelectorAll(".bk-bar"),
+      );
+      expect(Number(first.getAttribute("x"))).toBeLessThan(
+        Number(second.getAttribute("x")),
+      );
+      expect(
+        Number(first.getAttribute("y")) + Number(first.getAttribute("height")),
+      ).toBeCloseTo(Number(second.getAttribute("y")), 6);
     },
   );
 });

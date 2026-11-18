@@ -6,7 +6,6 @@ import { ChartSettings } from "../src/client/board/ResultView";
 import { api } from "../src/client/api";
 import type { ChartSpec, ResultSet } from "../src/shared/types";
 
-vi.mock("../src/client/board/ChartCanvas", () => ({ default: () => null }));
 vi.mock("../src/client/api", () => ({ api: vi.fn(), getResultRows: vi.fn() }));
 vi.mock("../src/client/components/Select", () => ({
   Select: (props: {

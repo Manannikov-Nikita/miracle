@@ -1,10 +1,14 @@
 import { scaleLinear } from "d3-scale";
-import { curveMonotoneX } from "d3-shape";
+import { curveBumpX, curveMonotoneX } from "d3-shape";
 import { linePathD, areaClosedD } from "./bklit/line-path";
 import { computeSeriesBarWidth } from "./bklit/series-bar-layout";
+import { splitSignedArea, type BandPoint } from "./stacked-area";
 import { cartesianStacks } from "./cartesian-stacks";
-import { formatChartNumber } from "../chartOptions";
-import { composedMetricStyle } from "../../../shared/chart-appearance";
+import { formatChartNumber } from "../chart-number";
+import {
+  composedMetricStyle,
+  supportsChartStacking,
+} from "../../../shared/chart-appearance";
 import type { ChartPlotProps } from "./plot-types";
 
 /** Adapted from Bklit UI's series-bar-layout.ts. Allow subpixel bins on dense boards. */
@@ -25,13 +29,9 @@ export function seriesBarLayout(slot: number, count: number) {
   return { gap, width, groupWidth: count * width + (count - 1) * gap };
 }
 
-interface Point {
-  category: number;
-  value: number | null;
+interface Point extends BandPoint {
   display?: string;
   color?: string;
-  base: number;
-  end: number;
   outer: boolean;
 }
 
@@ -56,7 +56,8 @@ export function cartesianGeometry(
       if (value !== null) magnitude = Math.max(magnitude, Math.abs(value));
   const unit =
     magnitude > 1e290 || (magnitude > 0 && magnitude < 1e-290) ? magnitude : 1;
-  const stacked = spec.kind === "bar" && Boolean(spec.stacked && spec.series);
+  const stacked =
+    supportsChartStacking(spec.kind) && Boolean(spec.stacked && spec.series);
   const stacks = stacked ? cartesianStacks(series, spec, unit) : undefined;
   let min = 0,
     max = 0;
@@ -76,6 +77,7 @@ export function cartesianGeometry(
       max = Math.max(max, end);
       return {
         base: segment?.base ?? 0,
+        oppositeBase: segment?.oppositeBase ?? 0,
         end,
         outer: segment?.outer ?? (value !== null && value !== 0),
         category: categories.get(key)!,
@@ -189,13 +191,21 @@ export function cartesianGeometry(
           : 0;
       const path = {
         x: (point: Point) => center(point.category),
-        y: (point: Point) => scale(point.value!),
+        y: (point: Point) => axis(point.end),
         defined: (point: Point) => point.value !== null,
-        curve: curveMonotoneX,
+        // Shared interpolation keeps neighbouring bands flush, including at the ends of null runs.
+        curve: stacked ? curveBumpX : curveMonotoneX,
       };
-      const stroke = m.style === "bar" ? "" : linePathD(m.points, path);
+      const pathPoints =
+        stacked && m.style === "area" ? splitSignedArea(m.points) : m.points;
+      const stroke = m.style === "bar" ? "" : linePathD(pathPoints, path);
       const fill =
-        m.style === "area" ? areaClosedD(m.points, { ...path, y0: zero }) : "";
+        m.style === "area"
+          ? areaClosedD(pathPoints, {
+              ...path,
+              y0: (point) => axis(point.base),
+            })
+          : "";
       const points = m.points.map(({ base, end, ...point }) => ({
         ...point,
         basePx: axis(base),

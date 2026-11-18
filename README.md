@@ -105,6 +105,6 @@ SQLite и ключ шифрования находятся в `PROJECT/.miracle/
 - [Разработка](CONTRIBUTING.md) · [Публикация](docs/releasing.md).
 - [Ошибки и предложения](https://github.com/Manannikov-Nikita/miracle/issues/new/choose) · [Безопасность](SECURITY.md).
 
-Стек: React, TypeScript, Vite, Monaco, React Flow, ECharts, AG Grid Community, TanStack Table/Virtual, Radix; Node.js 24, Fastify, SQLite и DuckDB для вычислений таблиц.
+Стек: React, TypeScript, Vite, Monaco, React Flow, Bklit UI и D3 для SVG-графиков, AG Grid Community, TanStack Table/Virtual, Radix; Node.js 24, Fastify, SQLite и DuckDB для вычислений таблиц.
 
 [Apache-2.0](LICENSE). Лицензии зависимостей — [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

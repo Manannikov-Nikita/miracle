@@ -158,6 +158,9 @@ it("keeps extreme segment coordinates finite, including cancellation of otherwis
   );
   expect(zero.stackTotals[0].value).toBe(0);
   expect(zero.stackTotals[0].y).toBe(zero.marks[1].points[0].endPx);
+  const overflow = geometry(series.slice(0, 2), { ...spec, y: ["sales"] });
+  expect(overflow.stackTotals).toHaveLength(0);
+  expect(Number.isFinite(overflow.marks[1].points[0].endPx)).toBe(true);
 });
 
 it("reserves outside room for signed net labels even when segment labels and axes are hidden", () => {

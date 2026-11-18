@@ -8,6 +8,7 @@ import type { ChartSpec } from "../../shared/types";
 import {
   LoadingBars,
   LoadingCurve,
+  LoadingStackedCurves,
   LoadingMatrix,
   LoadingPoints,
   type LoadingSeries,
@@ -169,8 +170,12 @@ export function SkeletonMarks({
   const stackedBar = kind === "bar" && !!spec?.series && !!spec.stacked;
   const barSeries = styles.filter((s) => s.mark === "bar");
   const bars = stackedBar ? barSeries : barSeries.slice(0, 6);
-  const areas = styles.filter((s) => s.mark === "area").slice(0, 4);
-  const lines = styles.filter((s) => s.mark === "line").slice(0, 4);
+  const stackedPaths =
+    (kind === "area" || kind === "line") && !!spec?.series && !!spec.stacked;
+  const areaSeries = styles.filter((s) => s.mark === "area");
+  const lineSeries = styles.filter((s) => s.mark === "line");
+  const areas = stackedPaths ? areaSeries : areaSeries.slice(0, 4);
+  const lines = stackedPaths ? lineSeries : lineSeries.slice(0, 4);
   const scatter = styles.filter((s) => s.mark === "scatter").slice(0, 6);
 
   return (
@@ -209,16 +214,26 @@ export function SkeletonMarks({
         <LoadingSweep>
           {(pass) => (
             <>
-              {areas.map(({ color, index }) => (
-                <LoadingCurve
-                  key={index}
+              {stackedPaths && areas.length > 0 ? (
+                <LoadingStackedCurves
                   kind="area"
-                  color={color}
-                  index={index}
-                  pass={pass}
+                  series={areas}
+                  count={n}
                   baseline={zero}
+                  pass={pass}
                 />
-              ))}
+              ) : (
+                areas.map(({ color, index }) => (
+                  <LoadingCurve
+                    key={index}
+                    kind="area"
+                    color={color}
+                    index={index}
+                    pass={pass}
+                    baseline={zero}
+                  />
+                ))
+              )}
               {bars.length > 0 && (
                 <LoadingBars
                   series={bars}
@@ -238,9 +253,18 @@ export function SkeletonMarks({
           )}
         </LoadingSweep>
       )}
-      {lines.map(({ color, index }) => (
-        <LoadingCurve key={index} kind="line" color={color} index={index} />
-      ))}
+      {stackedPaths && lines.length > 0 ? (
+        <LoadingStackedCurves
+          kind="line"
+          series={lines}
+          count={n}
+          baseline={zero}
+        />
+      ) : (
+        lines.map(({ color, index }) => (
+          <LoadingCurve key={index} kind="line" color={color} index={index} />
+        ))
+      )}
     </svg>
   );
 }

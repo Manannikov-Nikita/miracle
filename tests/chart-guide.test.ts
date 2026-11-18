@@ -3,7 +3,9 @@ import { chartGuide, chartInputSchema } from "../src/server/chart-guide";
 import { composedMetricStyle } from "../src/shared/chart-appearance";
 import { chartSpecSchema } from "../src/shared/board-schema";
 import { chartSeries } from "../src/client/board/model";
-import { chartOptions } from "../src/client/board/chartOptions";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import BoardChartPlot from "../src/client/board/BoardChartPlot";
 import { preserveResizeAspect } from "../src/client/board/resize-aspect";
 import type { Cell } from "../src/shared/types";
 
@@ -11,21 +13,18 @@ it("renders the MCP guide example with its documented group colors and controls"
   const { columns, rows, chart } = chartGuide.example;
   const spec = chartSpecSchema.parse(chart);
   const series = chartSeries(columns, rows as Cell[][], spec);
-  const option = chartOptions(columns, spec, series);
+  const svg = renderToStaticMarkup(
+    createElement(BoardChartPlot, { columns, spec, series, label: "Example" }),
+  );
   expect(series.map((item) => item.name)).toEqual([
     "Revenue · Online",
     "Revenue · Stores",
   ]);
-  expect(option.series.map((item) => item.itemStyle.color)).toEqual([
-    "#82aaff",
-    "#8ec9b0",
-  ]);
-  expect(option.yAxis.axisLabel.show).toBe(false);
-  expect(option.yAxis.splitLine.show).toBe(false);
-  expect(option.series[0].label.show).toBe(true);
-  expect(option.series[0].label.formatter({ value: ["October", 320] })).toBe(
-    "320",
-  );
+  expect(svg).toContain('fill="#82aaff"');
+  expect(svg).toContain('fill="#8ec9b0"');
+  expect(svg).not.toContain('class="bk-grid"');
+  expect(svg).not.toContain(">Revenue</text>");
+  expect(svg).toMatch(/class="bk-(?:value|inside)"[^>]*>320</);
 });
 
 it("advertises the same accepted HEX casing as persistence", () => {

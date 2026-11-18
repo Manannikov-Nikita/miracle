@@ -1,6 +1,6 @@
 import { type CSSProperties, type ReactNode } from "react";
 import type { ChartSpec } from "../../../shared/types";
-import { formatChartNumber } from "../chartOptions";
+import { formatChartNumber } from "../chart-number";
 import { presentationColors } from "../presentation-colors";
 import { truncateTick } from "./cartesian-geometry";
 import { barRect, type Geometry, type Sample } from "./cartesian-focus";

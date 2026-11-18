@@ -6,51 +6,26 @@ import ResultView from "../src/client/board/ResultView";
 import type { ChartSpec, ResultSet } from "../src/shared/types";
 import { api, getResultRows } from "../src/client/api";
 
-const renderer = vi.hoisted(() => ({
-  fail: "" as "" | "init" | "initAfterRegistration" | "setOption" | "resize",
-  instances: [] as {
-    host: HTMLElement;
-    disposed: boolean;
-    dispose: ReturnType<typeof vi.fn>;
-  }[],
-}));
-
-vi.mock("echarts", () => ({
-  init(host: HTMLElement) {
-    function checkFailure(stage: typeof renderer.fail) {
-      if (renderer.fail === stage) {
-        renderer.fail = "";
-        throw new Error(`Renderer failed (${stage})`);
-      }
-    }
-    checkFailure("init");
-    host.appendChild(document.createElement("canvas"));
-    const chart = {
-      host,
-      disposed: false,
-      setOption() {
-        checkFailure("setOption");
+const renderer = vi.hoisted(() => ({ fail: false, attempts: 0 }));
+vi.mock(
+  "../src/client/board/chart-kit/cartesian-geometry",
+  async (original) => {
+    const geometry =
+      await original<
+        typeof import("../src/client/board/chart-kit/cartesian-geometry")
+      >();
+    return {
+      ...geometry,
+      cartesianGeometry: (
+        ...args: Parameters<typeof geometry.cartesianGeometry>
+      ) => {
+        renderer.attempts++;
+        if (renderer.fail) throw new Error("Cannot draw chart");
+        return geometry.cartesianGeometry(...args);
       },
-      resize() {
-        checkFailure("resize");
-      },
-      dispose: vi.fn(() => {
-        // Both real ZRender painters clear their entire root on disposal.
-        // Keep that DOM side effect while avoiding canvas APIs in jsdom.
-        host.innerHTML = "";
-        chart.disposed = true;
-      }),
     };
-    renderer.instances.push(chart);
-    checkFailure("initAfterRegistration");
-    return chart;
   },
-  getInstanceByDom(host: HTMLElement) {
-    return renderer.instances.findLast(
-      (chart) => chart.host === host && !chart.disposed,
-    );
-  },
-}));
+);
 
 const result: ResultSet = {
   id: "chart-result",
@@ -78,8 +53,6 @@ const valid: ChartSpec = {
   y: ["revenue"],
   legend: true,
 };
-// Numeric scatter uses the compatibility renderer and exercises its real
-// lifecycle, while the line fixture above exercises SVG through ResultView.
 const scatter: ChartSpec = { ...valid, kind: "scatter", x: "revenue" };
 const invalidSettings: [string, ChartSpec, RegExp][] = [
   ["the final Y field is unchecked", { ...valid, y: [] }, /столбцы X и Y/],
@@ -95,16 +68,13 @@ describe("chart settings validation lifecycle", () => {
   let root: Root;
   let uncaught: unknown[];
   let observers: Set<ResizeObserverCallback>;
-  let loggedErrors: unknown[];
 
   beforeEach(() => {
-    renderer.fail = "";
-    renderer.instances = [];
+    renderer.fail = false;
+    renderer.attempts = 0;
     observers = new Set();
-    loggedErrors = [];
-    vi.spyOn(console, "error").mockImplementation((...args) =>
-      loggedErrors.push(...args),
-    );
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(300);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", {
       configurable: true,
@@ -130,6 +100,7 @@ describe("chart settings validation lifecycle", () => {
     document.body.appendChild(container);
     root = createRoot(container, {
       onUncaughtError: (error) => uncaught.push(error),
+      onCaughtError: () => {},
     });
   });
 
@@ -194,52 +165,22 @@ describe("chart settings validation lifecycle", () => {
     },
   );
 
-  it.each(["init", "initAfterRegistration", "setOption", "resize"] as const)(
-    "keeps renderer %s failures local and supports retry",
-    async (stage) => {
-      if (stage === "resize") {
-        await render(scatter);
-        renderer.fail = stage;
-        await act(async () => {
-          for (const callback of [...observers])
-            callback([], {} as ResizeObserver);
-        });
-      } else {
-        renderer.fail = stage;
-        await render(scatter);
-      }
-      expect(uncaught).toEqual([]);
-      expect(container.querySelector("h1")?.textContent).toBe("Доска");
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "Не удалось отобразить график.",
-      );
-      const details = container.querySelector<HTMLDetailsElement>("details");
-      expect(details).not.toBeNull();
-      expect(details?.open).toBe(false);
-      await act(async () => details!.querySelector("summary")!.click());
-      expect(details?.open).toBe(true);
-      expect(details?.querySelector("pre")?.textContent).toBe(
-        `Renderer failed (${stage})`,
-      );
-      expect(
-        loggedErrors.some(
-          (error) =>
-            error instanceof Error &&
-            error.message === `Renderer failed (${stage})`,
-        ),
-      ).toBe(true);
-      if (stage === "initAfterRegistration")
-        expect(renderer.instances[0].dispose).toHaveBeenCalledTimes(1);
-      const retry = [...container.querySelectorAll("button")].find((button) =>
-        /Повторить/.test(button.textContent ?? ""),
-      );
-      expect(retry).toBeDefined();
-      await act(async () => retry!.click());
-      expect(container.querySelector('[role="alert"]')).toBeNull();
-      expect(container.querySelector('[role="img"]')).not.toBeNull();
-      expect(uncaught).toEqual([]);
-    },
-  );
+  it("contains drawing failures and retries the SVG plot", async () => {
+    renderer.fail = true;
+    await render(valid);
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Не удалось отобразить график.");
+    const details = alert!.querySelector<HTMLDetailsElement>("details")!;
+    expect(details.open).toBe(false);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.querySelector("pre")?.textContent).toBe("Cannot draw chart");
+    renderer.fail = false;
+    await act(async () => alert!.querySelector("button")!.click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('svg[role="img"]')).toBeTruthy();
+    expect(container.querySelector("h1")?.textContent).toBe("Доска");
+    expect(uncaught).toEqual([]);
+  });
 
   it.each(["snapshot", "chart"])(
     "explains a %s read failure, keeps its details collapsed and retries the read",
@@ -269,39 +210,38 @@ describe("chart settings validation lifecycle", () => {
   );
 
   it("recovers from an update failure when settings change without retrying unchanged settings", async () => {
-    await render(scatter);
-    const failedSetting: ChartSpec = { ...scatter, showLabels: true };
-    renderer.fail = "setOption";
+    await render(valid);
+    const failedSetting: ChartSpec = { ...valid, showLabels: true };
+    renderer.fail = true;
     await render(failedSetting);
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeTruthy();
+    const attempts = renderer.attempts;
     await render(failedSetting);
-    expect(renderer.instances).toHaveLength(1);
-    expect(container.querySelector('[role="alert"]')).not.toBeNull();
-
-    await render({ ...scatter, legend: false });
+    expect(renderer.attempts).toBe(attempts);
+    renderer.fail = false;
+    await render({ ...valid, legend: false });
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(container.querySelector('[role="img"]')).not.toBeNull();
-    expect(container.querySelector("h1")?.textContent).toBe("Доска");
+    expect(container.querySelector('svg[role="img"]')).toBeTruthy();
     expect(uncaught).toEqual([]);
   });
 
-  it("disposes every chart exactly once across settings changes, validation and unmount", async () => {
+  it("disconnects plot observers across chart types, validation, table view and unmount", async () => {
     await render(scatter);
+    expect(
+      container.querySelector('.bk-chart[data-kind="scatter"] svg[role="img"]'),
+    ).toBeTruthy();
     await render({ ...scatter, legend: false });
     await render(valid);
-    expect(container.querySelector("svg[role='img']")).not.toBeNull();
-    expect(renderer.instances[0].dispose).toHaveBeenCalledTimes(1);
-    await render(scatter);
+    expect(
+      container.querySelector('.bk-chart[data-kind="line"] svg[role="img"]'),
+    ).toBeTruthy();
     await render({ ...valid, y: [] });
-    await render(scatter);
+    expect(container.querySelector(".bk-chart")).toBeNull();
     await render(scatter, "table");
-    expect(container.querySelector("table")).not.toBeNull();
+    expect(container.querySelector("table")).toBeTruthy();
     await render(scatter);
-    expect(container.querySelector('[role="img"]')).not.toBeNull();
-    await act(async () => root.unmount());
-    expect(renderer.instances.length).toBeGreaterThan(0);
-    for (const chart of renderer.instances)
-      expect(chart.dispose).toHaveBeenCalledTimes(1);
+    expect(observers.size).toBeGreaterThan(0);
+    await act(async () => root.render(null));
     expect(observers.size).toBe(0);
   });
 });

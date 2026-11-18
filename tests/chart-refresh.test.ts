@@ -7,19 +7,6 @@ import ResultView from "../src/client/board/ResultView";
 import type { ChartSpec, ResultPage, ResultSet } from "../src/shared/types";
 
 vi.mock("../src/client/api", () => ({ api: vi.fn(), getResultRows: vi.fn() }));
-// Native scatter's canvas lifecycle has its own chart-legend-options tests.
-vi.mock("echarts", () => ({
-  init: () => ({
-    getOption: () => ({}),
-    setOption() {},
-    on() {},
-    off() {},
-    clear() {},
-    resize() {},
-    dispose() {},
-  }),
-  getInstanceByDom: () => undefined,
-}));
 const chart: ChartSpec = { kind: "line", x: "x", y: ["y"], legend: true };
 function page(id: string, count: number): ResultPage {
   const rows = Array.from({ length: count }, (_, i) => [String(i), i]);
@@ -284,6 +271,9 @@ it.each([
     await act(async () => metadata.resolve(snapshot));
     assertMarks();
     await act(async () => data.resolve(snapshot));
+    expect(
+      host.querySelector(`.bk-chart[data-kind="${kind}"] svg[role="img"]`),
+    ).not.toBeNull();
     expect(host.querySelector(".chart-skeleton")).toBeNull();
     await render("first", true, spec);
     assertMarks();

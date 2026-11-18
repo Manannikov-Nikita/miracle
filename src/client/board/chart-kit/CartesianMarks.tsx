@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { ChartSpec } from "../../../shared/types";
 import type { cartesianGeometry } from "./cartesian-geometry";
-import { formatChartNumber } from "../chartOptions";
+import { formatChartNumber } from "../chart-number";
 import { barRect, type Sample } from "./cartesian-focus";
 import "./hover-bar.css";
 import StackedBarMarks from "./StackedBarMarks";
@@ -53,7 +53,7 @@ export default memo(function CartesianMarks({
   }, [emphasizedBars, g]);
 
   return useMemo(() => {
-    if (g.stacked)
+    if (g.stacked && spec.kind === "bar")
       return (
         <StackedBarMarks g={g} spec={spec} width={width} register={register} />
       );
@@ -63,7 +63,13 @@ export default memo(function CartesianMarks({
       const inside = spec.labelPosition === "inside" && m.style === "bar";
       return (
         <g key={m.key} data-series-style={m.style}>
-          {m.fill && <path d={m.fill} fill={m.color} fillOpacity=".18" />}
+          {m.fill && (
+            <path
+              d={m.fill}
+              fill={m.color}
+              fillOpacity={g.stacked ? 0.38 : 0.18}
+            />
+          )}
           {m.stroke && (
             <LinePath
               className="bk-line"
@@ -78,7 +84,7 @@ export default memo(function CartesianMarks({
           {m.points.map((p, i) => {
             if (p.value === null) return null;
             const pos = g.center(p.category);
-            const v = g.scale(p.value);
+            const v = p.endPx;
             const start = pos + m.offset;
             const length = Math.abs(v - zero);
             const color = p.color ?? m.color;

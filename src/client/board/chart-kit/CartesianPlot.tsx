@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { formatChartNumber } from "../chartOptions";
+import { formatChartNumber } from "../chart-number";
 import ChartTooltip from "./ChartTooltip";
 import CartesianFocus from "./CartesianFocus";
 import {

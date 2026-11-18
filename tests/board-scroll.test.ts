@@ -10,7 +10,7 @@ import ArtifactNode, {
 import type { BoardNodeData } from "../src/shared/types";
 
 // Keep ArtifactNode, ResultView and XYFlow's native wheel handling real.
-// Only the remote snapshot and canvas drawing need substitutes in jsdom.
+// Fail the drawing step only for the error-detail scrolling case.
 const failure = vi.hoisted(() => ({ stage: "" }));
 vi.mock("../src/client/api", () => {
   const snapshot = async () => ({
@@ -39,21 +39,25 @@ vi.mock("../src/client/api", () => {
   };
   return { getResultRows: () => load("snapshot"), api: () => load("data") };
 });
-vi.mock("echarts", () => ({
-  init(host: HTMLElement) {
-    host.appendChild(document.createElement("canvas"));
+vi.mock(
+  "../src/client/board/chart-kit/cartesian-geometry",
+  async (original) => {
+    const geometry =
+      await original<
+        typeof import("../src/client/board/chart-kit/cartesian-geometry")
+      >();
     return {
-      setOption() {
+      ...geometry,
+      cartesianGeometry: (
+        ...args: Parameters<typeof geometry.cartesianGeometry>
+      ) => {
         if (failure.stage === "renderer")
           throw new Error("Renderer failed\n".repeat(100));
-      },
-      resize() {},
-      dispose() {
-        host.replaceChildren();
+        return geometry.cartesianGeometry(...args);
       },
     };
   },
-}));
+);
 
 const nodeTypes = { artifact: ArtifactNode };
 const chart: BoardNodeData = {
@@ -234,9 +238,7 @@ describe("board trackpad scrolling", () => {
       await render(
         stage === "validation"
           ? { ...chart, chart: { ...chart.chart!, y: [] } }
-          : stage === "renderer"
-            ? { ...chart, chart: { ...chart.chart!, kind: "scatter", x: "y" } }
-            : chart,
+          : chart,
       );
       const details = host.querySelector<HTMLDetailsElement>("details");
       expect(details).not.toBeNull();

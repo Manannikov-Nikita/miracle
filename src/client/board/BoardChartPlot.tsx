@@ -1,5 +1,6 @@
 import {
   Component,
+  useEffect,
   useMemo,
   useState,
   type CSSProperties,
@@ -7,34 +8,27 @@ import {
 } from "react";
 import { chartSeriesColor } from "../../shared/chart-appearance";
 import { ErrorBox } from "../components/UI";
-import ChartCanvas from "./ChartCanvas";
 import ChartSkeleton from "./ChartSkeleton";
-import { chartOptions } from "./chartOptions";
+import ScatterPlot from "./chart-kit/ScatterPlot";
 import { presentationColors } from "./presentation-colors";
 import CartesianPlot from "./chart-kit/CartesianPlot";
 import MatrixPlot from "./chart-kit/MatrixPlot";
 import TrendPlot from "./chart-kit/TrendPlot";
 import type { ChartPlotProps } from "./chart-kit/plot-types";
+import type { ChartKind } from "../../shared/types";
 import "./chart-kit/charts.css";
 
 type Props = Omit<ChartPlotProps, "colors">;
 
-function CompatibilityPlot({
-  columns,
-  spec,
-  series,
-  presentationBackground,
-  label,
-  loading,
-}: Props) {
-  const option = useMemo(
-    () => chartOptions(columns, spec, series, presentationBackground),
-    [columns, spec, series, presentationBackground],
-  );
-  return (
-    <ChartCanvas option={option} spec={spec} label={label} loading={loading} />
-  );
-}
+const plots = {
+  bar: CartesianPlot,
+  line: CartesianPlot,
+  area: CartesianPlot,
+  composed: CartesianPlot,
+  heatmap: MatrixPlot,
+  sparkline: TrendPlot,
+  scatter: ScatterPlot,
+} satisfies Record<ChartKind, (props: ChartPlotProps) => ReactNode>;
 
 class PlotBoundary extends Component<
   { children: ReactNode; reset: Props },
@@ -87,6 +81,18 @@ function ChartKitPlot(props: Props) {
       })),
     [series, spec],
   );
+  useEffect(() => {
+    if (props.loading) return;
+    setHidden((previous) => {
+      if (!previous.size) return previous;
+      const remaining = new Set(
+        entries
+          .filter((entry) => previous.has(entry.key))
+          .map((entry) => entry.key),
+      );
+      return remaining.size === previous.size ? previous : remaining;
+    });
+  }, [entries, props.loading]);
   const data = useMemo(() => {
     const visible = entries.filter(
       (entry) => !spec.legend || !hidden.has(entry.key),
@@ -96,14 +102,11 @@ function ChartKitPlot(props: Props) {
       colors: visible.map((entry) => entry.color),
     };
   }, [entries, hidden, spec.legend]);
-  const ink = presentationColors(presentationBackground ?? "#202124");
+  const ink = presentationBackground
+    ? presentationColors(presentationBackground)
+    : undefined;
   const position = spec.legendPosition ?? "top";
-  const Plot =
-    spec.kind === "heatmap"
-      ? MatrixPlot
-      : spec.kind === "sparkline"
-        ? TrendPlot
-        : CartesianPlot;
+  const Plot = plots[spec.kind];
   return (
     <div
       className="board-chart bk-chart"
@@ -111,9 +114,9 @@ function ChartKitPlot(props: Props) {
       data-legend-position={position}
       style={
         {
-          "--bk-text": ink.text,
-          "--bk-muted": ink.muted,
-          "--bk-grid": ink.grid,
+          "--bk-text": ink?.text ?? "var(--board-text, #eeeff0)",
+          "--bk-muted": ink?.muted ?? "var(--board-muted, #a9adb1)",
+          "--bk-grid": ink?.grid ?? "var(--board-border, #3b3e43)",
           "--bk-surface":
             presentationBackground ?? "var(--board-surface, #27292d)",
         } as CSSProperties
@@ -148,7 +151,7 @@ function ChartKitPlot(props: Props) {
         </div>
       )}
       <div className="bk-plot">
-        {props.loading && !data.series.length ? (
+        {props.loading && !entries.length ? (
           <ChartSkeleton
             spec={spec}
             count={series[0]?.xCategories?.length ?? series[0]?.data.length}
@@ -166,16 +169,9 @@ function ChartKitPlot(props: Props) {
 }
 
 export default function BoardChartPlot(props: Props) {
-  const { spec } = props;
-  // ECharts handles the numeric scatter axis and stacked line/area paths.
-  const legacy =
-    spec.kind === "scatter" ||
-    ((spec.kind === "line" || spec.kind === "area") &&
-      spec.stacked &&
-      spec.series);
   return (
     <PlotBoundary reset={props}>
-      {legacy ? <CompatibilityPlot {...props} /> : <ChartKitPlot {...props} />}
+      <ChartKitPlot {...props} />
     </PlotBoundary>
   );
 }

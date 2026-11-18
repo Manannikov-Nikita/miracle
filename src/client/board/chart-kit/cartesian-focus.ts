@@ -87,6 +87,12 @@ export function pointerFocus(
         g.horizontal ? s.x : s.y,
       );
       distance = Math.hypot(side, end) + 1;
+    } else if (g.stacked && s.mark.style === "area") {
+      // Prefer the band under the pointer. Where different metrics overlap,
+      // the distance to their cumulative line breaks the tie.
+      distance =
+        distanceToInterval(y, s.point.basePx, s.point.endPx) +
+        Math.min(0.5, Math.abs(y - s.y) / Math.max(1, g.bottom - g.top));
     }
     if (distance < best) {
       best = distance;

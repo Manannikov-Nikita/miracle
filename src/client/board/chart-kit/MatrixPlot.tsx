@@ -8,7 +8,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { formatChartNumber } from "../chartOptions";
+import { formatChartNumber } from "../chart-number";
 import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
 import { SkeletonMarks } from "../ChartSkeleton";
 import { metricText, usePlotViewport } from "./compact-plot";

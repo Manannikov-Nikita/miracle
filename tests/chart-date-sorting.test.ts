@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { chartSeries } from "../src/client/board/model";
 import { tableChartSeries } from "../src/client/board/chartTableModel";
-import { chartOptions } from "../src/client/board/chartOptions";
+import { cartesianGeometry } from "../src/client/board/chart-kit/cartesian-geometry";
 import type { Cell, ChartSpec, Column } from "../src/shared/types";
 import type {
   TableColumnOptions,
@@ -169,7 +169,10 @@ describe("chronological chart sorting", () => {
       [`Дата ${dates[1]}`, "10"],
       [`Дата ${dates[2]}`, "20"],
     ]);
-    expect(chartOptions(columns(), settings, series).xAxis.data).toEqual(dates);
+    expect(
+      cartesianGeometry({ spec: settings, series, colors: [] }, 600, 350)
+        .categories,
+    ).toEqual(dates.map((date) => `Дата ${date}`));
   });
 
   it.each(["line", "horizontal bar"] as const)(
@@ -187,9 +190,13 @@ describe("chronological chart sorting", () => {
         stacked: false,
       });
       const series = chartSeries(columns(), rows, settings);
-      const options = chartOptions(columns(), settings, series);
-      const axis = kind === "line" ? options.xAxis : options.yAxis;
-      expect(axis.data).toEqual(["09.12.2025", "15.01.2026", "01.02.2026"]);
+      const g = cartesianGeometry(
+        { spec: settings, series, colors: [] },
+        600,
+        350,
+      );
+      expect(g.horizontal).toBe(kind === "horizontal bar");
+      expect(g.categories).toEqual(["09.12.2025", "15.01.2026", "01.02.2026"]);
       expect(series[0].data).toEqual([
         ["15.01.2026", 10],
         ["01.02.2026", 20],

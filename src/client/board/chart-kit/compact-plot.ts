@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ChartSpec } from "../../../shared/types";
 import type { ChartSeriesItem } from "../model";
-import { formatChartNumber } from "../chartOptions";
+import { formatChartNumber } from "../chart-number";
 
 /** Board zoom changes screen-space bounds. Geometry uses unscaled CSS pixels. */
 export function usePlotViewport() {
@@ -20,6 +20,7 @@ export function usePlotViewport() {
       );
     };
     measure();
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();

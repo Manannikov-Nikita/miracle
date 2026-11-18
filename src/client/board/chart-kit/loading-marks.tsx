@@ -1,5 +1,6 @@
-import { curveNatural } from "d3-shape";
+import { curveBumpX, curveNatural } from "d3-shape";
 import { useId } from "react";
+import { splitSignedArea, type BandPoint } from "./stacked-area";
 import { seriesBarLayout } from "./cartesian-geometry";
 import { areaClosedD, linePathD } from "./bklit/line-path";
 
@@ -22,24 +23,33 @@ export function LoadingCurve({
   index,
   pass = 0,
   baseline = 1,
+  band,
 }: {
   kind: "line" | "area" | "sparkline";
   color: string;
   index: number;
   pass?: number;
   baseline?: number;
+  band?: BandPoint[];
 }) {
   const id = useId();
   const filled = kind === "area";
-  const points = Array.from({ length: filled ? 14 : 7 }, (_, i) =>
-    filled
-      ? 23 + fractionAt(i, pass + index * 1.7) * 54
-      : 68 - Math.sin(i * 1.15 + index * 1.7) * 20 - i * 3,
-  );
+  const samples = filled ? 14 : 7;
+  const points =
+    (band && filled ? splitSignedArea(band) : band) ??
+    Array.from({ length: samples }, (_, i) => ({
+      category: (100 * i) / (samples - 1),
+      value: 0,
+      base: baseline * 100,
+      end: filled
+        ? 23 + fractionAt(i, pass + index * 1.7) * 54
+        : 68 - Math.sin(i * 1.15 + index * 1.7) * 20 - i * 3,
+    }));
   const path = {
-    x: (_value: number, i: number) => (100 * i) / (points.length - 1),
-    y: (value: number) => value,
-    curve: curveNatural,
+    x: (p: (typeof points)[number]) => p.category,
+    defined: (p: (typeof points)[number]) => p.value !== null,
+    y: (p: (typeof points)[number]) => p.end,
+    curve: band ? curveBumpX : curveNatural,
   };
   return (
     <svg
@@ -51,6 +61,7 @@ export function LoadingCurve({
       <g
         className={filled ? undefined : "chart-skeleton-pulse"}
         data-skeleton-mark={kind}
+        data-stacked={band ? true : undefined}
       >
         {filled && (
           <>
@@ -61,7 +72,7 @@ export function LoadingCurve({
               </linearGradient>
             </defs>
             <path
-              d={areaClosedD(points, { ...path, y0: baseline * 100 })}
+              d={areaClosedD(points, { ...path, y0: (p) => p.base })}
               fill={`url(#${id})`}
             />
           </>
@@ -78,6 +89,72 @@ export function LoadingCurve({
       </g>
     </svg>
   );
+}
+
+/** Illustrative layers use the chart's baseline, category centres and metric groups. */
+export function LoadingStackedCurves({
+  kind,
+  series,
+  count,
+  baseline,
+  pass = 0,
+}: {
+  kind: "line" | "area";
+  series: LoadingSeries[];
+  count: number;
+  baseline: number;
+  pass?: number;
+}) {
+  const groups = new Map<string | undefined, LoadingSeries[]>();
+  for (const layer of series) {
+    const group = groups.get(layer.metricId) ?? [];
+    // Keep the loading silhouette readable for high-cardinality breakdowns.
+    if (group.length < 6) group.push(layer);
+    groups.set(layer.metricId, group);
+  }
+  const samples = Math.max(2, Math.min(14, count));
+  const margin = count > 1 ? 50 / count : 10;
+  return [...groups.values()].map((layers, metric) => {
+    const positive = Array<number>(samples).fill(baseline);
+    const negative = Array<number>(samples).fill(baseline);
+    const mixed = baseline > 0 && baseline < 1;
+    return layers.map((layer, i) => {
+      const band = Array.from({ length: samples }, (_, col) => {
+        const above =
+          baseline === 1 ||
+          (mixed && (layers.length === 1 ? col < samples / 2 : i % 2 === 0));
+        const endpoints = above ? positive : negative;
+        const slots =
+          mixed && layers.length > 1
+            ? above
+              ? Math.ceil(layers.length / 2)
+              : Math.floor(layers.length / 2)
+            : layers.length;
+        const share = (above ? -baseline : 1 - baseline) / slots;
+        const variation =
+          (Math.sin(col * 0.9 + i * 1.2 + metric + pass) + 1) / 2;
+        const base = endpoints[col];
+        const end = base + share * (0.34 + 0.51 * variation);
+        endpoints[col] = end;
+        return {
+          category: margin + ((100 - 2 * margin) * col) / (samples - 1),
+          value: base - end,
+          oppositeBase: 100 * (above ? negative[col] : positive[col]),
+          base: 100 * base,
+          end: 100 * end,
+        };
+      });
+      return (
+        <LoadingCurve
+          key={layer.index ?? i}
+          kind={kind}
+          color={layer.color}
+          index={layer.index ?? i}
+          band={band}
+        />
+      );
+    });
+  });
 }
 
 export function LoadingBars({
@@ -101,7 +178,7 @@ export function LoadingBars({
 }) {
   const slots = Math.max(1, Math.min(count, 64));
   const slot = 100 / slots;
-  // As in chartOptions, each metric has its own stack of breakdowns.
+  // Each metric gets a separate stack of breakdowns.
   const stacks = new Map<string | number, LoadingSeries[]>();
   series.forEach((item, j) => {
     const key = stacked ? (item.metricId ?? j) : j;

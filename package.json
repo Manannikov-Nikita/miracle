@@ -59,7 +59,6 @@
     "concurrently": "^9.2.1",
     "d3-scale": "^4.0.3",
     "d3-shape": "^3.2.1",
-    "echarts": "^6.0.0",
     "hast-util-from-html-isomorphic": "^2.0.0",
     "jsdom": "^29.1.1",
     "katex": "^0.19.1",

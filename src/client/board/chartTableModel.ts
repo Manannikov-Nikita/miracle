@@ -7,7 +7,7 @@ import {
   defaultChart,
   isNumericColumn,
 } from "./model";
-import { formatChartNumber } from "./chartOptions";
+import { formatChartNumber } from "./chart-number";
 
 export const chartTableData = prepareTableData;
 
