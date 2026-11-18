@@ -2578,6 +2578,7 @@ function Workspace({
       inspect: inspectNode,
       metadata: recordMetadata,
       busy: nodeBusy,
+      refreshing: busy,
     }),
     [
       board?.id,
@@ -2597,6 +2598,7 @@ function Workspace({
       inspectNode,
       recordMetadata,
       nodeBusy,
+      busy,
     ],
   );
   const saveState = editable ? store.state : "Только просмотр";
@@ -3676,6 +3678,7 @@ function Workspace({
       {show && store.persisted?.id === show.boardId && (
         <PresentationShow
           board={store.persisted}
+          refreshing={busy}
           initialSlideId={show.slideId}
           onClose={closeShow}
           trigger={show.trigger}

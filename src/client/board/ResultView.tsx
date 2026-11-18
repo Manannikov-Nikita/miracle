@@ -1,15 +1,35 @@
-import { useEffect, useMemo, useState, lazy, Suspense } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  lazy,
+  Suspense,
+  type ComponentProps,
+} from "react";
 import {
   createResultVisualTable,
   type VisualTableSpec,
 } from "../../shared/visual-table";
-import type { Cell, ChartSpec, ResultSet, TableSpec } from "../../shared/types";
+import type {
+  Cell,
+  ChartMetricStyle,
+  ChartSpec,
+  ResultSet,
+  TableSpec,
+} from "../../shared/types";
+import {
+  CHART_METRIC_LIMIT,
+  composedMetricStyle,
+  supportsChartStacking,
+} from "../../shared/chart-appearance";
 import { getResultRows } from "../api";
 import { Select } from "../components/Select";
 import { ErrorBox } from "../components/UI";
 import { isNumericColumn } from "./model";
-import { chartOptions } from "./chartOptions";
-import ChartCanvas from "./ChartCanvas";
+import BoardChartPlot from "./BoardChartPlot";
+import ChartLoadFrame from "./ChartLoadFrame";
 import TableView from "./TableView";
 import ChartTypePicker from "./ChartTypePicker";
 import type { CustomChartSpec } from "../../shared/custom-charts";
@@ -27,56 +47,56 @@ function Chart({
   table,
   visibleColumns,
   presentationBackground,
+  refreshing,
+  waitingForMetadata,
 }: {
   result: ResultSet;
   spec?: ChartSpec;
   table?: TableSpec;
   visibleColumns?: string[];
   presentationBackground?: string;
+  refreshing: boolean;
+  waitingForMetadata: boolean;
 }) {
   const { data, error, preparationError, retry } = useChartTableData(
     result,
     table,
     visibleColumns,
   );
-  const spec = useMemo(
-    () => normalizeChartSpec(data?.columns ?? result.columns, savedSpec),
-    [data?.columns, result.columns, savedSpec],
-  );
   const prepared = useMemo(() => {
-    if (preparationError) return { error: preparationError };
-    if (!data || !data.rows.length) return null;
+    if (waitingForMetadata || !data?.rows.length) return null;
     try {
-      const series = tableChartSeries(data, spec);
-      const createOption = (selected: Record<string, boolean>) =>
-        chartOptions(
-          data.columns,
-          spec,
-          series,
-          presentationBackground,
-          selected,
-        );
+      const spec = normalizeChartSpec(data.columns, savedSpec);
       return {
-        option: chartOptions(
-          data.columns,
+        plot: {
           spec,
-          series,
+          columns: data.columns,
+          series: tableChartSeries(data, spec),
           presentationBackground,
-        ),
-        createOption:
-          spec.kind === "bar" && spec.stacked && spec.series
-            ? createOption
-            : undefined,
+          label: `График: ${spec.kind}${spec.kind === "bar" && spec.orientation === "horizontal" ? ", горизонтальный" : ""}, ${data.rows.length} строк таблицы`,
+        },
       };
-    } catch (e) {
-      return { error: (e as Error).message };
+    } catch (cause) {
+      return { error: cause instanceof Error ? cause.message : String(cause) };
     }
-  }, [data, spec, preparationError, presentationBackground]);
-  if (error || prepared?.error)
+  }, [data, savedSpec, presentationBackground, waitingForMetadata]);
+
+  const waitingForRows = waitingForMetadata || !data;
+  const failure =
+    !waitingForMetadata && (error || preparationError || prepared?.error);
+  const lastPlot = useRef<ComponentProps<typeof BoardChartPlot> | undefined>(
+    undefined,
+  );
+  // Retain exactly the visible plot while both the metadata and full rows are replaced.
+  useLayoutEffect(() => {
+    if (!waitingForRows || failure) lastPlot.current = prepared?.plot;
+  }, [waitingForRows, prepared, failure]);
+
+  if (failure)
     return (
       <ErrorBox
         className="board-error nowheel"
-        error={error || prepared?.error}
+        error={failure}
         title={
           error
             ? "Не удалось загрузить данные графика."
@@ -97,27 +117,19 @@ function Chart({
         }
       />
     );
-  if (!data)
-    return (
-      <div className="board-loading" role="status">
-        Загрузка полного снимка…
-      </div>
-    );
-  if (!data.rows.length)
-    return (
-      <div className="board-loading">
-        {table?.filters?.length
-          ? "Нет строк, подходящих под фильтры."
-          : "В результате нет строк."}
-      </div>
-    );
-  if (!prepared?.option) return null;
+  const plot = waitingForRows ? lastPlot.current : prepared?.plot;
   return (
-    <ChartCanvas
-      option={prepared.option}
-      createOption={prepared.createOption}
-      label={`График: ${spec.kind}${spec.kind === "bar" && spec.orientation === "horizontal" ? ", горизонтальный" : ""}, ${data.rows.length} строк таблицы`}
-    />
+    <ChartLoadFrame busy={refreshing || waitingForRows}>
+      {plot ? (
+        <BoardChartPlot {...plot} />
+      ) : !waitingForRows ? (
+        <div className="board-loading">
+          {table?.filters?.length
+            ? "Нет строк, подходящих под фильтры."
+            : "В результате нет строк."}
+        </div>
+      ) : null}
+    </ChartLoadFrame>
   );
 }
 type ChartSettingsProps = {
@@ -196,8 +208,16 @@ function ChartSettingsFields({
 }) {
   const set = (patch: Partial<ChartSpec>) => onChange({ ...spec, ...patch });
   const horizontal = spec.kind === "bar" && spec.orientation === "horizontal";
-  const categoryAxis = horizontal ? "Ось Y" : "Ось X";
-  const metricAxis = horizontal ? "Ось X" : "Ось Y";
+  const sparkline = spec.kind === "sparkline";
+  const heatmap = spec.kind === "heatmap";
+  const categoryAxis = sparkline ? "Категория" : horizontal ? "Ось Y" : "Ось X";
+  const metricAxis = heatmap
+    ? "Значения ячеек"
+    : sparkline
+      ? "Метрики"
+      : horizontal
+        ? "Ось X"
+        : "Ось Y";
   const sortLabel = horizontal ? "Порядок Y" : "Порядок X";
   const categoryColumn = result.columns.find((column) => column.id === spec.x);
   const typeLabel = horizontal ? "Тип данных Y" : "Тип данных X";
@@ -263,20 +283,48 @@ function ChartSettingsFields({
       <div className="board-y-fields">
         {metricAxis}
         {result.columns.filter(isNumericColumn).map((c) => (
-          <label key={c.id}>
-            <input
-              type="checkbox"
-              checked={spec.y.includes(c.id)}
-              onChange={(e) =>
-                set({
-                  y: e.target.checked
-                    ? [...spec.y, c.id]
-                    : spec.y.filter((id) => id !== c.id),
-                })
-              }
-            />
-            {c.name}
-          </label>
+          <div className="board-chart-metric" key={c.id}>
+            <label>
+              <input
+                type="checkbox"
+                checked={spec.y.includes(c.id)}
+                disabled={
+                  !spec.y.includes(c.id) && spec.y.length >= CHART_METRIC_LIMIT
+                }
+                onChange={(event) =>
+                  set({
+                    y: event.target.checked
+                      ? [...spec.y, c.id]
+                      : spec.y.filter((id) => id !== c.id),
+                  })
+                }
+              />
+              {c.name}
+            </label>
+            {spec.kind === "composed" && spec.y.includes(c.id) && (
+              <Select
+                aria-label={`Вид метрики · ${c.name}`}
+                value={composedMetricStyle(spec, c.id)}
+                disabled={disabled}
+                options={[
+                  { value: "bar", label: "Столбцы" },
+                  { value: "line", label: "Линия" },
+                  { value: "area", label: "Область" },
+                ]}
+                onValueChange={(value) => {
+                  const selectedStyles = Object.entries(
+                    spec.metricStyles ?? {},
+                  ).filter(([id]) => spec.y.includes(id));
+                  set({
+                    metricStyles: {
+                      ...Object.fromEntries(selectedStyles),
+                      [c.id]: value as ChartMetricStyle,
+                    },
+                  });
+                }}
+              />
+            )}
+          </div>
         ))}
       </div>
       <label>
@@ -292,7 +340,7 @@ function ChartSettingsFields({
           ]}
         />
       </label>
-      {spec.kind !== "scatter" && spec.series && (
+      {supportsChartStacking(spec.kind) && spec.series && (
         <label>
           <input
             type="checkbox"
@@ -316,43 +364,73 @@ function ChartSettingsFields({
           ]}
         />
       </label>
+      <div className="board-chart-legend">
+        <label>
+          <input
+            type="checkbox"
+            checked={spec.legend}
+            onChange={(e) => set({ legend: e.target.checked })}
+          />
+          Легенда
+        </label>
+        {spec.legend && (
+          <LegendPositionPicker
+            position={spec.legendPosition}
+            align={spec.legendAlign}
+            disabled={disabled}
+            onChange={set}
+          />
+        )}
+      </div>
       <details className="board-chart-appearance">
         <summary>Оформление</summary>
         <div className="board-chart-appearance-fields">
           <div className="board-chart-visibility">
-            <label>
-              <input
-                type="checkbox"
-                aria-label="Показывать ось X"
-                checked={spec.showXAxis ?? true}
-                onChange={(event) => set({ showXAxis: event.target.checked })}
-              />
-              Ось X
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                aria-label="Показывать ось Y"
-                checked={spec.showYAxis ?? true}
-                onChange={(event) => set({ showYAxis: event.target.checked })}
-              />
-              Ось Y
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={spec.showGrid ?? true}
-                onChange={(event) => set({ showGrid: event.target.checked })}
-              />
-              Сетка
-            </label>
+            {!sparkline && (
+              <>
+                <label>
+                  <input
+                    type="checkbox"
+                    aria-label="Показывать ось X"
+                    checked={spec.showXAxis ?? true}
+                    onChange={(event) =>
+                      set({ showXAxis: event.target.checked })
+                    }
+                  />
+                  Ось X
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    aria-label="Показывать ось Y"
+                    checked={spec.showYAxis ?? true}
+                    onChange={(event) =>
+                      set({ showYAxis: event.target.checked })
+                    }
+                  />
+                  Ось Y
+                </label>
+                {!heatmap && (
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={spec.showGrid ?? true}
+                      onChange={(event) =>
+                        set({ showGrid: event.target.checked })
+                      }
+                    />
+                    Сетка
+                  </label>
+                )}
+              </>
+            )}
             <label>
               <input
                 type="checkbox"
                 checked={spec.showLabels ?? false}
                 onChange={(event) => set({ showLabels: event.target.checked })}
               />
-              Подписи значений
+              {sparkline ? "Последнее значение" : "Подписи значений"}
             </label>
             {spec.kind === "bar" && spec.stacked && spec.series && (
               <label>
@@ -403,22 +481,6 @@ function ChartSettingsFields({
               ]}
             />
           </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={spec.legend}
-              onChange={(e) => set({ legend: e.target.checked })}
-            />
-            Легенда
-          </label>
-          {spec.legend && (
-            <LegendPositionPicker
-              position={spec.legendPosition}
-              align={spec.legendAlign}
-              disabled={disabled}
-              onChange={set}
-            />
-          )}
           <ChartColors
             key={result.id}
             result={result}
@@ -444,6 +506,7 @@ export default function ResultView({
   table,
   onMetadata,
   reportChartStatus,
+  refreshing = false,
   presentationBackground,
   onTableChange,
   visualTable,
@@ -460,6 +523,7 @@ export default function ResultView({
   visibleColumns?: string[];
   table?: TableSpec;
   reportChartStatus?: boolean;
+  refreshing?: boolean;
   presentationBackground?: string;
   onMetadata?: (result: ResultSet) => void;
   onTableChange?: (table: TableSpec) => void;
@@ -470,18 +534,15 @@ export default function ResultView({
 }) {
   const [result, setResult] = useState<ResultSet | null>(null);
   const [rows, setRows] = useState<Cell[][]>([]);
-  const [error, setError] = useState<Error | null>(null);
+  const [failure, setFailure] = useState<{ id: string; error: Error }>();
+  const error = failure?.id === id ? failure.error : undefined;
   const [retry, setRetry] = useState(0);
   const [showCustomTable, setShowCustomTable] = useState(false);
   const [visualError, setVisualError] = useState("");
   useEffect(() => setShowCustomTable(false), [id, view, boardId, nodeId]);
   useEffect(() => {
-    setRows([]);
-    setResult(null);
-  }, [id]);
-  useEffect(() => {
     let live = true;
-    setError(null);
+    setFailure(undefined);
     getResultRows(id, 0, 200)
       .then((page) => {
         if (!live) return;
@@ -490,7 +551,11 @@ export default function ResultView({
         onMetadata?.(page.result);
       })
       .catch((e) => {
-        if (live) setError(e instanceof Error ? e : new Error(String(e)));
+        if (live)
+          setFailure({
+            id,
+            error: e instanceof Error ? e : new Error(String(e)),
+          });
       });
     return () => {
       live = false;
@@ -536,18 +601,22 @@ export default function ResultView({
         </button>
       }
     />
-  ) : !result || result.id !== id ? (
-    <div className="board-loading" role="status">
-      Загрузка снимка…
-    </div>
-  ) : view === "chart" ? (
+  ) : view === "chart" && result ? (
     <Chart
+      refreshing={refreshing}
+      waitingForMetadata={result.id !== id}
       result={result}
       spec={chart}
       table={table}
       visibleColumns={visibleColumns}
       presentationBackground={presentationBackground}
     />
+  ) : view === "chart" ? (
+    <ChartLoadFrame busy />
+  ) : !result || result.id !== id ? (
+    <div className="board-loading" role="status">
+      Загрузка снимка…
+    </div>
   ) : view === "table" && visualTableEnabled && visualTable ? (
     <Suspense fallback={<div className="board-loading">Загрузка таблицы…</div>}>
       <SqlTableView

@@ -7,6 +7,9 @@ const types = [
   { kind: "line", label: "Линии" },
   { kind: "area", label: "Область" },
   { kind: "scatter", label: "Точки" },
+  { kind: "composed", label: "Комбинированный" },
+  { kind: "sparkline", label: "Спарклайн" },
+  { kind: "heatmap", label: "Тепловая карта" },
 ] as const;
 
 function Preview({
@@ -18,7 +21,49 @@ function Preview({
 }) {
   return (
     <svg viewBox="0 0 48 36" fill="none" aria-hidden="true" focusable="false">
-      <path d="M5 4V31H44" stroke="currentColor" opacity="0.35" />
+      {kind !== "sparkline" && kind !== "heatmap" && (
+        <path d="M5 4V31H44" stroke="currentColor" opacity="0.35" />
+      )}
+      {kind === "composed" && (
+        <>
+          <path
+            d="M10 30V20h6v10m6 0V13h6v17m6 0V17h6v13"
+            fill="currentColor"
+            opacity=".48"
+          />
+          <path
+            d="m10 17 13-8 10 3 9-7"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinejoin="round"
+          />
+        </>
+      )}
+      {kind === "sparkline" && (
+        <path
+          d="m3 24 7-3 5 3 7-11 5 5 5-7 5 3 7-8"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
+      )}
+      {kind === "heatmap" && (
+        <g fill="currentColor">
+          {[
+            0.22, 0.48, 0.72, 1, 0.65, 0.34, 0.88, 0.52, 0.4, 0.84, 0.57, 0.28,
+          ].map((opacity, i) => (
+            <rect
+              key={i}
+              x={5 + (i % 4) * 10}
+              y={5 + Math.floor(i / 4) * 9}
+              width="8"
+              height="7"
+              rx="1"
+              opacity={opacity}
+            />
+          ))}
+        </g>
+      )}
       {kind === "bar" &&
         (horizontal ? (
           <g fill="currentColor">
@@ -126,6 +171,7 @@ export default function ChartTypePicker({
                   <span className="board-chart-type-preview">
                     <Preview kind={kind} horizontal={horizontal} />
                   </span>
+                  <span>{label}</span>
                   <DropdownMenu.ItemIndicator className="board-chart-type-check">
                     <Check size={10} weight="bold" aria-hidden="true" />
                   </DropdownMenu.ItemIndicator>

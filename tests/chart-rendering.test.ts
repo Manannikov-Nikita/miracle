@@ -78,6 +78,9 @@ const valid: ChartSpec = {
   y: ["revenue"],
   legend: true,
 };
+// Numeric scatter uses the compatibility renderer and exercises its real
+// lifecycle, while the line fixture above exercises SVG through ResultView.
+const scatter: ChartSpec = { ...valid, kind: "scatter", x: "revenue" };
 const invalidSettings: [string, ChartSpec, RegExp][] = [
   ["the final Y field is unchecked", { ...valid, y: [] }, /столбцы X и Y/],
   [
@@ -195,7 +198,7 @@ describe("chart settings validation lifecycle", () => {
     "keeps renderer %s failures local and supports retry",
     async (stage) => {
       if (stage === "resize") {
-        await render(valid);
+        await render(scatter);
         renderer.fail = stage;
         await act(async () => {
           for (const callback of [...observers])
@@ -203,7 +206,7 @@ describe("chart settings validation lifecycle", () => {
         });
       } else {
         renderer.fail = stage;
-        await render(valid);
+        await render(scatter);
       }
       expect(uncaught).toEqual([]);
       expect(container.querySelector("h1")?.textContent).toBe("Доска");
@@ -266,8 +269,8 @@ describe("chart settings validation lifecycle", () => {
   );
 
   it("recovers from an update failure when settings change without retrying unchanged settings", async () => {
-    await render(valid);
-    const failedSetting: ChartSpec = { ...valid, kind: "bar" };
+    await render(scatter);
+    const failedSetting: ChartSpec = { ...scatter, showLabels: true };
     renderer.fail = "setOption";
     await render(failedSetting);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
@@ -275,7 +278,7 @@ describe("chart settings validation lifecycle", () => {
     expect(renderer.instances).toHaveLength(1);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
 
-    await render({ ...valid, kind: "area" });
+    await render({ ...scatter, legend: false });
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector('[role="img"]')).not.toBeNull();
     expect(container.querySelector("h1")?.textContent).toBe("Доска");
@@ -283,13 +286,17 @@ describe("chart settings validation lifecycle", () => {
   });
 
   it("disposes every chart exactly once across settings changes, validation and unmount", async () => {
+    await render(scatter);
+    await render({ ...scatter, legend: false });
     await render(valid);
-    await render({ ...valid, kind: "bar", legend: false });
+    expect(container.querySelector("svg[role='img']")).not.toBeNull();
+    expect(renderer.instances[0].dispose).toHaveBeenCalledTimes(1);
+    await render(scatter);
     await render({ ...valid, y: [] });
-    await render(valid);
-    await render(valid, "table");
+    await render(scatter);
+    await render(scatter, "table");
     expect(container.querySelector("table")).not.toBeNull();
-    await render(valid);
+    await render(scatter);
     expect(container.querySelector('[role="img"]')).not.toBeNull();
     await act(async () => root.unmount());
     expect(renderer.instances.length).toBeGreaterThan(0);

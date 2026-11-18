@@ -14,11 +14,13 @@ const noop = () => {};
 export default function PresentationShow({
   board,
   initialSlideId,
+  refreshing,
   onClose,
   trigger,
 }: {
   board: Board;
   initialSlideId: string;
+  refreshing?: Record<string, boolean>;
   onClose(): void;
   trigger: HTMLElement;
 }) {
@@ -134,6 +136,7 @@ export default function PresentationShow({
                   boardId={board.id}
                   slide={slide}
                   scale={scale}
+                  refreshing={refreshing}
                 />
               </div>
             </div>

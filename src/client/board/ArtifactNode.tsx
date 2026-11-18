@@ -84,6 +84,7 @@ export const BoardActions = createContext<{
   shapeTransform?: (id: string, patch: ShapeTransformPatch) => void;
   shapeTransformEnd?: (id: string, cancelled: boolean) => void;
   busy: Record<string, boolean>;
+  refreshing?: Record<string, boolean>;
 }>({
   boardId: "",
   editable: false,
@@ -425,6 +426,8 @@ function ArtifactNode({
         )}
         {data.kind === "result" && data.resultSetId && (
           <ResultView
+            key={`${actions.boardId}:${id}`}
+            refreshing={actions.refreshing?.[id]}
             boardId={actions.boardId}
             nodeId={id}
             id={data.resultSetId}

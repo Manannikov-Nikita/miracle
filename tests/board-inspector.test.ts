@@ -892,6 +892,84 @@ describe("board inspector settings integration", () => {
     expect(uncaught).toEqual([]);
   });
 
+  it.each([
+    ["Комбинированный", "composed"],
+    ["Спарклайн", "sparkline"],
+    ["Тепловая карта", "heatmap"],
+  ])("selects %s using the chart type menu", async (label, kind) => {
+    const node = fixture();
+    await render(node);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Тип графика: Линии"]',
+    )!;
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    const option = document.querySelector<HTMLElement>(
+      `[role="menuitemradio"][aria-label="${label}"]`,
+    )!;
+    expect(option.textContent).toContain(label);
+    await act(async () => {
+      option.focus();
+      option.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(current.data.chart).toEqual({ ...node.data.chart, kind });
+    expect(
+      container.querySelector(`[aria-label="Тип графика: ${label}"]`),
+    ).not.toBeNull();
+  });
+
+  it("offers the latest value label on a sparkline while omitting axis controls", async () => {
+    const node = fixture();
+    node.data.chart = { ...node.data.chart!, kind: "sparkline" };
+    await render(node);
+    expect(
+      container.querySelector('[aria-label="Показывать ось X"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Показывать ось Y"]'),
+    ).toBeNull();
+    const latest = checkbox("Последнее значение");
+    expect(latest.checked).toBe(false);
+    await click(latest);
+    expect(current.data.chart?.showLabels).toBe(true);
+    expect(checkbox("Последнее значение").checked).toBe(true);
+  });
+
+  it("saves a composed metric's mark by ID and keeps legend placement when toggling views", async () => {
+    const node = fixture();
+    node.data.chart = {
+      ...node.data.chart!,
+      kind: "composed",
+      legendPosition: "bottom",
+      legendAlign: "end",
+    };
+    await render(node);
+    const label = "Вид метрики · Выручка";
+    expect(select(label).textContent).toBe("Столбцы");
+    await choose(label, "Область");
+    await click(button("Таблица"));
+    await click(button("График"));
+    expect(select(label).textContent).toBe("Область");
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      metricStyles: { revenue: "area" },
+    });
+  });
+
   it.each(["bar", "line", "area"] as const)(
     "toggles %s stacking and preserves it when switching table/chart views",
     async (kind) => {
@@ -913,6 +991,9 @@ describe("board inspector settings integration", () => {
 
   it.each([
     { kind: "scatter" as const, series: "month" },
+    { kind: "composed" as const, series: "month" },
+    { kind: "heatmap" as const, series: "month" },
+    { kind: "sparkline" as const, series: "month" },
     { kind: "bar" as const, series: undefined },
     { kind: "line" as const, series: undefined },
     { kind: "area" as const, series: undefined },

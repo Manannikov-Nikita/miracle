@@ -1,0 +1,67 @@
+.chart-load-frame,
+.chart-load-content {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.chart-load-frame {
+  position: relative;
+}
+
+.chart-load-status {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.chart-load-track {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--board-accent) 15%, transparent);
+}
+
+.chart-load-track::after {
+  content: "";
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--board-accent);
+  animation: chart-load-sweep 1.3s ease-in-out infinite;
+}
+
+.chart-load-caption {
+  display: grid;
+  position: absolute;
+  inset: 0;
+  place-content: center;
+  font-size: 12px;
+  color: var(--board-muted);
+}
+
+.chart-load-caption-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@keyframes chart-load-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(265%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-load-track::after {
+    animation: none;
+    width: 100%;
+  }
+}

@@ -10,7 +10,10 @@ import type {
   Column,
   ResultSet,
 } from "../../shared/types";
-import { chartSeriesColorKey } from "../../shared/chart-appearance";
+import {
+  chartSeriesColorKey,
+  supportsChartStacking,
+} from "../../shared/chart-appearance";
 
 export const emptyDocument = (): BoardDocument => ({
   schemaVersion: 1,
@@ -164,11 +167,11 @@ export function chartSeries(
     ? Object.create(null)
     : undefined;
   const stacked =
-    spec.kind !== "scatter" && spec.stacked && Boolean(spec.series);
+    supportsChartStacking(spec.kind) && spec.stacked && Boolean(spec.series);
+  const heatmap = spec.kind === "heatmap";
   const dateCategory =
     spec.kind !== "scatter" &&
     isDateColumn(columns[xi], columns[xi].options?.dataType);
-  const orderedDates = dateCategory && spec.sort && spec.sort !== "none";
   const compareCategories = (
     a: string | number | null,
     b: string | number | null,
@@ -179,7 +182,8 @@ export function chartSeries(
           ? a - b
           : String(a).localeCompare(String(b), undefined, { numeric: true })) *
         (spec.sort === "desc" ? -1 : 1);
-  const stackedCategories = new Map<string, Set<string | number | null>>();
+  const needsSharedCategories = spec.kind !== "scatter";
+  const seenCategories = new Map<string, Set<string | number | null>>();
   const xCategories = new Set<string>();
   for (const row of rows) {
     const rawX = row[xi];
@@ -195,7 +199,7 @@ export function chartSeries(
       spec.kind === "scatter" ? "metric" : "category",
     ).text;
     if (categoryLabels) categoryLabels[String(x)] = displayX!;
-    if (stacked || orderedDates) xCategories.add(String(x));
+    if (needsSharedCategories) xCategories.add(String(x));
     for (const yi of ys) {
       const rawGroup = si < 0 ? undefined : row[si];
       if (
@@ -213,14 +217,16 @@ export function chartSeries(
               ? "∅ NULL"
               : String(rawGroup);
       const key = `${columns[yi].id}\u0000${JSON.stringify(rawGroup)}`;
-      if (stacked) {
-        const categories = stackedCategories.get(key) ?? new Set();
+      if (stacked || heatmap) {
+        const categories = seenCategories.get(key) ?? new Set();
         if (categories.has(x))
           throw new Error(
-            `Для накопления нужна одна строка на сочетание ${categoryAxis} и разбивки. Сгруппируйте значения в SQL (GROUP BY).`,
+            heatmap
+              ? "Ячейке тепловой карты соответствует несколько значений. Добавьте разбивку или сгруппируйте значения в SQL (GROUP BY)."
+              : `Для накопления нужна одна строка на сочетание ${categoryAxis} и разбивки. Сгруппируйте значения в SQL (GROUP BY).`,
           );
         categories.add(x);
-        stackedCategories.set(key, categories);
+        seenCategories.set(key, categories);
       }
       if (!groups.has(key))
         groups.set(key, {
@@ -255,13 +261,12 @@ export function chartSeries(
       if (series.displayData)
         series.displayData = ordered.map(({ display }) => display!);
     }
-  if (stacked || orderedDates) {
+  if (needsSharedCategories) {
     // A sparse first series may not contain the globally first category.
     // Keep one shared union in source order, or sort the whole union together.
     const categories = [...xCategories];
     if (
-      stacked &&
-      spec.kind !== "bar" &&
+      (heatmap || (stacked && spec.kind !== "bar")) &&
       result.length * categories.length > 5000
     )
       throw new Error(

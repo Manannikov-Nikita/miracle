@@ -143,9 +143,13 @@ export interface QueryRun {
   elapsedMs?: number;
   progress?: string;
 }
-export type ChartKind = "bar" | "line" | "area" | "scatter";
+export type ChartMetricStyle = "bar" | "line" | "area";
+export type ChartKind =
+  ChartMetricStyle | "scatter" | "composed" | "sparkline" | "heatmap";
 export interface ChartSpec {
   kind: ChartKind;
+  /** A composed chart uses the same mark for all breakdowns of a metric. */
+  metricStyles?: Record<string, ChartMetricStyle>;
   orientation?: "vertical" | "horizontal";
   x: string;
   y: string[];

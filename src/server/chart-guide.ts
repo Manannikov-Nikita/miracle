@@ -2,6 +2,7 @@ import { z } from "zod";
 import { chartSpecSchema } from "../shared/board-schema.js";
 import {
   CHART_PALETTES,
+  CHART_METRIC_LIMIT,
   CHART_SERIES_COLOR_KEY_LIMIT,
   CHART_SERIES_COLOR_LIMIT,
   chartSeriesColorKey,
@@ -27,6 +28,12 @@ export const chartInputSchema = {
       ...propertySchema("showTotals"),
       description:
         "Stack totals, independent of segment labels. Defaults to true for bar charts with stacked:true and a series breakdown. Set false to hide; ignored for other chart types and non-stacked charts.",
+    },
+    metricStyles: {
+      ...propertySchema("metricStyles"),
+      maxProperties: CHART_METRIC_LIMIT,
+      description:
+        "Composed charts only. Map numeric metric column IDs to bar, line or area. Without an override the first metric uses bars and subsequent metrics use lines. Each breakdown of a metric shares its mark.",
     },
     seriesColors: {
       ...propertySchema("seriesColors"),
@@ -76,7 +83,9 @@ export const chartGuide = {
   workflow:
     "Read the target with read_board, checking its ID and current revision; follow JSON paging when needed. Read result columns and bounded rows with read_result to verify column IDs and raw group values. board_patch update_node.patch merges node fields and data only one level deep: data.chart is REPLACED, not recursively merged. Spread all current chart fields, then apply requested changes; send a complete chart with kind,x,y,legend. Preserve unrelated settings/source/snapshot. Use current baseRevision and a fresh UUID mutationId for each intended mutation. Reuse mutationId only for an identical retry; reread after REVISION_CONFLICT. Read the board back after saving. Successful persistence is not browser visual verification.",
   controls: {
-    kind: "bar, line, area or scatter. orientation vertical/horizontal applies only to bar.",
+    kind: "bar, line, area, scatter, composed, sparkline or heatmap. orientation vertical/horizontal applies only to bar. Sparkline displays compact trends without axes. Heatmap places categories on X and each metric/breakdown on Y; cell intensity follows its numeric value. Supply one row per category and breakdown.",
+    metricStyles:
+      "For composed charts, use metric column IDs as keys with bar, line or area values. The first metric defaults to bar and others to line.",
     x: "Category column ID; scatter requires a numeric X column. On horizontal bars this category is placed on physical Y.",
     y: "Array of numeric metric column IDs, up to20. At least one is needed to render.",
     series:
@@ -90,7 +99,7 @@ export const chartGuide = {
     showGrid:
       "Boolean, defaulttrue. Controls auxiliary grid lines on numeric axes; false hides them while leaving visible axes intact.",
     showLabels:
-      "Boolean, defaultfalse. Values on bars or points; uses numberFormat, hides overlaps and omits nulls. Stacked labels show each segment's value, not cumulative totals.",
+      "Boolean, defaultfalse. Values on bars, points or heatmap cells. Sparkline labels its latest value. Uses numberFormat, hides overlaps and omits nulls. Stacked labels show each segment's value, not cumulative totals.",
     showTotals:
       "Boolean, defaulttrue for bar with stacked:true and a series breakdown. Shows stack totals independently of showLabels. Set false to hide; ignored for other chart types and non-stacked charts. The preference is retained when switching chart types.",
     labelPosition:
@@ -131,7 +140,7 @@ export const chartGuide = {
   },
   limits: {
     maxPoints: 5000,
-    maxMetrics: 20,
+    maxMetrics: CHART_METRIC_LIMIT,
     maxBoardNodes: 200,
     maxOperations: 200,
   },

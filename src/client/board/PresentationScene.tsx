@@ -16,11 +16,13 @@ function PresentationScene({
   boardId,
   slide,
   scale = 1,
+  refreshing,
 }: {
   document: BoardDocument;
   boardId: string;
   slide: PresentationSlide;
   scale?: number;
+  refreshing?: Record<string, boolean>;
 }) {
   const flowId = useId();
   const viewport = useMemo(() => ({ x: 0, y: 0, zoom: scale }), [scale]);
@@ -40,8 +42,9 @@ function PresentationScene({
       resizeStart: noop,
       resize: noop,
       busy: {},
+      refreshing,
     }),
-    [boardId, slide.background],
+    [boardId, slide.background, refreshing],
   );
   const scene = useMemo(() => {
     const elements = presentationSlideContent(document, slide.id);

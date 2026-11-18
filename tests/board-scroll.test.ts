@@ -159,15 +159,15 @@ describe("board trackpad scrolling", () => {
     await render(chart);
     await wheel(".react-flow__pane", 0, 40);
     expect(flow.getViewport()).toEqual({ x: 0, y: -20, zoom: 1 });
-    await wheel(".board-chart canvas", 0, 60);
+    await wheel(".board-chart svg[role=img]", 0, 60);
     expect(flow.getViewport()).toEqual({ x: 0, y: -50, zoom: 1 });
-    await wheel(".board-chart canvas", 40, -20);
+    await wheel(".board-chart svg[role=img]", 40, -20);
     expect(flow.getViewport()).toEqual({ x: -20, y: -40, zoom: 1 });
   });
 
   it("allows trackpad pinch zoom over a chart", async () => {
     await render(chart);
-    await wheel(".board-chart canvas", 0, -20, true);
+    await wheel(".board-chart svg[role=img]", 0, -20, true);
     expect(flow.getViewport().zoom).toBeGreaterThan(1);
   });
 
@@ -234,7 +234,9 @@ describe("board trackpad scrolling", () => {
       await render(
         stage === "validation"
           ? { ...chart, chart: { ...chart.chart!, y: [] } }
-          : chart,
+          : stage === "renderer"
+            ? { ...chart, chart: { ...chart.chart!, kind: "scatter", x: "y" } }
+            : chart,
       );
       const details = host.querySelector<HTMLDetailsElement>("details");
       expect(details).not.toBeNull();

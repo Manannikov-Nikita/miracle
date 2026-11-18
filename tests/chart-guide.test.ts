@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { chartGuide, chartInputSchema } from "../src/server/chart-guide";
+import { composedMetricStyle } from "../src/shared/chart-appearance";
 import { chartSpecSchema } from "../src/shared/board-schema";
 import { chartSeries } from "../src/client/board/model";
 import { chartOptions } from "../src/client/board/chartOptions";
@@ -71,4 +72,84 @@ it("gives MCP resize examples that match the actual Shift corner geometry", () =
     width: topLeftPatch.width,
     height: topLeftPatch.height,
   });
+});
+
+it("round-trips the new chart kinds and composed marks through the advertised schema", () => {
+  for (const kind of ["composed", "sparkline", "heatmap"]) {
+    const chart = {
+      kind,
+      x: "month",
+      y: ["revenue", "plan", "baseline"],
+      legend: true,
+      legendPosition: "bottom",
+      legendAlign: "end",
+      metricStyles: { plan: "area" },
+    };
+    const saved = chartSpecSchema.parse(JSON.parse(JSON.stringify(chart)));
+    expect(saved).toEqual(chart);
+    expect(saved.y.map((id) => composedMetricStyle(saved, id))).toEqual([
+      "bar",
+      "area",
+      "line",
+    ]);
+  }
+  const chart = chartGuide.example.chart;
+  const invalid = { ...chart, metricStyles: { revenue: "pie" } };
+  expect(chartSpecSchema.safeParse(invalid).success).toBe(false);
+  const tooMany = Object.fromEntries(
+    Array.from({ length: 21 }, (_, i) => [String(i), "bar"]),
+  );
+  expect(
+    chartSpecSchema.safeParse({ ...chart, metricStyles: tooMany }).success,
+  ).toBe(false);
+  expect(chartInputSchema.properties.metricStyles.maxProperties).toBe(20);
+});
+
+it("builds a global category order across sparse series for each standard categorical chart", () => {
+  const { columns, chart } = chartGuide.example;
+  const rows = [
+    ["C", 1, "one"],
+    ["A", 2, "two"],
+    ["B", null, "one"],
+  ];
+  for (const kind of [
+    "line",
+    "bar",
+    "composed",
+    "sparkline",
+    "heatmap",
+  ] as const) {
+    for (const sort of ["none", "asc", "desc"] as const) {
+      const result = chartSeries(columns, rows, { ...chart, kind, sort });
+      expect(result[0].xCategories).toEqual(
+        sort === "none"
+          ? ["C", "A", "B"]
+          : sort === "asc"
+            ? ["A", "B", "C"]
+            : ["C", "B", "A"],
+      );
+      expect(result[1].xCategories).toBe(result[0].xCategories);
+    }
+  }
+});
+
+it("requires unambiguous heatmap cells and bounds the size of sparse matrices", () => {
+  const { columns, chart } = chartGuide.example;
+  const heatmap = { ...chart, kind: "heatmap" as const };
+  const duplicate = [
+    ["A", 1, "region"],
+    ["A", 2, "region"],
+  ];
+  expect(() => chartSeries(columns, duplicate, heatmap)).toThrow(
+    /Ячейке тепловой карты/,
+  );
+  expect(() =>
+    chartSeries(columns, duplicate, {
+      ...heatmap,
+      kind: "sparkline",
+      stacked: true,
+    }),
+  ).not.toThrow();
+  const sparse = Array.from({ length: 71 }, (_, i) => [i, i, String(i)]);
+  expect(() => chartSeries(columns, sparse, heatmap)).toThrow(/5 000/);
 });

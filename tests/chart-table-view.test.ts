@@ -10,13 +10,6 @@ import {
 import type { ResultSet, TableSpec } from "../src/shared/types";
 import { api, getResultRows } from "../src/client/api";
 
-const rendered = vi.hoisted(() => ({ option: undefined as any }));
-vi.mock("../src/client/board/ChartCanvas", () => ({
-  default: ({ option, label }: any) => {
-    rendered.option = option;
-    return createElement("div", { role: "img", "aria-label": label });
-  },
-}));
 vi.mock("../src/client/api", () => ({ api: vi.fn(), getResultRows: vi.fn() }));
 vi.mock("../src/client/components/Select", () => ({
   Select: (props: any) =>
@@ -48,10 +41,15 @@ const rows = [
   ["A", 10, 100],
   ["C", 30, 300],
 ];
-const chart = { kind: "bar" as const, x: "city", y: ["jan"], legend: true };
+const chart = {
+  kind: "bar" as const,
+  x: "city",
+  y: ["jan"],
+  legend: true,
+  showLabels: true,
+};
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  rendered.option = undefined;
   result = {
     id: crypto.randomUUID(),
     columns: [
@@ -91,10 +89,16 @@ async function render(table: TableSpec, onMetadata = vi.fn()) {
   );
 }
 const pointValues = () =>
-  rendered.option.series.flatMap((series: any) =>
-    series.data.map(
-      (point: any) => (Array.isArray(point) ? point : point.value)[1],
-    ),
+  [...host.querySelectorAll(".bk-value")].map((node) =>
+    Number(node.textContent),
+  );
+const axisColor = () =>
+  host
+    .querySelector<HTMLElement>(".bk-chart")
+    ?.style.getPropertyValue("--bk-muted");
+const markColors = () =>
+  [...host.querySelectorAll(".bk-bar")].map((node) =>
+    node.getAttribute("fill"),
   );
 
 it("updates presentation chart contrast when the slide background changes without rereading data", async () => {
@@ -112,17 +116,13 @@ it("updates presentation chart contrast when the slide background changes withou
       ),
     );
   await show("#ffffff");
-  expect(rendered.option.xAxis.axisLabel.color).toBe("#475569");
+  expect(axisColor()).toBe("#475569");
   const reads = vi.mocked(api).mock.calls.length;
   const resultReads = vi.mocked(getResultRows).mock.calls.length;
-  const seriesColors = rendered.option.series.map(
-    (item: any) => item.itemStyle,
-  );
+  const seriesColors = markColors();
   await show("#202124");
-  expect(rendered.option.xAxis.axisLabel.color).toBe("#a9adb1");
-  expect(rendered.option.series.map((item: any) => item.itemStyle)).toEqual(
-    seriesColors,
-  );
+  expect(axisColor()).toBe("#a9adb1");
+  expect(markColors()).toEqual(seriesColors);
   expect(api).toHaveBeenCalledTimes(reads);
   expect(getResultRows).toHaveBeenCalledTimes(resultReads);
 });

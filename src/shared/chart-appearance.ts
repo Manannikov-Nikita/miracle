@@ -1,7 +1,21 @@
-import type { Cell, ChartSpec } from "./types.js";
+import type { Cell, ChartKind, ChartMetricStyle, ChartSpec } from "./types.js";
 
 export const CHART_SERIES_COLOR_KEY_LIMIT = 10000;
 export const CHART_SERIES_COLOR_LIMIT = 5000;
+export const CHART_METRIC_LIMIT = 20;
+
+export function supportsChartStacking(kind: ChartKind) {
+  return kind === "bar" || kind === "line" || kind === "area";
+}
+
+export function composedMetricStyle(
+  spec: Pick<ChartSpec, "metricStyles" | "y">,
+  metricId: string,
+): ChartMetricStyle {
+  const styles = spec.metricStyles;
+  if (styles && Object.hasOwn(styles, metricId)) return styles[metricId];
+  return metricId === spec.y[0] ? "bar" : "line";
+}
 
 export const CHART_PALETTES: {
   id: NonNullable<ChartSpec["palette"]>;
