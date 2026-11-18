@@ -14,6 +14,7 @@ import {
   boardValuesEqual,
   mergeBoardDocuments,
 } from "../shared/board-merge.js";
+import { CHART_POINT_LIMIT } from "../shared/chart-appearance.js";
 import { DEFAULT_CHART_SIZE, firstChartFrame } from "../shared/chart-size.js";
 import { getNodeVisualBounds } from "../shared/board-geometry.js";
 import type { AgentWorkTarget } from "../shared/agent-work.js";
@@ -330,9 +331,14 @@ export class WorkspaceOperations {
         (node) =>
           node.data.resultSetId === resultId && node.data.view === "chart",
       )) {
-        if (node.data.table || node.data.visibleColumns)
+        // Histograms bin the source locally; the raw rows are read through /table.
+        if (
+          node.data.chart?.kind === "histogram" ||
+          node.data.table ||
+          node.data.visibleColumns
+        )
           checkTableSourceMetadata(r.row_count, r.columns.length, r.byte_count);
-        else if (r.row_count > 5000)
+        else if (r.row_count > CHART_POINT_LIMIT)
           throw problem(422, "График превышает лимит 5000 точек");
       }
       for (const node of document.nodes.filter(

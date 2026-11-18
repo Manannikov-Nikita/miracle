@@ -4,6 +4,7 @@ import { ArrowsClockwise, Code, X } from "@phosphor-icons/react";
 import { ChartSettings } from "./ResultView";
 import { defaultChart } from "./model";
 import { firstChartFrame } from "../../shared/chart-size";
+import { CHART_POINT_LIMIT } from "../../shared/chart-appearance";
 import TableSettings from "./TableSettings";
 import { createTableSpec } from "./tableModel";
 import CustomChartDetails from "./CustomChartDetails";
@@ -210,14 +211,24 @@ export default function Inspector({
                 disabled={!editable || !result}
                 aria-pressed={node.data.view === "chart"}
                 onClick={() => {
-                  if (node.data.view === "chart") return;
+                  if (node.data.view === "chart" || !result) return;
+                  const chart = node.data.chart ?? defaultChart(result.columns);
+                  const observation = chart.y[0];
+                  const useHistogram =
+                    !node.data.chart &&
+                    !node.data.table &&
+                    node.data.visibleColumns === undefined &&
+                    result.rowCount > CHART_POINT_LIMIT &&
+                    observation !== undefined;
                   change({
                     ...node,
                     ...firstChartFrame(node),
                     data: {
                       ...node.data,
                       view: "chart",
-                      chart: node.data.chart ?? defaultChart(result!.columns),
+                      chart: useHistogram
+                        ? { ...chart, kind: "histogram", x: observation, y: [] }
+                        : chart,
                     },
                   });
                 }}

@@ -104,6 +104,29 @@ it("round-trips the new chart kinds and composed marks through the advertised sc
   expect(chartInputSchema.properties.metricStyles.maxProperties).toBe(20);
 });
 
+it("advertises the persisted histogram contract and validates bin counts on round trip", () => {
+  const { binCount } = chartGuide.histogram.example;
+  const spec = { ...chartGuide.histogram.example, stacked: true };
+  expect(chartSpecSchema.parse(JSON.parse(JSON.stringify(spec)))).toEqual(spec);
+  expect(
+    chartSpecSchema.parse({ ...spec, binCount: undefined }).binCount,
+  ).toBeUndefined();
+  for (const count of [1, binCount, 100])
+    expect(chartSpecSchema.parse({ ...spec, binCount: count }).binCount).toBe(
+      count,
+    );
+  for (const count of [0, -1, 101, 1.5, "10", null])
+    expect(
+      chartSpecSchema.safeParse({ ...spec, binCount: count }).success,
+    ).toBe(false);
+  expect(chartInputSchema).toMatchObject({
+    properties: {
+      kind: { enum: expect.arrayContaining(["histogram"]) },
+      binCount: { type: "integer", minimum: 1, maximum: 100 },
+    },
+  });
+  expect(chartGuide.controls.binCount).toContain("y: []");
+});
 it("builds a global category order across sparse series for each standard categorical chart", () => {
   const { columns, chart } = chartGuide.example;
   const rows = [

@@ -1,6 +1,13 @@
 import { isDateColumn, isNumericColumn } from "../../shared/column-types";
 import { compareDateValues } from "../../shared/date-values";
 import { DEFAULT_RESULT_SIZE } from "../../shared/chart-size";
+import {
+  autoHistogramBins,
+  histogramBins,
+  histogramBinIndex,
+  type HistogramBin,
+} from "./histogram-bins";
+export type { HistogramBin } from "./histogram-bins";
 import type { TableColumnOptions } from "../../shared/tableTypes";
 export { isNumericColumn } from "../../shared/column-types";
 import type {
@@ -13,6 +20,8 @@ import type {
 } from "../../shared/types";
 import {
   chartSeriesColorKey,
+  HISTOGRAM_BIN_LIMIT,
+  CHART_POINT_LIMIT,
   supportsChartStacking,
 } from "../../shared/chart-appearance";
 
@@ -134,6 +143,8 @@ export interface ChartSeriesItem {
   metricId?: string;
   colorKey?: string;
   xCategories?: string[];
+  /** Shared interval edges for all frequency series; data[i] is [lower, count]. */
+  histogramBins?: HistogramBin[];
   name: string;
   data: [string | number | null, number | null][];
   displayData?: ChartPointDisplay[];
@@ -145,12 +156,97 @@ export type ChartCellFormatter = (
   role: "category" | "metric" | "series",
 ) => { text: string; color?: string };
 
+function histogramSeries(
+  columns: Column[],
+  rows: Cell[][],
+  spec: ChartSpec,
+  formatCell?: ChartCellFormatter,
+): ChartSeriesItem[] {
+  const xi = columns.findIndex((c) => c.id === spec.x);
+  const si = spec.series ? columns.findIndex((c) => c.id === spec.series) : -1;
+  if (xi < 0 || !isNumericColumn(columns[xi]))
+    throw new Error("Выберите числовой столбец X для гистограммы.");
+  if (spec.series && si < 0)
+    throw new Error("Выберите существующий столбец для разбивки.");
+  const requested = spec.binCount;
+  if (
+    requested !== undefined &&
+    (!Number.isInteger(requested) ||
+      requested < 1 ||
+      requested > HISTOGRAM_BIN_LIMIT)
+  )
+    throw new Error(
+      `Число интервалов должно быть целым от 1 до ${HISTOGRAM_BIN_LIMIT}.`,
+    );
+
+  const groupValues = new Map<Cell | undefined, number[]>();
+  const limitError =
+    "Гистограмма ограничена 5 000 значений частоты. Уменьшите число интервалов или групп разбивки.";
+  let count = 0,
+    min = Infinity,
+    max = -Infinity;
+  for (const row of rows) {
+    const value = chartNumber(row[xi] ?? null, columns[xi]);
+    if (value === null) continue;
+    const group = si < 0 ? undefined : (row[si] ?? null);
+    if (group !== null && typeof group === "object")
+      throw new Error("Разбивка не поддерживает массивы и объекты.");
+    let values = groupValues.get(group);
+    if (!values) {
+      if (groupValues.size >= CHART_POINT_LIMIT) throw new Error(limitError);
+      values = [];
+      groupValues.set(group, values);
+    }
+    values.push(value);
+    count++;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  if (!count) return [];
+  const bins =
+    requested === undefined
+      ? autoHistogramBins(
+          min,
+          max,
+          count,
+          Math.min(
+            HISTOGRAM_BIN_LIMIT,
+            Math.floor(CHART_POINT_LIMIT / groupValues.size),
+          ),
+        )
+      : histogramBins(min, max, requested);
+  if (groupValues.size * bins.length > CHART_POINT_LIMIT)
+    throw new Error(limitError);
+  const result: ChartSeriesItem[] = [];
+  for (const [group, values] of groupValues) {
+    const data: [number, number][] = bins.map((bin) => [bin.lower, 0]);
+    for (const value of values) data[histogramBinIndex(bins, value)][1]++;
+    let name = columns[xi].name;
+    if (group !== undefined)
+      name = formatCell
+        ? formatCell(group, columns[si], "series").text
+        : group === null
+          ? "∅ NULL"
+          : String(group);
+    result.push({
+      metricId: spec.x,
+      colorKey: chartSeriesColorKey(spec.x, spec.series, group),
+      name,
+      histogramBins: bins,
+      data,
+    });
+  }
+  return result;
+}
+
 export function chartSeries(
   columns: (Column & { options?: Pick<TableColumnOptions, "dataType"> })[],
   rows: Cell[][],
   spec: ChartSpec,
   formatCell?: ChartCellFormatter,
 ) {
+  if (spec.kind === "histogram")
+    return histogramSeries(columns, rows, spec, formatCell);
   const categoryAxis =
     spec.kind === "bar" && spec.orientation === "horizontal" ? "Y" : "X";
   const xi = columns.findIndex((c) => c.id === spec.x);
@@ -158,7 +254,7 @@ export function chartSeries(
   const si = spec.series ? columns.findIndex((c) => c.id === spec.series) : -1;
   if (xi < 0 || !ys.length || ys.some((i) => i < 0) || (spec.series && si < 0))
     throw new Error("Выберите существующие столбцы X и Y.");
-  if (rows.length * ys.length > 5000)
+  if (rows.length * ys.length > CHART_POINT_LIMIT)
     throw new Error(
       "График ограничен 5 000 точками во всём сохранённом результате. Агрегируйте данные в SQL.",
     );
@@ -267,7 +363,7 @@ export function chartSeries(
     const categories = [...xCategories];
     if (
       (heatmap || (stacked && spec.kind !== "bar")) &&
-      result.length * categories.length > 5000
+      result.length * categories.length > CHART_POINT_LIMIT
     )
       throw new Error(
         "График ограничен 5 000 точками с учётом пропусков. Агрегируйте данные в SQL.",

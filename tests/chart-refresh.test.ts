@@ -400,3 +400,77 @@ it.each(["vertical", "horizontal"] as const)(
     expect(totals()).toEqual(expect.arrayContaining(["13", "8"]));
   },
 );
+
+it("bins the full numeric snapshot and keeps the selected groups when it refreshes", async () => {
+  vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(640);
+  vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(320);
+  const spec: ChartSpec = {
+    kind: "histogram",
+    x: "y",
+    y: [],
+    binCount: 4,
+    series: "x",
+    legend: true,
+  };
+  const saved = page("distribution", 6250);
+  saved.rows = saved.rows.map((_, i) => [
+    i % 2 ? "Юг" : "Север",
+    i % 100 === 0 ? null : i % 41,
+  ]);
+  vi.mocked(getResultRows).mockResolvedValueOnce({
+    ...saved,
+    rows: saved.rows.slice(0, 50),
+  });
+  const full = Promise.withResolvers<ResultPage>();
+  vi.mocked(api).mockReturnValueOnce(full.promise);
+  await render(saved.result.id, false, spec);
+  expect(vi.mocked(api).mock.calls.map(([path]) => path)).toEqual([
+    "/api/result-sets/distribution/table",
+  ]);
+  expect(
+    host.querySelector('.chart-skeleton[data-kind="histogram"]'),
+  ).not.toBeNull();
+  await act(async () => full.resolve(saved));
+  const plottedCount = () =>
+    [...host.querySelectorAll(".bk-histogram-bar")].reduce(
+      (sum, p) => sum + Number(p.getAttribute("data-count")),
+      0,
+    );
+  expect(plottedCount()).toBe(6187);
+  expect(host.querySelectorAll(".bk-histogram-bin")).toHaveLength(4);
+  const keys = [
+    ...host.querySelectorAll<HTMLButtonElement>(".bk-legend button"),
+  ];
+  expect(keys).toHaveLength(2);
+  const south = keys.find((key) => key.textContent?.includes("Юг"))!;
+  await act(async () => south.click());
+  expect(plottedCount()).toBe(3062);
+  await render(saved.result.id, true, spec);
+  expect(
+    host.querySelector('.chart-skeleton[data-kind="histogram"]'),
+  ).not.toBeNull();
+  expect(host.querySelector(".bk-histogram-bar")).toBeNull();
+  await render(saved.result.id, false, spec);
+  expect(south.getAttribute("aria-pressed")).toBe("false");
+  expect(plottedCount()).toBe(3062);
+});
+
+it("distinguishes an all-null histogram from a legend with all groups turned off", async () => {
+  const saved = page("no-values", 3);
+  saved.rows = [
+    ["А", null],
+    ["Б", null],
+    ["В", null],
+  ];
+  vi.mocked(getResultRows).mockResolvedValueOnce(saved);
+  vi.mocked(api).mockResolvedValueOnce(saved);
+  await render(saved.result.id, false, {
+    kind: "histogram",
+    x: "y",
+    y: [],
+    legend: true,
+  });
+  expect(host.textContent).toMatch(/нет числовых (значений|наблюдений)/i);
+  expect(host.textContent).not.toContain("Все ряды скрыты");
+  expect(host.querySelector(".bk-histogram-bar")).toBeNull();
+});

@@ -3,6 +3,7 @@ import { chartSpecSchema } from "../shared/board-schema.js";
 import { DEFAULT_CHART_SIZE } from "../shared/chart-size.js";
 import {
   CHART_PALETTES,
+  CHART_POINT_LIMIT,
   CHART_METRIC_LIMIT,
   CHART_SERIES_COLOR_KEY_LIMIT,
   CHART_SERIES_COLOR_LIMIT,
@@ -25,6 +26,11 @@ export const chartInputSchema = {
     "Complete standard chart settings. This replaces data.chart, so read_board first and merge intended changes into the existing chart object. Column bindings use result column IDs, not names. Read chart_guide for defaults, stable color keys and resizing.",
   properties: {
     ...generatedChartSchema.properties,
+    binCount: {
+      ...propertySchema("binCount"),
+      description:
+        "Histogram only. Set an integer from 1 to 100 to choose the number of equal-width intervals. Omit for automatic binning.",
+    },
     showTotals: {
       ...propertySchema("showTotals"),
       description:
@@ -40,7 +46,7 @@ export const chartInputSchema = {
       ...propertySchema("seriesColors"),
       maxProperties: CHART_SERIES_COLOR_LIMIT,
       description:
-        "HEX colors keyed by JSON.stringify([metricColumnId, breakdownColumnId ?? null, rawGroupValue ?? null]); without breakdown use [metricColumnId,null,null]. Preserve raw group types. Empty object resets all overrides.",
+        "HEX colors keyed by JSON.stringify([metricColumnId, breakdownColumnId ?? null, rawGroupValue ?? null]); without breakdown use [metricColumnId,null,null]. Histograms use the observation column ID (x) as the metric ID. Preserve raw group types. Empty object resets all overrides.",
     },
     xLabel: {
       ...propertySchema("xLabel"),
@@ -84,15 +90,17 @@ export const chartGuide = {
   workflow:
     "Read the target with read_board, checking its ID and current revision; follow JSON paging when needed. Read result columns and bounded rows with read_result to verify column IDs and raw group values. board_patch update_node.patch merges node fields and data only one level deep: data.chart is REPLACED, not recursively merged. Spread all current chart fields, then apply requested changes; send a complete chart with kind,x,y,legend. Preserve unrelated settings/source/snapshot. Use current baseRevision and a fresh UUID mutationId for each intended mutation. Reuse mutationId only for an identical retry; reread after REVISION_CONFLICT. Read the board back after saving. Successful persistence is not browser visual verification.",
   controls: {
-    kind: "bar, line, area, scatter, composed, sparkline or heatmap. orientation vertical/horizontal applies only to bar. Sparkline displays compact trends without axes. Heatmap places categories on X and each metric/breakdown on Y; cell intensity follows its numeric value. Supply one row per category and breakdown.",
+    kind: "bar, line, area, scatter, composed, sparkline, heatmap or histogram. orientation vertical/horizontal applies only to bar. Sparkline displays compact trends without axes. Heatmap places categories on X and each metric/breakdown on Y; cell intensity follows its numeric value. Supply one row per category and breakdown.",
+    binCount:
+      "For a histogram, bind x to the numeric observation column and send y: []. Frequencies count non-null observations after table transformations. A series breakdown uses common bin edges for all groups. Groups overlap by default; set stacked:true to accumulate counts. Omit binCount for automatic binning or set an integer from 1 to 100. sort does not affect interval order.",
     metricStyles:
       "For composed charts, use metric column IDs as keys with bar, line or area values. The first metric defaults to bar and others to line.",
-    x: "Category column ID; scatter requires a numeric X column. On horizontal bars this category is placed on physical Y.",
-    y: "Array of numeric metric column IDs, up to20. At least one is needed to render.",
+    x: "Category column ID; scatter and histogram require a numeric X column. On horizontal bars this category is placed on physical Y.",
+    y: "Array of numeric metric column IDs, up to20. Use [] for histograms, which compute their own Y counts. Other kinds need at least one metric to render.",
     series:
       "Optional breakdown column ID. Omit to remove breakdown; do not send null.",
     stacked:
-      "Stack breakdown groups within each metric; requires series and applies to bar/line/area. Scatter ignores it. SQL must supply one row per category/group for stacking.",
+      "Stack breakdown groups within each metric; requires series and applies to bar/line/area. On histograms, stacking adds group counts in each bin. Scatter ignores it. For bar/line/area stacking SQL must supply one row per category/group. Histogram input contains one row per observation.",
     showXAxis:
       "Boolean, defaulttrue. Hide/show physical X axis name, ticks and labels independently of grid, including on horizontal bars.",
     showYAxis:
@@ -114,6 +122,22 @@ export const chartGuide = {
       "default, cool, warm or vivid. Palette changes keep explicit seriesColors overrides.",
     seriesColors:
       "Optional HEX map with stable series identities described below. To reset one color, remove that key from a copied map; send {} to reset all. Never use display names, row indexes or null as colors.",
+  },
+  histogram: {
+    automaticBins:
+      "Automatic binning uses Sturges' rule as a target and rounds the interval step to readable decimal boundaries. Set binCount to choose the number explicitly.",
+    example: {
+      kind: "histogram",
+      x: "duration_ms",
+      y: [],
+      series: "channel",
+      legend: true,
+      binCount: 20,
+    },
+    formatting:
+      "numberFormat applies to interval boundaries. The vertical axis and value labels show integer counts.",
+    limits:
+      "Reads the full table snapshot, up to 50,000 input rows, 1,000,000 cells and 20 MiB. Up to 5,000 resulting bin/group counts.",
   },
   palettes: CHART_PALETTES,
   seriesColors: {
@@ -141,7 +165,7 @@ export const chartGuide = {
     },
   },
   limits: {
-    maxPoints: 5000,
+    maxPoints: CHART_POINT_LIMIT,
     maxMetrics: CHART_METRIC_LIMIT,
     maxBoardNodes: 200,
     maxOperations: 200,

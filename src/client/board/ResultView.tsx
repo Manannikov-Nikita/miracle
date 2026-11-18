@@ -32,6 +32,7 @@ import BoardChartPlot from "./BoardChartPlot";
 import ChartLoadFrame from "./ChartLoadFrame";
 import TableView from "./TableView";
 import ChartTypePicker from "./ChartTypePicker";
+import HistogramBinCount from "./HistogramBinCount";
 import type { CustomChartSpec } from "../../shared/custom-charts";
 import CustomChart from "./CustomChart";
 import ChartColors from "./ChartColors";
@@ -62,6 +63,7 @@ function Chart({
     result,
     table,
     visibleColumns,
+    savedSpec?.kind === "histogram" ? "histogram" : "chart",
   );
   const prepared = useMemo(() => {
     if (waitingForMetadata || !data?.rows.length) return null;
@@ -147,10 +149,12 @@ function Chart({
       count={
         result &&
         !waitingForMetadata &&
-        !savedSpec?.series &&
+        (!savedSpec?.series || savedSpec.kind === "histogram") &&
         !table?.reshape &&
         !table?.filters?.length
-          ? Math.min(result.rowCount, 32)
+          ? savedSpec?.kind === "histogram"
+            ? result.rowCount
+            : Math.min(result.rowCount, 32)
           : undefined
       }
     >
@@ -180,7 +184,7 @@ export function ChartSettings(props: ChartSettingsProps) {
     props.result,
     props.table,
     props.visibleColumns,
-    false,
+    props.spec.kind === "histogram" ? "histogram" : "metadata",
   );
   const transformed =
     props.table !== undefined || props.visibleColumns !== undefined;
@@ -189,7 +193,8 @@ export function ChartSettings(props: ChartSettingsProps) {
     [data?.columns, props.result.columns, props.spec],
   );
   const series = useMemo(() => {
-    if (!data || !transformed) return undefined;
+    if (!data) return spec.kind === "histogram" ? [] : undefined;
+    if (!transformed && spec.kind !== "histogram") return undefined;
     try {
       return tableChartSeries(data, spec);
     } catch {
@@ -198,29 +203,43 @@ export function ChartSettings(props: ChartSettingsProps) {
   }, [data, transformed, spec]);
   if (error || preparationError)
     return (
-      <ErrorBox
-        title="Не удалось подготовить данные графика."
-        error={error ?? preparationError}
-        hint={preparationError ?? "Повторите загрузку сохранённого снимка."}
-        actions={
-          error ? (
-            <button type="button" onClick={retry}>
-              Повторить загрузку
-            </button>
-          ) : undefined
-        }
-      />
+      <>
+        {props.spec.kind === "histogram" && (
+          <ChartTypePicker
+            spec={props.spec}
+            columns={props.result.columns}
+            disabled={Boolean(props.disabled)}
+            onChange={props.onChange}
+          />
+        )}
+        <ErrorBox
+          title="Не удалось подготовить данные графика."
+          error={error ?? preparationError}
+          hint={preparationError ?? "Повторите загрузку сохранённого снимка."}
+          actions={
+            error ? (
+              <button type="button" onClick={retry}>
+                Повторить загрузку
+              </button>
+            ) : undefined
+          }
+        />
+      </>
     );
-  if (!data) return <p role="status">Загрузка столбцов таблицы…</p>;
+  // Raw column metadata is sufficient to edit histogram bindings while its
+  // immutable full snapshot is still being read for grouped colors.
+  if (!data && (transformed || spec.kind !== "histogram"))
+    return <p role="status">Загрузка столбцов таблицы…</p>;
   return (
     <ChartSettingsFields
       {...props}
       result={{
         ...props.result,
-        columns: data.columns,
-        rowCount: data.rows.length,
+        columns: data?.columns ?? props.result.columns,
+        rowCount: data?.rows.length ?? props.result.rowCount,
       }}
       spec={spec}
+      preparingSeries={!data}
       preparedSeries={series}
       table={
         props.table ??
@@ -237,14 +256,25 @@ function ChartSettingsFields({
   onTableChange,
   disabled = false,
   preparedSeries,
+  preparingSeries,
 }: ChartSettingsProps & {
+  preparingSeries: boolean;
   preparedSeries?: ReturnType<typeof tableChartSeries>;
 }) {
   const set = (patch: Partial<ChartSpec>) => onChange({ ...spec, ...patch });
   const horizontal = spec.kind === "bar" && spec.orientation === "horizontal";
   const sparkline = spec.kind === "sparkline";
   const heatmap = spec.kind === "heatmap";
-  const categoryAxis = sparkline ? "Категория" : horizontal ? "Ось Y" : "Ось X";
+  const histogram = spec.kind === "histogram";
+  const categoryAxis = histogram
+    ? "Числовой столбец"
+    : sparkline
+      ? "Категория"
+      : horizontal
+        ? "Ось Y"
+        : "Ось X";
+  const numericColumns = result.columns.filter(isNumericColumn);
+  const numberFormatLabel = histogram ? "Числа на оси X" : "Числа";
   const metricAxis = heatmap
     ? "Значения ячеек"
     : sparkline
@@ -259,10 +289,10 @@ function ChartSettingsFields({
     <fieldset className="board-chart-settings" disabled={disabled}>
       <legend>Настройки графика · весь снимок</legend>
       <ChartTypePicker
-        value={spec.kind}
-        orientation={spec.orientation}
+        spec={spec}
+        columns={result.columns}
         disabled={disabled}
-        onChange={(kind) => set({ kind })}
+        onChange={onChange}
       />
       {spec.kind === "bar" && (
         <label>
@@ -282,85 +312,109 @@ function ChartSettingsFields({
         {categoryAxis}
         <Select
           aria-label={categoryAxis}
-          disabled={disabled}
+          disabled={disabled || (histogram && !numericColumns.length)}
+          placeholder={
+            histogram && !numericColumns.length
+              ? "Нет числовых столбцов"
+              : undefined
+          }
           value={spec.x}
           onValueChange={(value) => set({ x: value })}
-          options={result.columns.map((c) => ({ value: c.id, label: c.name }))}
+          options={(histogram ? numericColumns : result.columns).map((c) => ({
+            value: c.id,
+            label: c.name,
+          }))}
         />
       </label>
-      {spec.kind !== "scatter" && categoryColumn && table && onTableChange && (
-        <label>
-          {typeLabel}
-          <Select
-            aria-label={typeLabel}
+      {histogram && (
+        <>
+          <HistogramBinCount
+            value={spec.binCount}
+            onChange={(binCount) => set({ binCount })}
             disabled={disabled}
-            value={table.columns?.[spec.x]?.dataType ?? "auto"}
-            options={[
-              { value: "auto", label: `Авто · ${categoryColumn.type}` },
-              { value: "date", label: "Дата" },
-            ]}
-            onValueChange={(dataType) =>
-              onTableChange({
-                ...table,
-                columns: {
-                  ...table.columns,
-                  [spec.x]: {
-                    ...table.columns?.[spec.x],
-                    dataType: dataType as "auto" | "date",
-                  },
-                },
-              })
-            }
           />
-        </label>
+        </>
       )}
-      <div className="board-y-fields">
-        {metricAxis}
-        {result.columns.filter(isNumericColumn).map((c) => (
-          <div className="board-chart-metric" key={c.id}>
-            <label>
-              <input
-                type="checkbox"
-                checked={spec.y.includes(c.id)}
-                disabled={
-                  !spec.y.includes(c.id) && spec.y.length >= CHART_METRIC_LIMIT
-                }
-                onChange={(event) =>
-                  set({
-                    y: event.target.checked
-                      ? [...spec.y, c.id]
-                      : spec.y.filter((id) => id !== c.id),
-                  })
-                }
-              />
-              {c.name}
-            </label>
-            {spec.kind === "composed" && spec.y.includes(c.id) && (
-              <Select
-                aria-label={`Вид метрики · ${c.name}`}
-                value={composedMetricStyle(spec, c.id)}
-                disabled={disabled}
-                options={[
-                  { value: "bar", label: "Столбцы" },
-                  { value: "line", label: "Линия" },
-                  { value: "area", label: "Область" },
-                ]}
-                onValueChange={(value) => {
-                  const selectedStyles = Object.entries(
-                    spec.metricStyles ?? {},
-                  ).filter(([id]) => spec.y.includes(id));
-                  set({
-                    metricStyles: {
-                      ...Object.fromEntries(selectedStyles),
-                      [c.id]: value as ChartMetricStyle,
+      {!histogram &&
+        spec.kind !== "scatter" &&
+        categoryColumn &&
+        table &&
+        onTableChange && (
+          <label>
+            {typeLabel}
+            <Select
+              aria-label={typeLabel}
+              disabled={disabled}
+              value={table.columns?.[spec.x]?.dataType ?? "auto"}
+              options={[
+                { value: "auto", label: `Авто · ${categoryColumn.type}` },
+                { value: "date", label: "Дата" },
+              ]}
+              onValueChange={(dataType) =>
+                onTableChange({
+                  ...table,
+                  columns: {
+                    ...table.columns,
+                    [spec.x]: {
+                      ...table.columns?.[spec.x],
+                      dataType: dataType as "auto" | "date",
                     },
-                  });
-                }}
-              />
-            )}
-          </div>
-        ))}
-      </div>
+                  },
+                })
+              }
+            />
+          </label>
+        )}
+      {!histogram && (
+        <div className="board-y-fields">
+          {metricAxis}
+          {numericColumns.map((c) => (
+            <div className="board-chart-metric" key={c.id}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={spec.y.includes(c.id)}
+                  disabled={
+                    !spec.y.includes(c.id) &&
+                    spec.y.length >= CHART_METRIC_LIMIT
+                  }
+                  onChange={(event) =>
+                    set({
+                      y: event.target.checked
+                        ? [...spec.y, c.id]
+                        : spec.y.filter((id) => id !== c.id),
+                    })
+                  }
+                />
+                {c.name}
+              </label>
+              {spec.kind === "composed" && spec.y.includes(c.id) && (
+                <Select
+                  aria-label={`Вид метрики · ${c.name}`}
+                  value={composedMetricStyle(spec, c.id)}
+                  disabled={disabled}
+                  options={[
+                    { value: "bar", label: "Столбцы" },
+                    { value: "line", label: "Линия" },
+                    { value: "area", label: "Область" },
+                  ]}
+                  onValueChange={(value) => {
+                    const selectedStyles = Object.entries(
+                      spec.metricStyles ?? {},
+                    ).filter(([id]) => spec.y.includes(id));
+                    set({
+                      metricStyles: {
+                        ...Object.fromEntries(selectedStyles),
+                        [c.id]: value as ChartMetricStyle,
+                      },
+                    });
+                  }}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <label>
         Разбивка
         <Select
@@ -374,7 +428,7 @@ function ChartSettingsFields({
           ]}
         />
       </label>
-      {supportsChartStacking(spec.kind) && spec.series && (
+      {(histogram || supportsChartStacking(spec.kind)) && spec.series && (
         <label>
           <input
             type="checkbox"
@@ -384,20 +438,22 @@ function ChartSettingsFields({
           С накоплением
         </label>
       )}
-      <label>
-        {sortLabel}
-        <Select
-          aria-label={sortLabel}
-          disabled={disabled}
-          value={spec.sort ?? "none"}
-          onValueChange={(value) => set({ sort: value as ChartSpec["sort"] })}
-          options={[
-            { value: "none", label: "Как в таблице" },
-            { value: "asc", label: "По возрастанию" },
-            { value: "desc", label: "По убыванию" },
-          ]}
-        />
-      </label>
+      {!histogram && (
+        <label>
+          {sortLabel}
+          <Select
+            aria-label={sortLabel}
+            disabled={disabled}
+            value={spec.sort ?? "none"}
+            onValueChange={(value) => set({ sort: value as ChartSpec["sort"] })}
+            options={[
+              { value: "none", label: "Как в таблице" },
+              { value: "asc", label: "По возрастанию" },
+              { value: "desc", label: "По убыванию" },
+            ]}
+          />
+        </label>
+      )}
       <div className="board-chart-legend">
         <label>
           <input
@@ -498,9 +554,9 @@ function ChartSettingsFields({
             </label>
           )}
           <label>
-            Числа
+            {numberFormatLabel}
             <Select
-              aria-label="Числа"
+              aria-label={numberFormatLabel}
               disabled={disabled}
               value={spec.numberFormat ?? "auto"}
               onValueChange={(value) =>
@@ -522,10 +578,15 @@ function ChartSettingsFields({
             disabled={disabled}
             onChange={set}
             preparedSeries={preparedSeries}
+            preparing={preparingSeries}
           />
         </div>
       </details>
-      <p>До 5 000 точек. Данные учитывают преобразования таблицы.</p>
+      <p>
+        {histogram
+          ? "До 50 000 исходных строк. Высота столбца показывает число значений в интервале."
+          : "До 5 000 точек. Данные учитывают преобразования таблицы."}
+      </p>
     </fieldset>
   );
 }

@@ -1,14 +1,11 @@
+import { svgLocalPoint } from "./svg-point";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { SkeletonMarks } from "../ChartSkeleton";
 import { formatChartNumber } from "../chart-number";
 import ChartTooltip from "./ChartTooltip";
 import { usePlotViewport } from "./compact-plot";
 import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
-import {
-  scatterGeometry,
-  scatterLocalPoint,
-  scatterRadius,
-} from "./scatter-geometry";
+import { scatterGeometry, scatterRadius } from "./scatter-geometry";
 import { ScatterCloud, ScatterAxes } from "./ScatterLayers";
 import "./scatter.css";
 
@@ -81,7 +78,7 @@ export default function ScatterPlot(props: ChartPlotProps) {
         }
         onPointerMove={(e) => {
           if (loading) return;
-          const cursor = scatterLocalPoint(
+          const cursor = svgLocalPoint(
             e.currentTarget,
             e.clientX,
             e.clientY,

@@ -86,7 +86,9 @@ export default function ChartColors({
   disabled,
   onChange,
   preparedSeries,
+  preparing = false,
 }: {
+  preparing?: boolean;
   result: ResultSet;
   spec: ChartSpec;
   disabled: boolean;
@@ -125,17 +127,19 @@ export default function ChartColors({
     if (preparedSeries !== undefined) return { series: preparedSeries };
     if (!spec.series)
       return {
-        series: spec.y.flatMap((id) => {
-          const column = result.columns.find((column) => column.id === id);
-          return column
-            ? [
-                {
-                  name: column.name,
-                  colorKey: chartSeriesColorKey(id, undefined, undefined),
-                },
-              ]
-            : [];
-        }),
+        series: (spec.kind === "histogram" ? [spec.x] : spec.y).flatMap(
+          (id) => {
+            const column = result.columns.find((column) => column.id === id);
+            return column
+              ? [
+                  {
+                    name: column.name,
+                    colorKey: chartSeriesColorKey(id, undefined, undefined),
+                  },
+                ]
+              : [];
+          },
+        ),
       };
     if (snapshot?.id !== result.id) return { series: [] };
     try {
@@ -163,10 +167,11 @@ export default function ChartColors({
       ? error.message
       : undefined) ?? prepared.error;
   const loading =
-    preparedSeries === undefined &&
-    Boolean(spec.series) &&
-    snapshot?.id !== result.id &&
-    !message;
+    preparing ||
+    (preparedSeries === undefined &&
+      Boolean(spec.series) &&
+      snapshot?.id !== result.id &&
+      !message);
   const palette =
     CHART_PALETTES.find((item) => item.id === (spec.palette ?? "default")) ??
     CHART_PALETTES[0];
@@ -270,7 +275,7 @@ export default function ChartColors({
                   <p>
                     {series.length
                       ? "Серии не найдены."
-                      : spec.y.length
+                      : (spec.kind === "histogram" ? spec.x : spec.y.length)
                         ? "В снимке нет серий."
                         : "Выберите числовой столбец."}
                   </p>

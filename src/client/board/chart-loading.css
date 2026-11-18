@@ -121,7 +121,8 @@
       .chart-skeleton:is(
         [data-kind="line"],
         [data-kind="area"],
-        [data-kind="heatmap"]
+        [data-kind="heatmap"],
+        [data-kind="histogram"]
       )
     )
     > .chart-load-announcement {
@@ -172,5 +173,27 @@
       11px/1.4 system-ui,
       sans-serif;
     pointer-events: none;
+  }
+}
+
+@keyframes chart-histogram-sweep {
+  from {
+    mask-position: 100% 0;
+  }
+  to {
+    mask-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chart-skeleton-histogram {
+    mask-image: linear-gradient(
+      105deg,
+      rgb(0 0 0 / 0.34) 0% 38%,
+      #000 50%,
+      rgb(0 0 0 / 0.34) 62% 100%
+    );
+    mask-repeat: no-repeat;
+    mask-size: 300% 100%;
+    animation: chart-histogram-sweep 2.2s linear infinite;
   }
 }

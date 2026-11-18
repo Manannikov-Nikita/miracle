@@ -74,12 +74,12 @@ describe("chart appearance controls", () => {
     host.remove();
     vi.unstubAllGlobals();
   });
-  async function render(spec = initial, disabled = false) {
+  async function render(spec = initial, disabled = false, source = result) {
     function Harness() {
       const [value, setValue] = useState(spec);
       current = value;
       return createElement(ChartSettings, {
-        result,
+        result: source,
         spec: value,
         disabled,
         onChange: setValue,
@@ -225,6 +225,65 @@ describe("chart appearance controls", () => {
     );
     expect(api).toHaveBeenCalledTimes(1);
   });
+  it("edits grouped histogram colors from the full table snapshot without fetching raw chart points", async () => {
+    const source = { ...result, id: "histogram-group-colors", rowCount: 6500 };
+    const rows = Promise.withResolvers<{
+      result: ResultSet;
+      rows: (string | number)[][];
+    }>();
+    vi.mocked(api).mockReturnValueOnce(rows.promise);
+    await render(
+      { ...initial, kind: "histogram", x: "value", y: [], series: "group" },
+      false,
+      source,
+    );
+    expect(control<HTMLSelectElement>("Числовой столбец").options).toHaveLength(
+      1,
+    );
+    await openColors();
+    expect(host.textContent).toContain("Загрузка серий…");
+    await act(async () =>
+      rows.resolve({
+        result: source,
+        rows: [
+          ["Jan", 10, "North"],
+          ["Feb", 20, "South"],
+        ],
+      }),
+    );
+    expect(control<HTMLInputElement>("HEX · North").value).toMatch(
+      /^#[a-f0-9]{6}$/i,
+    );
+    await change("HEX · South", "#aabbcc");
+    expect(current.seriesColors?.['["value","group","South"]']).toBe("#aabbcc");
+    const saved = JSON.parse(JSON.stringify(current)) as ChartSpec;
+    await render(saved, false, source);
+    expect(
+      host.querySelector('[aria-label="Тип графика: Гистограмма"]'),
+    ).not.toBeNull();
+    await openColors();
+    expect(control<HTMLInputElement>("HEX · South").value).toBe("#aabbcc");
+    expect(vi.mocked(api).mock.calls.map(([url]) => url)).toEqual([
+      "/api/result-sets/histogram-group-colors/table",
+    ]);
+  });
+
+  it("leaves the type picker available when the histogram snapshot exceeds its limit", async () => {
+    vi.mocked(api).mockRejectedValueOnce(new Error("Снимок превышает лимит"));
+    await render({ ...initial, kind: "histogram", x: "value", y: [] }, false, {
+      ...result,
+      id: "oversized-histogram",
+    });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      "Не удалось подготовить данные графика",
+    );
+    expect(
+      host.querySelector<HTMLButtonElement>(
+        '[aria-label="Тип графика: Гистограмма"]',
+      )?.disabled,
+    ).toBe(false);
+  });
+
   it("keeps invalid HEX local and restores the saved color on blur", async () => {
     await render();
     await openColors();

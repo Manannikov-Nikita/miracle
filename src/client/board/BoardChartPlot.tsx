@@ -13,6 +13,7 @@ import ScatterPlot from "./chart-kit/ScatterPlot";
 import { presentationColors } from "./presentation-colors";
 import CartesianPlot from "./chart-kit/CartesianPlot";
 import MatrixPlot from "./chart-kit/MatrixPlot";
+import HistogramPlot from "./chart-kit/HistogramPlot";
 import TrendPlot from "./chart-kit/TrendPlot";
 import type { ChartPlotProps } from "./chart-kit/plot-types";
 import type { ChartKind } from "../../shared/types";
@@ -26,6 +27,7 @@ const plots = {
   area: CartesianPlot,
   composed: CartesianPlot,
   heatmap: MatrixPlot,
+  histogram: HistogramPlot,
   sparkline: TrendPlot,
   scatter: ScatterPlot,
 } satisfies Record<ChartKind, (props: ChartPlotProps) => ReactNode>;
@@ -156,7 +158,8 @@ function ChartKitPlot(props: Props) {
             spec={spec}
             count={series[0]?.xCategories?.length ?? series[0]?.data.length}
           />
-        ) : data.series.length ? (
+        ) : data.series.length ||
+          (spec.kind === "histogram" && !entries.length) ? (
           <Plot key={spec.kind} {...props} {...data} />
         ) : (
           <div className="bk-no-series" role="status">

@@ -1,5 +1,6 @@
 import { useId, useState, type ReactNode, type SVGAttributes } from "react";
 import {
+  HISTOGRAM_BIN_LIMIT,
   chartSeriesColor,
   chartSeriesColorKey,
   composedMetricStyle,
@@ -10,6 +11,7 @@ import {
   LoadingCurve,
   LoadingStackedCurves,
   LoadingMatrix,
+  LoadingHistogram,
   LoadingPoints,
   type LoadingSeries,
 } from "./chart-kit/loading-marks";
@@ -118,7 +120,12 @@ function LineGridGlint({ rows }: { rows: readonly number[] }) {
 }
 
 function loadingSeries(spec?: ChartSpec): LoadingSeries[] {
-  const ids = spec?.y.length ? spec.y : [undefined];
+  const ids =
+    spec?.kind === "histogram"
+      ? [spec.x]
+      : spec?.y.length
+        ? spec.y
+        : [undefined];
   // Before the first result the metrics are known, the breakdown values aren't.
   // Two illustrative groups make a split or stacked layout visible without
   // inventing group labels or assigning a real group's custom color.
@@ -189,6 +196,15 @@ export function SkeletonMarks({
     >
       {kind === "line" && spec?.showGrid !== false && (
         <LineGridGlint rows={gridRows} />
+      )}
+      {kind === "histogram" && (
+        <LoadingHistogram
+          count={Math.min(HISTOGRAM_BIN_LIMIT, count ?? spec?.binCount ?? 16)}
+          groups={Math.max(1, Math.min(6, series.length))}
+          stacked={!!(spec?.stacked && spec.series)}
+          width={viewport.width}
+          height={viewport.height}
+        />
       )}
       {kind === "heatmap" && rows > 0 && (
         <LoadingMatrix
@@ -272,6 +288,11 @@ export function SkeletonMarks({
 export default function ChartSkeleton(props: ChartSkeletonProps) {
   const kind = props.spec?.kind;
   const horizontal = kind === "bar" && props.spec?.orientation === "horizontal";
+  const count =
+    kind === "histogram"
+      ? (props.spec?.binCount ??
+        (props.count ? Math.ceil(Math.log2(props.count)) + 1 : undefined))
+      : props.count;
   const grid =
     props.spec?.showGrid !== false &&
     kind !== "sparkline" &&
@@ -305,7 +326,7 @@ export default function ChartSkeleton(props: ChartSkeletonProps) {
             ))}
         </svg>
       )}
-      <SkeletonMarks {...props} width="100%" height="100%" />
+      <SkeletonMarks {...props} count={count} width="100%" height="100%" />
     </div>
   );
 }

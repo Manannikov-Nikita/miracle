@@ -1,9 +1,11 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { CaretDown, Check } from "@phosphor-icons/react";
-import type { ChartSpec } from "../../shared/types";
+import type { ChartSpec, Column } from "../../shared/types";
+import { isNumericColumn } from "../../shared/column-types";
 
 const types = [
   { kind: "bar", label: "Столбцы" },
+  { kind: "histogram", label: "Гистограмма" },
   { kind: "line", label: "Линии" },
   { kind: "area", label: "Область" },
   { kind: "scatter", label: "Точки" },
@@ -23,6 +25,9 @@ function Preview({
     <svg viewBox="0 0 48 36" fill="none" aria-hidden="true" focusable="false">
       {kind !== "sparkline" && kind !== "heatmap" && (
         <path d="M5 4V31H44" stroke="currentColor" opacity="0.35" />
+      )}
+      {kind === "histogram" && (
+        <path d="M9 30v-5h5v-7h5V9h5V5h5v8h5v9h5v5h4v3Z" fill="currentColor" />
       )}
       {kind === "composed" && (
         <>
@@ -111,16 +116,50 @@ function Preview({
 }
 
 export default function ChartTypePicker({
-  value,
-  orientation,
+  spec,
+  columns,
   onChange,
   disabled,
 }: {
-  value: ChartSpec["kind"];
-  orientation?: ChartSpec["orientation"];
-  onChange: (kind: ChartSpec["kind"]) => void;
+  spec: ChartSpec;
+  columns: Column[];
+  onChange: (spec: ChartSpec) => void;
   disabled: boolean;
 }) {
+  const { kind: value, orientation } = spec;
+  function changeKind(kind: ChartSpec["kind"]) {
+    if (kind === value) return;
+    if (kind !== "histogram" && value !== "histogram") {
+      onChange({ ...spec, kind });
+      return;
+    }
+    const numeric = columns.filter(isNumericColumn);
+    const available = (id: string) =>
+      numeric.some((column) => column.id === id);
+    const sample = available(spec.x)
+      ? spec.x
+      : (spec.y.find(available) ?? numeric[0]?.id ?? "");
+    if (kind === "histogram") {
+      onChange({ ...spec, kind, x: sample, y: [] });
+      return;
+    }
+    // A saved histogram has no Y metric. Reuse its observations when returning
+    // to a regular chart; scatter needs numeric bindings on both axes.
+    const category =
+      columns.find((c) => !isNumericColumn(c))?.id ??
+      columns.find((c) => c.id !== sample)?.id ??
+      sample;
+    const metric =
+      kind === "scatter"
+        ? (numeric.find((c) => c.id !== sample)?.id ?? sample)
+        : sample;
+    onChange({
+      ...spec,
+      kind,
+      x: kind === "scatter" ? sample : category,
+      y: metric ? [metric] : [],
+    });
+  }
   const selected = types.find(({ kind }) => kind === value)!;
   const horizontal = orientation === "horizontal";
   const selectedLabel =
@@ -156,7 +195,7 @@ export default function ChartTypePicker({
               className="board-chart-type-options"
               aria-label="Тип графика"
               value={value}
-              onValueChange={(kind) => onChange(kind as ChartSpec["kind"])}
+              onValueChange={(kind) => changeKind(kind as ChartSpec["kind"])}
             >
               {types.map(({ kind, label }) => (
                 <DropdownMenu.RadioItem

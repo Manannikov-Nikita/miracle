@@ -145,9 +145,16 @@ export interface QueryRun {
 }
 export type ChartMetricStyle = "bar" | "line" | "area";
 export type ChartKind =
-  ChartMetricStyle | "scatter" | "composed" | "sparkline" | "heatmap";
+  | ChartMetricStyle
+  | "scatter"
+  | "composed"
+  | "sparkline"
+  | "heatmap"
+  | "histogram";
 export interface ChartSpec {
   kind: ChartKind;
+  /** Number of equal-width histogram intervals; omit for automatic binning. */
+  binCount?: number;
   /** A composed chart uses the same mark for all breakdowns of a metric. */
   metricStyles?: Record<string, ChartMetricStyle>;
   orientation?: "vertical" | "horizontal";

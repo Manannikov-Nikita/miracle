@@ -9,6 +9,7 @@ import { shapeSpecSchema } from "./shapes.js";
 import { textStyleSchema } from "./text-style.js";
 import {
   CHART_METRIC_LIMIT,
+  HISTOGRAM_BIN_LIMIT,
   CHART_SERIES_COLOR_KEY_LIMIT,
   CHART_SERIES_COLOR_LIMIT,
 } from "./chart-appearance.js";
@@ -47,7 +48,9 @@ export const chartSpecSchema = z.object({
     "composed",
     "sparkline",
     "heatmap",
+    "histogram",
   ]),
+  binCount: z.number().int().min(1).max(HISTOGRAM_BIN_LIMIT).optional(),
   metricStyles: z
     .record(identifier, z.enum(["bar", "line", "area"]))
     .refine(

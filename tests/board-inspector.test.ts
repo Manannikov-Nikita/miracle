@@ -233,6 +233,40 @@ describe("board inspector settings integration", () => {
       });
     },
   );
+  it.each([
+    [5000, "bar"],
+    [5001, "histogram"],
+  ] as const)(
+    "opens the first chart from a raw table of %i rows using %s",
+    async (rowCount, kind) => {
+      const raw = { ...result, rowCount };
+      const node = createResultNode(raw);
+      await render(node, { result: raw });
+      await click(button("График"));
+      expect(current.data.view).toBe("chart");
+      expect(current.data.chart).toMatchObject(
+        kind === "histogram"
+          ? { kind, x: "revenue", y: [] }
+          : { kind, x: "month", y: ["revenue"] },
+      );
+      expect(current.data.resultSetId).toBe(raw.id);
+      expect(uncaught).toEqual([]);
+    },
+  );
+  it("keeps a saved chart type and its bindings when reopening a large snapshot", async () => {
+    const raw = { ...result, rowCount: 7000 };
+    const node = createResultNode(raw);
+    node.data.chart = {
+      kind: "area",
+      x: "month",
+      y: ["revenue"],
+      legend: true,
+    };
+    await render(node, { result: raw });
+    await click(button("График"));
+    expect(current.data.chart).toEqual(node.data.chart);
+  });
+
   it("keeps a previously configured chart at its saved size", async () => {
     await render({ ...fixture("table"), width: 540, height: 350 });
     await click(button("График"));
@@ -948,15 +982,9 @@ describe("board inspector settings integration", () => {
     expect(uncaught).toEqual([]);
   });
 
-  it.each([
-    ["Комбинированный", "composed"],
-    ["Спарклайн", "sparkline"],
-    ["Тепловая карта", "heatmap"],
-  ])("selects %s using the chart type menu", async (label, kind) => {
-    const node = fixture();
-    await render(node);
+  async function chooseChartType(label: string) {
     const trigger = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Тип графика: Линии"]',
+      ".board-chart-type-trigger",
     )!;
     await act(async () => {
       trigger.focus();
@@ -982,12 +1010,104 @@ describe("board inspector settings integration", () => {
         }),
       );
     });
+  }
+  it.each([
+    ["Комбинированный", "composed"],
+    ["Спарклайн", "sparkline"],
+    ["Тепловая карта", "heatmap"],
+  ])("selects %s using the chart type menu", async (label, kind) => {
+    const node = fixture();
+    await render(node);
+    await chooseChartType(label);
     expect(current.data.chart).toEqual({ ...node.data.chart, kind });
     expect(
       container.querySelector(`[aria-label="Тип графика: ${label}"]`),
     ).not.toBeNull();
   });
 
+  it("binds a histogram to the numeric observation column, stores an optional bin count and returns to a plottable line chart", async () => {
+    const node = fixture();
+    node.data.chart = {
+      ...node.data.chart!,
+      series: "month",
+      legendPosition: "bottom",
+      palette: "warm",
+    };
+    await render(node);
+    await chooseChartType("Гистограмма");
+    expect(current.data.chart).toEqual({
+      ...node.data.chart,
+      kind: "histogram",
+      x: "revenue",
+      y: [],
+    });
+    expect(select("Числовой столбец").textContent).toContain("Выручка");
+    expect(container.querySelector('[aria-label="Порядок X"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Тип данных X"]')).toBeNull();
+    expect(container.querySelector(".board-y-fields")).toBeNull();
+    const bins = container.querySelector<HTMLInputElement>(
+      '.board-chart-settings input[type="number"]',
+    )!;
+    const typeBins = async (text: string) =>
+      act(async () => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value",
+        )!.set!.call(bins, text);
+        bins.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    expect(bins.placeholder).toBe("Авто");
+    expect(bins.value).toBe("");
+    await typeBins("17");
+    expect(current.data.chart?.binCount).toBe(17);
+    await typeBins("101");
+    expect(bins.getAttribute("aria-invalid")).toBe("true");
+    expect(current.data.chart?.binCount).toBe(17);
+    await typeBins("");
+    expect(current.data.chart?.binCount).toBeUndefined();
+    await click(checkbox("С накоплением"));
+    expect(current.data.chart?.stacked).toBe(true);
+    await typeBins("9");
+    await chooseChartType("Линии");
+    expect(current.data.chart).toMatchObject({
+      kind: "line",
+      x: "month",
+      y: ["revenue"],
+      binCount: 9,
+      palette: "warm",
+      legendPosition: "bottom",
+    });
+    await chooseChartType("Гистограмма");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '.board-chart-settings input[type="number"]',
+      )?.value,
+    ).toBe("9");
+    expect(uncaught).toEqual([]);
+  });
+
+  it("recovers usable numeric axes when leaving a saved histogram for scatter", async () => {
+    const node = fixture();
+    node.data.table = undefined;
+    node.data.visibleColumns = undefined;
+    node.data.chart = {
+      kind: "histogram",
+      x: "revenue",
+      y: [],
+      binCount: 100,
+      legend: true,
+    };
+    await render(node);
+    await chooseChartType("Точки");
+    expect(current.data.chart).toEqual({
+      kind: "scatter",
+      x: "revenue",
+      y: ["revenue"],
+      binCount: 100,
+      legend: true,
+    });
+    expect(uncaught).toEqual([]);
+  });
   it("offers the latest value label on a sparkline while omitting axis controls", async () => {
     const node = fixture();
     node.data.chart = { ...node.data.chart!, kind: "sparkline" };

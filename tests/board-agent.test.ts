@@ -318,6 +318,35 @@ function resultForChartSizing(): BoardNode {
   };
 }
 
+it("accepts full histogram sources and retains the point limit on unaggregated charts", () => {
+  const node = resultForChartSizing();
+  const resultId = node.data.resultSetId!;
+  const chart = {
+    kind: "histogram",
+    x: "elapsed",
+    y: [],
+    binCount: 12,
+    legend: true,
+  } as const;
+  const save = (kind: "histogram" | "line") =>
+    ops.createBoard({
+      name: "Duration",
+      document: {
+        schemaVersion: 1,
+        edges: [],
+        nodes: [{ ...node, data: { ...node.data, chart: { ...chart, kind } } }],
+      },
+    });
+  db.query("UPDATE result_sets SET columns=?2, row_count=50000 WHERE id=?1", [
+    resultId,
+    [{ id: "elapsed", name: "Duration", type: "Float64" }],
+  ]);
+  expect(save("histogram").document.nodes[0].data.chart).toEqual(chart);
+  expect(() => save("line")).toThrow(/5000 точек/);
+  db.query("UPDATE result_sets SET row_count=50001 WHERE id=?1", [resultId]);
+  expect(() => save("histogram")).toThrow(/50 000 строк/);
+});
+
 it("sizes newly created and agent-added charts on each missing side, preserving supplied frames and idempotent responses", () => {
   const node = resultForChartSizing();
   const request = {

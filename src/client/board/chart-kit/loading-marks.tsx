@@ -1,5 +1,6 @@
 import { curveBumpX, curveNatural } from "d3-shape";
 import { useId } from "react";
+import { binPath } from "./histogram-display";
 import { splitSignedArea, type BandPoint } from "./stacked-area";
 import { seriesBarLayout } from "./cartesian-geometry";
 import { areaClosedD, linePathD } from "./bklit/line-path";
@@ -327,6 +328,89 @@ export function LoadingMatrix({
               ))}
             </g>
           );
+        })}
+      </g>
+    </svg>
+  );
+}
+
+/** Muted statistical silhouette as in shadcn.io/examples/histogram-loading.
+ * Heights are illustrative and remain still while the light moves across it. */
+export function LoadingHistogram({
+  count,
+  groups,
+  stacked,
+  width,
+  height,
+}: {
+  count: number;
+  groups: number;
+  stacked: boolean;
+  width?: number | string;
+  height?: number | string;
+}) {
+  const w = typeof width === "number" ? width : 600,
+    h = typeof height === "number" ? height : 220;
+  const n = Math.max(1, count),
+    step = w / n,
+    gap = Math.min(2, step * 0.12);
+  const bins = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: groups }, (_, j) => {
+      const t = (i + 0.5) / n,
+        center = 0.35 + 0.09 * j;
+      return (
+        0.08 +
+        0.72 *
+          Math.exp(-0.5 * ((t - center) / 0.195) ** 2) *
+          (0.86 + 0.14 * fractionAt(i, j)) +
+        0.16 * Math.exp(-0.5 * ((t - center - 0.21) / 0.28) ** 2)
+      );
+    }),
+  );
+  const max = Math.max(
+    ...bins.map((values) =>
+      stacked ? values.reduce((a, b) => a + b, 0) : Math.max(...values),
+    ),
+  );
+  return (
+    <svg
+      width="100%"
+      height="100%"
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+    >
+      <g
+        className="chart-skeleton-histogram"
+        data-skeleton-mark="histogram"
+        fill="var(--bk-muted, var(--board-muted, #9299a4))"
+      >
+        {bins.map((values, i) => {
+          let base = h;
+          return values.map((v, j) => {
+            const barH = (0.82 * h * v) / max;
+            const y = (stacked ? base : h) - barH;
+            if (stacked) base = y;
+            return (
+              <path
+                key={`${i}:${j}`}
+                data-skeleton-bin={i}
+                fillOpacity={
+                  groups === 1
+                    ? 0.78
+                    : stacked
+                      ? 0.48 + (0.4 * j) / (groups - 1)
+                      : 0.45
+                }
+                d={binPath(
+                  i * step + gap / 2,
+                  y,
+                  step - gap,
+                  barH,
+                  !stacked || j === groups - 1,
+                )}
+              />
+            );
+          });
         })}
       </g>
     </svg>

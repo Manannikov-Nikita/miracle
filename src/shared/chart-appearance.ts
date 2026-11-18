@@ -3,6 +3,8 @@ import type { Cell, ChartKind, ChartMetricStyle, ChartSpec } from "./types.js";
 export const CHART_SERIES_COLOR_KEY_LIMIT = 10000;
 export const CHART_SERIES_COLOR_LIMIT = 5000;
 export const CHART_METRIC_LIMIT = 20;
+export const CHART_POINT_LIMIT = 5000;
+export const HISTOGRAM_BIN_LIMIT = 100;
 
 export function supportsChartStacking(kind: ChartKind) {
   return kind === "bar" || kind === "line" || kind === "area";

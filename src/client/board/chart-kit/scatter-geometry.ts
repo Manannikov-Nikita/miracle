@@ -3,35 +3,6 @@ import type { ChartPlotProps } from "./plot-types";
 import { formatChartNumber } from "../chart-number";
 import type { ChartSpec } from "../../../shared/types";
 
-// Adapted from Bklit UI's scatter-svg.ts and use-scatter-chart-interaction.ts
-// (MIT, bklit/bklit-ui@76299da). Miracle plots numeric X as well as numeric Y.
-export function scatterLocalPoint(
-  svg: SVGSVGElement,
-  clientX: number,
-  clientY: number,
-  width: number,
-  height: number,
-) {
-  const matrix = svg.getScreenCTM?.();
-  if (
-    matrix &&
-    svg.createSVGPoint &&
-    matrix.a * matrix.d !== matrix.b * matrix.c
-  ) {
-    const point = svg.createSVGPoint();
-    point.x = clientX;
-    point.y = clientY;
-    return point.matrixTransform(matrix.inverse());
-  }
-  const rect = svg.getBoundingClientRect();
-  return rect.width && rect.height
-    ? {
-        x: ((clientX - rect.left) * width) / rect.width,
-        y: ((clientY - rect.top) * height) / rect.height,
-      }
-    : null;
-}
-
 function numericAxis(
   min: number,
   max: number,
