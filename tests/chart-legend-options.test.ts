@@ -41,6 +41,46 @@ function button(name: string) {
 const toggle = (name: string) => act(async () => button(name).click());
 const totals = () => textNodes(chart.host, ".bk-stack-total");
 
+it("previews histogram layers from the legend without toggling them or changing their bounds", async () => {
+  const histogram: ChartSpec = {
+    kind: "histogram",
+    x: "value",
+    y: [],
+    series: "group",
+    legend: true,
+    binCount: 3,
+  };
+  await render(before, histogram);
+  const preview = button("two");
+  const marks = () => [
+    ...chart.host.querySelectorAll<SVGPathElement>(".bk-histogram-bar"),
+  ];
+  const bounds = marks().map((mark) => mark.getAttribute("d"));
+  const muted = () =>
+    marks()
+      .filter((mark) => mark.closest("[data-muted-series]"))
+      .map((mark) => mark.dataset.series);
+  await act(async () =>
+    preview.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })),
+  );
+  expect(muted()).toEqual(["0"]);
+  expect(marks().map((mark) => mark.getAttribute("d"))).toEqual(bounds);
+  expect(preview.getAttribute("aria-pressed")).toBe("true");
+  await act(async () =>
+    preview.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })),
+  );
+  expect(muted()).toEqual([]);
+  await act(async () => preview.focus());
+  expect(muted()).toEqual(["0"]);
+  await toggle("two");
+  expect(muted()).toEqual([]);
+  expect(marks()).toHaveLength(1);
+  await toggle("two");
+  await act(async () => preview.blur());
+  expect(muted()).toEqual([]);
+  expect(marks().map((mark) => mark.getAttribute("d"))).toEqual(bounds);
+});
+
 it("keeps selection across resize and refresh while showing new series and recalculating visible totals", async () => {
   await render(before);
   expect(totals()).toEqual(["15"]);

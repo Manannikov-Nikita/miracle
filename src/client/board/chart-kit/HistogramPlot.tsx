@@ -26,8 +26,18 @@ const countText = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
 
 /** Numeric, adjacent frequency intervals as in shadcn.io histogram-default,
  * histogram-overlay and histogram-stacked. Values are already binned by Miracle. */
-export default function HistogramPlot(props: ChartPlotProps) {
-  const { spec, series, colors, columns, loading, label } = props;
+export default function HistogramPlot(
+  props: ChartPlotProps & { highlightedSeries?: number },
+) {
+  const {
+    spec,
+    series,
+    colors,
+    columns,
+    loading,
+    label,
+    highlightedSeries = -1,
+  } = props;
   const viewport = usePlotViewport();
   const width = viewport.width || 460,
     height = viewport.height || 240;
@@ -95,14 +105,20 @@ export default function HistogramPlot(props: ChartPlotProps) {
                 !used.some((pos) => Math.abs(pos - labelY) < 13);
               if (fits) used.push(labelY);
               return (
-                <g key={series[j].colorKey ?? j}>
+                <g
+                  key={series[j].colorKey ?? j}
+                  data-muted-series={
+                    (highlightedSeries >= 0 && highlightedSeries !== j) ||
+                    undefined
+                  }
+                >
                   <path
                     className="bk-histogram-bar"
                     data-bin={i}
                     data-count={count}
                     data-series={j}
                     fill={colors[j]}
-                    fillOpacity={series.length > 1 && !g.stacked ? 0.55 : 1}
+                    fillOpacity={spec.series && !g.stacked ? 0.55 : 1}
                     d={binPath(
                       col.x0 + gap / 2,
                       y,
@@ -140,7 +156,7 @@ export default function HistogramPlot(props: ChartPlotProps) {
           </g>
         );
       }),
-    [g, series, colors, spec.showLabels],
+    [g, series, colors, spec.showLabels, spec.series, highlightedSeries],
   );
   const axisName = columns.find((c) => c.id === spec.x)?.name ?? spec.x;
   const empty = !g.columns.length && !loading;

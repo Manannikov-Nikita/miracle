@@ -5,6 +5,7 @@ import {
   CHART_PALETTES,
   CHART_SERIES_COLOR_LIMIT,
   CHART_SERIES_COLOR_KEY_LIMIT,
+  chartPalette,
   chartSeriesColor,
   chartSeriesColorKey,
 } from "../../shared/chart-appearance";
@@ -172,9 +173,7 @@ export default function ChartColors({
       Boolean(spec.series) &&
       snapshot?.id !== result.id &&
       !message);
-  const palette =
-    CHART_PALETTES.find((item) => item.id === (spec.palette ?? "default")) ??
-    CHART_PALETTES[0];
+  const palette = chartPalette(spec);
   return (
     <div className="board-chart-colors">
       <label>

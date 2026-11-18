@@ -5,7 +5,7 @@ import { formatChartNumber } from "../chart-number";
 import type { ChartPlotProps } from "./plot-types";
 import { unitPosition } from "./unit-position";
 
-/** Round the two exposed corners without opening seams between stack segments. */
+/** Keep the reference's 4px corners and flat crown as bins narrow on the board. */
 export function binPath(
   x: number,
   y: number,
@@ -13,8 +13,11 @@ export function binPath(
   height: number,
   outer = true,
 ) {
-  const r = outer ? Math.min(4, width / 2, height) : 0;
-  return `M${x},${y + height}V${y + r}Q${x},${y} ${x + r},${y}H${x + width - r}Q${x + width},${y} ${x + width},${y + r}V${y + height}Z`;
+  const r = outer ? Math.min(4, width / 5, height) : 0;
+  const right = x + width,
+    bottom = y + height;
+  if (!r) return `M${x},${bottom}V${y}H${right}V${bottom}Z`;
+  return `M${x},${bottom}V${y + r}A${r},${r} 0 0 1 ${x + r},${y}H${right - r}A${r},${r} 0 0 1 ${right},${y + r}V${bottom}Z`;
 }
 
 function boundaryLabels(values: number[], format: ChartSpec["numberFormat"]) {

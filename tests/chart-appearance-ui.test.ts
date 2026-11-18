@@ -251,9 +251,21 @@ describe("chart appearance controls", () => {
         ],
       }),
     );
-    expect(control<HTMLInputElement>("HEX · North").value).toMatch(
-      /^#[a-f0-9]{6}$/i,
-    );
+    expect(control<HTMLInputElement>("HEX · North").value).toBe("#155dfc");
+    expect(control<HTMLInputElement>("HEX · South").value).toBe("#8ec5ff");
+    const previews = () =>
+      [
+        ...host.querySelectorAll<HTMLElement>(
+          ".board-chart-palette-preview span",
+        ),
+      ].map((el) => el.style.backgroundColor);
+    expect(previews().slice(0, 2)).toEqual([
+      "rgb(21, 93, 252)",
+      "rgb(142, 197, 255)",
+    ]);
+    await click("С накоплением");
+    expect(control<HTMLInputElement>("HEX · North").value).toBe("#2b7fff");
+    expect(previews()[0]).toBe("rgb(43, 127, 255)");
     await change("HEX · South", "#aabbcc");
     expect(current.seriesColors?.['["value","group","South"]']).toBe("#aabbcc");
     const saved = JSON.parse(JSON.stringify(current)) as ChartSpec;

@@ -205,6 +205,103 @@ describe("rendered chart appearance", () => {
       ).toEqual(["3.4k", "-1.2k"]);
     },
   );
+  it.each([
+    { style: "single", grouped: false, stacked: false, colors: ["#8ec5ff"] },
+    {
+      style: "overlay",
+      grouped: true,
+      stacked: false,
+      colors: ["#155dfc", "#8ec5ff"],
+    },
+    {
+      style: "stacked",
+      grouped: true,
+      stacked: true,
+      colors: ["#2b7fff", "#8ec5ff"],
+    },
+  ])(
+    "uses the $style histogram colors consistently for marks, legend and tooltip on light and dark slides",
+    async ({ grouped, stacked, colors }) => {
+      const spec: ChartSpec = {
+        kind: "histogram",
+        x: "value",
+        y: [],
+        legend: true,
+        series: grouped ? "group" : undefined,
+        stacked,
+        binCount: 1,
+      };
+      const series = chartSeries(columns, rows, spec);
+      const cssColors = colors.map((hex) => {
+        const swatch = document.createElement("span");
+        swatch.style.backgroundColor = hex;
+        return swatch.style.backgroundColor;
+      });
+      for (const background of ["#ffffff", "#202124"]) {
+        await chart.render({
+          columns,
+          spec,
+          series,
+          presentationBackground: background,
+        });
+        const marks = chart.host.querySelectorAll(".bk-histogram-bar");
+        expect([...marks].map((mark) => mark.getAttribute("fill"))).toEqual(
+          colors,
+        );
+        expect(
+          [
+            ...chart.host.querySelectorAll<HTMLElement>(".bk-legend .bk-key"),
+          ].map((s) => s.style.backgroundColor),
+        ).toEqual(cssColors);
+        const svg = chart.host.querySelector('svg[role="img"]')!;
+        await act(async () =>
+          svg.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+          ),
+        );
+        expect(
+          [
+            ...chart.host.querySelectorAll<HTMLElement>(
+              ".chart-tooltip-swatch",
+            ),
+          ].map((s) => s.style.backgroundColor),
+        ).toEqual(cssColors);
+      }
+    },
+  );
+
+  it("keeps histogram palette selections and explicit group colors through stacking and legend filtering", async () => {
+    const key = JSON.stringify(["value", "group", "two"]);
+    const spec: ChartSpec = {
+      kind: "histogram",
+      x: "value",
+      y: [],
+      legend: true,
+      series: "group",
+      palette: "warm",
+      seriesColors: { [key]: "#705bdb" },
+      binCount: 1,
+    };
+    const series = chartSeries(columns, rows, spec);
+    const fills = () =>
+      [...chart.host.querySelectorAll(".bk-histogram-bar")].map((el) =>
+        el.getAttribute("fill"),
+      );
+    for (const stacked of [false, true]) {
+      await chart.render({ columns, spec: { ...spec, stacked }, series });
+      expect(fills()).toEqual(["#f0ad72", "#705bdb"]);
+    }
+    await act(async () =>
+      chart.host.querySelector<HTMLButtonElement>(".bk-legend button")!.click(),
+    );
+    expect(fills()).toEqual(["#705bdb"]);
+    await chart.render({
+      columns,
+      spec: { ...spec, palette: "default" },
+      series,
+    });
+    expect(fills()).toEqual(["#705bdb"]);
+  });
   it("keeps explicit colors attached to stable typed metric/breakdown identities after reordering", async () => {
     const configured = {
       ...base,

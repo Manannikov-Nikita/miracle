@@ -1,12 +1,32 @@
 .bk-histogram-bar {
   cursor: crosshair;
 }
+.bk-chart[data-kind="histogram"] .bk-key {
+  border-radius: 50%;
+}
+.bk-chart[data-kind="histogram"] .bk-legend button[aria-pressed="true"] {
+  color: var(--bk-text);
+}
+.bk-chart[data-kind="histogram"]:is(
+    [data-legend-position="left"],
+    [data-legend-position="right"]
+  )
+  .bk-legend
+  button {
+  justify-content: flex-start;
+}
+.bk-histogram .bk-grid {
+  stroke-opacity: 0.7;
+  stroke-dasharray: 3 5;
+}
 .bk-histogram-label,
 .bk-histogram-guide {
   pointer-events: none;
 }
 .bk-histogram-distribution[data-inspecting]
-  .bk-histogram-bin:not([data-active]) {
+  .bk-histogram-bin:not([data-active])
+  :is(.bk-histogram-bar, .bk-histogram-label),
+.bk-histogram [data-muted-series] :is(.bk-histogram-bar, .bk-histogram-label) {
   opacity: 0.3;
 }
 @media (prefers-reduced-motion: no-preference) {
@@ -18,7 +38,8 @@
     transition: transform var(--bk-inspect-duration, 125ms)
       var(--bk-inspect-ease, ease-out);
   }
-  .bk-histogram:not([data-keyboard]) .bk-histogram-bin {
+  .bk-histogram:not([data-keyboard])
+    :is(.bk-histogram-bar, .bk-histogram-label) {
     transition: opacity 0.14s ease-out;
   }
 }

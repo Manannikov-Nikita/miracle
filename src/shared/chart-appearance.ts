@@ -46,6 +46,26 @@ export const CHART_PALETTES: {
   },
 ];
 
+// The shadcn.io histogram examples use five blue chart tokens in both themes.
+// A single distribution starts at chart-1, an overlay at chart-3, and a stack at chart-2.
+const histogramPalette = {
+  ...CHART_PALETTES[0],
+  colors: ["#8ec5ff", "#2b7fff", "#155dfc", "#1447e6", "#193cb8"],
+};
+const [chart1, chart2, chart3, ...otherBlues] = histogramPalette.colors;
+const histogramOverlayPalette = {
+  ...histogramPalette,
+  colors: [chart3, chart1, chart2, ...otherBlues],
+};
+const histogramStackedPalette = {
+  ...histogramPalette,
+  colors: [chart2, chart1, chart3, ...otherBlues],
+};
+
+type PaletteSpec = Pick<ChartSpec, "palette" | "series" | "stacked"> & {
+  kind?: ChartKind;
+};
+
 /** A type-aware identity; neither display names nor row positions are unique. */
 export function chartSeriesColorKey(
   metricId: string,
@@ -55,15 +75,17 @@ export function chartSeriesColorKey(
   return JSON.stringify([metricId, seriesId ?? null, rawGroup ?? null]);
 }
 
-export function chartPalette(spec: Pick<ChartSpec, "palette">) {
-  return (
+export function chartPalette(spec: PaletteSpec) {
+  const palette =
     CHART_PALETTES.find((palette) => palette.id === spec.palette) ??
-    CHART_PALETTES[0]
-  );
+    CHART_PALETTES[0];
+  if (spec.kind !== "histogram" || palette.id !== "default") return palette;
+  if (!spec.series) return histogramPalette;
+  return spec.stacked ? histogramStackedPalette : histogramOverlayPalette;
 }
 
 export function chartSeriesColor(
-  spec: Pick<ChartSpec, "palette" | "seriesColors">,
+  spec: PaletteSpec & Pick<ChartSpec, "seriesColors">,
   series: { colorKey?: string },
   index: number,
 ) {

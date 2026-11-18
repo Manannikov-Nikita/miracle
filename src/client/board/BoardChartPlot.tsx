@@ -74,6 +74,8 @@ class PlotBoundary extends Component<
 function ChartKitPlot(props: Props) {
   const { series, spec, presentationBackground } = props;
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const [legendPreview, setLegendPreview] = useState<string>();
+  const overlay = spec.kind === "histogram" && !!spec.series && !spec.stacked;
   const entries = useMemo(
     () =>
       series.map((item, index) => ({
@@ -102,6 +104,7 @@ function ChartKitPlot(props: Props) {
     return {
       series: visible.map((entry) => entry.item),
       colors: visible.map((entry) => entry.color),
+      visible,
     };
   }, [entries, hidden, spec.legend]);
   const ink = presentationBackground
@@ -137,6 +140,12 @@ function ChartKitPlot(props: Props) {
               key={key}
               title={item.name}
               aria-pressed={!hidden.has(key)}
+              {...(overlay && {
+                onPointerEnter: () => setLegendPreview(key),
+                onPointerLeave: () => setLegendPreview(undefined),
+                onFocus: () => setLegendPreview(key),
+                onBlur: () => setLegendPreview(undefined),
+              })}
               onClick={() =>
                 setHidden((prev) => {
                   const next = new Set(prev);
@@ -160,7 +169,17 @@ function ChartKitPlot(props: Props) {
           />
         ) : data.series.length ||
           (spec.kind === "histogram" && !entries.length) ? (
-          <Plot key={spec.kind} {...props} {...data} />
+          <Plot
+            key={spec.kind}
+            {...props}
+            series={data.series}
+            colors={data.colors}
+            highlightedSeries={
+              overlay && spec.legend && legendPreview !== undefined
+                ? data.visible.findIndex((entry) => entry.key === legendPreview)
+                : -1
+            }
+          />
         ) : (
           <div className="bk-no-series" role="status">
             Все ряды скрыты. Выберите ряд в легенде.

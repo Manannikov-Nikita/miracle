@@ -7,6 +7,7 @@ import type { ChartPlotProps } from "../src/client/board/chart-kit/plot-types";
 import HistogramPlot from "../src/client/board/chart-kit/HistogramPlot";
 import ChartSkeleton from "../src/client/board/ChartSkeleton";
 import {
+  binPath,
   histogramGeometry,
   histogramRange,
 } from "../src/client/board/chart-kit/histogram-display";
@@ -105,8 +106,8 @@ it("counts each observation once and distinguishes overlaid from stacked interva
   const stackedPaths = marks()
     .slice(0, 2)
     .map((m) => m.getAttribute("d"));
-  expect(stackedPaths[0]).toContain("V" + g.y(2) + "Q"); // Joined edge is square
-  expect(stackedPaths[1]).toContain("," + g.y(2) + "V"); // Upper segment starts at that exact height
+  expect(stackedPaths[0]).toContain("V" + g.y(2) + "H"); // Joined edge is square
+  expect(stackedPaths[1]).toContain("V" + g.y(2) + "Z"); // Upper segment ends flush with that edge
   const one = {
     ...stacked,
     series: [props.series[1]],
@@ -120,6 +121,35 @@ it("counts each observation once and distinguishes overlaid from stacked interva
   expect(histogramGeometry(one, 540, 350).y.domain()).toEqual([0, 2]);
   expect(histogramGeometry(one, 540, 350).columns.map((c) => c.bin)).toEqual(
     g.columns.map((c) => c.bin),
+  );
+});
+
+it("rounds only exposed top corners and fits the arc to narrow or shallow bins", () => {
+  expect(binPath(10, 15, 20, 12)).toBe(
+    "M10,27V19A4,4 0 0 1 14,15H26A4,4 0 0 1 30,19V27Z",
+  );
+  expect(binPath(10, 15, 20, 2)).toContain("A2,2");
+  expect(binPath(10, 15, 5, 12)).toContain("A1,1 0 0 1 11,15H14");
+  expect(binPath(10, 15, 20, 12, false)).toBe("M10,27V15H30V27Z");
+});
+
+it("keeps the overlay tint when a single comparison series is visible", async () => {
+  await render({
+    ...props,
+    series: [props.series[1]],
+    colors: [props.colors[1]],
+  });
+  expect(marks().map((m) => m.getAttribute("fill-opacity"))).toEqual([
+    "0.55",
+    "0.55",
+  ]);
+  await render({
+    ...props,
+    spec: { ...spec, series: undefined },
+    series: [props.series[0]],
+  });
+  expect(marks().every((m) => m.getAttribute("fill-opacity") === "1")).toBe(
+    true,
   );
 });
 
