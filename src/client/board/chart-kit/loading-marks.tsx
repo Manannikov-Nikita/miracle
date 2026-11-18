@@ -1,5 +1,6 @@
 import { curveNatural } from "d3-shape";
 import { useId } from "react";
+import { seriesBarLayout } from "./cartesian-geometry";
 import { areaClosedD, linePathD } from "./bklit/line-path";
 
 // Adapted from Bklit UI's loading-sweep, line-loading-pulse and heatmap-cells
@@ -86,6 +87,8 @@ export function LoadingBars({
   baseline,
   pass,
   stacked,
+  plotLength,
+  metricOrder,
 }: {
   series: LoadingSeries[];
   count: number;
@@ -93,10 +96,11 @@ export function LoadingBars({
   baseline: number;
   pass: number;
   stacked: boolean;
+  plotLength?: number | string;
+  metricOrder?: readonly string[];
 }) {
   const slots = Math.max(1, Math.min(count, 64));
   const slot = 100 / slots;
-  const groupWidth = slot * 0.7;
   // As in chartOptions, each metric has its own stack of breakdowns.
   const stacks = new Map<string | number, LoadingSeries[]>();
   series.forEach((item, j) => {
@@ -105,8 +109,34 @@ export function LoadingBars({
     if (lane) lane.push(item);
     else stacks.set(key, [item]);
   });
-  const lanes = [...stacks.values()];
-  const laneWidth = groupWidth / lanes.length;
+  // The saved metric order still applies when the legend hides early breakdowns.
+  const order = new Set<string | number>([
+    ...(stacked ? (metricOrder ?? []) : []),
+    ...stacks.keys(),
+  ]);
+  const lanes = [...order].flatMap((key) => {
+    const lane = stacks.get(key);
+    return lane ? [lane] : [];
+  });
+  const pixelSlot =
+    typeof plotLength === "number" && plotLength > 0 ? plotLength / slots : 0;
+  // Once a chart has data, keep the same widths and category centres through a refresh.
+  const layout =
+    stacked && pixelSlot > 0 ? seriesBarLayout(pixelSlot, lanes.length) : null;
+  const groupWidth = layout
+    ? (layout.groupWidth / pixelSlot) * slot
+    : slot * 0.7;
+  const step = layout
+    ? ((layout.width + layout.gap) / pixelSlot) * slot
+    : groupWidth / lanes.length;
+  const width = layout
+    ? (layout.width / pixelSlot) * slot
+    : step * (lanes.length > 1 ? 0.9 : 1);
+  // On dense breakdowns sample the colors within each metric, retaining every stack.
+  const perLane = Math.max(
+    2,
+    Math.min(6, Math.floor(768 / (slots * lanes.length))),
+  );
   return (
     <g data-skeleton-mark="bar" fillOpacity=".45">
       {Array.from({ length: slots }, (_, i) => {
@@ -114,19 +144,19 @@ export function LoadingBars({
         const room = towardStart ? baseline : 1 - baseline;
         return lanes.map((lane, col) => {
           let stack = 0;
-          const cross = (i + 0.15) * slot + laneWidth * col;
-          const width = laneWidth * (lanes.length > 1 ? 0.9 : 1);
-          return lane.map(({ color }, j) => {
+          const cross = (i + 0.5) * slot - groupWidth / 2 + step * col;
+          const segments = lane.slice(0, perLane);
+          return segments.map(({ color }, j) => {
             const seed = pass + col * 1.7 + j * 2.3;
             const fraction = (20 + Math.floor(fractionAt(i, seed) * 60)) / 100;
-            const length = (fraction * room * 100) / lane.length;
+            const length = (fraction * room * 100) / segments.length;
             const origin = baseline * 100 + (towardStart ? -stack : stack);
             const start = towardStart ? origin - length : origin;
             stack += length;
             return (
               <rect
                 key={`${i}-${col}-${j}`}
-                rx="2"
+                rx={stacked && j < segments.length - 1 ? 0 : 2}
                 fill={color}
                 x={`${horizontal ? start : cross}%`}
                 y={`${horizontal ? cross : start}%`}

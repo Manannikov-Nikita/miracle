@@ -6,11 +6,12 @@ export interface StackTotal {
   extent: number;
 }
 
-/** Totals belong to an existing visible series, so ECharts uses its bar slot. */
+/** Totals belong to a visible series' slot. Values and extents are in units of `unit`. */
 export function chartStackTotals(
   series: ReturnType<typeof chartSeries>,
   names: string[],
   selected: Record<string, boolean>,
+  unit = 1,
 ): Map<number, StackTotal[]> {
   const metrics = new Map<
     string,
@@ -37,9 +38,10 @@ export function chartStackTotals(
         positive: 0,
         negative: 0,
       };
-      total.value += value;
-      if (value < 0) total.negative += value;
-      else total.positive += value;
+      const amount = value / unit;
+      total.value += amount;
+      if (value < 0) total.negative += amount;
+      else total.positive += amount;
       metric.categories.set(category, total);
     }
   });

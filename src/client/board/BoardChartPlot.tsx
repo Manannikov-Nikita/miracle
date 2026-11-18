@@ -5,10 +5,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import {
-  chartSeriesColor,
-  supportsChartStacking,
-} from "../../shared/chart-appearance";
+import { chartSeriesColor } from "../../shared/chart-appearance";
 import { ErrorBox } from "../components/UI";
 import ChartCanvas from "./ChartCanvas";
 import ChartSkeleton from "./ChartSkeleton";
@@ -30,23 +27,12 @@ function CompatibilityPlot({
   label,
   loading,
 }: Props) {
-  const { option, createOption } = useMemo(() => {
-    const build = (selected?: Record<string, boolean>) =>
-      chartOptions(columns, spec, series, presentationBackground, selected);
-    return {
-      option: build(),
-      createOption:
-        spec.kind === "bar" && spec.stacked && spec.series ? build : undefined,
-    };
-  }, [columns, spec, series, presentationBackground]);
+  const option = useMemo(
+    () => chartOptions(columns, spec, series, presentationBackground),
+    [columns, spec, series, presentationBackground],
+  );
   return (
-    <ChartCanvas
-      option={option}
-      spec={spec}
-      createOption={createOption}
-      label={label}
-      loading={loading}
-    />
+    <ChartCanvas option={option} spec={spec} label={label} loading={loading} />
   );
 }
 
@@ -181,10 +167,12 @@ function ChartKitPlot(props: Props) {
 
 export default function BoardChartPlot(props: Props) {
   const { spec } = props;
-  // ECharts retains signed stacked totals, legend recalculation and numeric scatter axes.
+  // ECharts handles the numeric scatter axis and stacked line/area paths.
   const legacy =
     spec.kind === "scatter" ||
-    (supportsChartStacking(spec.kind) && spec.stacked && spec.series);
+    ((spec.kind === "line" || spec.kind === "area") &&
+      spec.stacked &&
+      spec.series);
   return (
     <PlotBoundary reset={props}>
       {legacy ? <CompatibilityPlot {...props} /> : <ChartKitPlot {...props} />}

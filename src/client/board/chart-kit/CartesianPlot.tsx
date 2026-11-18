@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { formatChartNumber } from "../chartOptions";
 import ChartTooltip from "./ChartTooltip";
 import CartesianFocus from "./CartesianFocus";
@@ -24,17 +31,25 @@ export default function CartesianPlot(props: ChartPlotProps) {
   const host = useRef<HTMLDivElement>(null);
   const clip = useId();
   const tooltipId = useId();
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = host.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => {
-      const w = Math.round(entry?.contentRect.width ?? 0),
-        h = Math.round(entry?.contentRect.height ?? 0);
-      if (w && h)
+    if (!el) return;
+    const measure = (width: number, height: number) => {
+      if (width && height)
         setSize((prev) =>
-          prev.width === w && prev.height === h
+          prev.width === width && prev.height === height
             ? prev
-            : { width: w, height: h },
+            : { width, height },
+        );
+    };
+    // Start the bar entrance at the measured board size on the first paint.
+    measure(el.clientWidth, el.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry)
+        measure(
+          Math.round(entry.contentRect.width),
+          Math.round(entry.contentRect.height),
         );
     });
     observer.observe(el);

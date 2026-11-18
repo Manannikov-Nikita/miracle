@@ -32,7 +32,7 @@ export function focusColumns(g: Geometry) {
       const center = g.center(point.category);
       const at =
         mark.style === "bar" ? center + mark.offset + g.barWidth / 2 : center;
-      const value = point.value === null ? g.zero : g.scale(point.value);
+      const value = point.endPx;
       columns[point.category].push({
         key: `${occurrence}/${mark.key}`,
         mark,
@@ -83,7 +83,7 @@ export function pointerFocus(
       );
       const end = distanceToInterval(
         g.horizontal ? x : y,
-        g.zero,
+        s.point.basePx,
         g.horizontal ? s.x : s.y,
       );
       distance = Math.hypot(side, end) + 1;
@@ -140,11 +140,16 @@ export function keyboardFocus(
   };
 }
 
-export function barRect(g: Geometry, start: number, end: number) {
-  const length = Math.abs(end - g.zero);
+export function barRect(
+  g: Geometry,
+  start: number,
+  end: number,
+  base = g.zero,
+) {
+  const length = Math.abs(end - base);
   return {
-    x: g.horizontal ? Math.min(g.zero, end) : start,
-    y: g.horizontal ? start : Math.min(g.zero, end),
+    x: g.horizontal ? Math.min(base, end) : start,
+    y: g.horizontal ? start : Math.min(base, end),
     width: g.horizontal ? length : g.barWidth,
     height: g.horizontal ? g.barWidth : length,
     rx: Math.min(4, g.barWidth / 3, length / 2),

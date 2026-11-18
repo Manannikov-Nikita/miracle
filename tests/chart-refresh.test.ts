@@ -359,3 +359,54 @@ it("follows visible composed metric styles and configured colors during a refres
       ?.getAttribute("stroke"),
   ).toBe("#eeaa11");
 });
+
+it.each(["vertical", "horizontal"] as const)(
+  "restores the same %s stacked SVG after refresh with its legend, sums and colors",
+  async (orientation) => {
+    vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(650);
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(380);
+    const data = page("saved-stack", 4);
+    data.result.columns.push({ id: "region", name: "Регион", type: "String" });
+    data.rows = [
+      ["Март", 13, "Север"],
+      ["Март", 5, "Юг"],
+      ["Апрель", 8, "Север"],
+      ["Апрель", -4, "Юг"],
+    ];
+    vi.mocked(getResultRows).mockResolvedValueOnce(data);
+    vi.mocked(api).mockResolvedValueOnce(data);
+    const spec: ChartSpec = {
+      ...chart,
+      kind: "bar",
+      stacked: true,
+      series: "region",
+      orientation,
+      seriesColors: { '["y","region","Юг"]': "#f7aa11" },
+    };
+    await render("saved-stack", false, spec);
+    expectReady();
+    const original = plot();
+    expect(original?.getAttribute("viewBox")).toBe("0 0 650 380");
+    const totals = () =>
+      [...host.querySelectorAll(".bk-stack-total")].map((el) => el.textContent);
+    expect(totals()).toEqual(expect.arrayContaining(["18", "4"]));
+    expect(host.querySelectorAll('.bk-bar[fill="#f7aa11"]')).toHaveLength(2);
+    const south = host.querySelector<HTMLButtonElement>(
+      '.bk-legend button[title$="Юг"]',
+    )!;
+    await act(async () => south.click());
+    expect(totals()).toEqual(expect.arrayContaining(["13", "8"]));
+    await render("saved-stack", true, spec);
+    expectSkeleton();
+    expect(
+      host.querySelectorAll('[data-skeleton-mark="bar"] rect'),
+    ).toHaveLength(2);
+    expect(host.querySelector(".bk-stack-total, .bk-bar")).toBeNull();
+    await render("saved-stack", false, spec);
+    expectReady();
+    expect(plot()).toBe(original);
+    expect(south.getAttribute("aria-pressed")).toBe("false");
+    expect(host.querySelectorAll(".bk-bar")).toHaveLength(2);
+    expect(totals()).toEqual(expect.arrayContaining(["13", "8"]));
+  },
+);

@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -10,6 +11,7 @@ import type { cartesianGeometry } from "./cartesian-geometry";
 import { formatChartNumber } from "../chartOptions";
 import { barRect, type Sample } from "./cartesian-focus";
 import "./hover-bar.css";
+import StackedBarMarks from "./StackedBarMarks";
 import { LinePath } from "./bklit/line-path";
 import { truncateTick } from "./cartesian-geometry";
 
@@ -26,10 +28,17 @@ export default memo(function CartesianMarks({
 }) {
   // Index the real rectangles once. Pointer inspection touches only bars that
   // enter or leave focus, retaining their position, animation and point colors.
-  const bars = useRef(new WeakMap<Sample["point"], SVGRectElement>());
-  const previous = useRef(new Set<SVGRectElement>());
+  const bars = useRef(new WeakMap<Sample["point"], SVGGraphicsElement>());
+  const register = useCallback(
+    (point: Sample["point"], node: SVGGraphicsElement | null) => {
+      if (node) bars.current.set(point, node);
+      else bars.current.delete(point);
+    },
+    [],
+  );
+  const previous = useRef(new Set<SVGGraphicsElement>());
   useLayoutEffect(() => {
-    const next = new Set<SVGRectElement>();
+    const next = new Set<SVGGraphicsElement>();
     for (const sample of emphasizedBars) {
       const rect = bars.current.get(sample.point);
       if (rect) next.add(rect);
@@ -44,6 +53,10 @@ export default memo(function CartesianMarks({
   }, [emphasizedBars, g]);
 
   return useMemo(() => {
+    if (g.stacked)
+      return (
+        <StackedBarMarks g={g} spec={spec} width={width} register={register} />
+      );
     const number = (v: number) => formatChartNumber(v, spec.numberFormat);
     const zero = g.zero;
     return g.marks.map((m) => {
@@ -93,8 +106,7 @@ export default memo(function CartesianMarks({
                   <rect
                     className="bk-bar"
                     ref={(el) => {
-                      if (el) bars.current.set(p, el);
-                      else bars.current.delete(p);
+                      register(p, el);
                     }}
                     style={
                       {
@@ -137,5 +149,5 @@ export default memo(function CartesianMarks({
         </g>
       );
     });
-  }, [g, spec, width]);
+  }, [g, spec, width, register]);
 });

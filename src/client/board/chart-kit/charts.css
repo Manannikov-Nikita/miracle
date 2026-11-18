@@ -132,6 +132,10 @@
   stroke-width: 1.5px;
   paint-order: stroke;
 }
+.bk-cartesian text.bk-stack-total {
+  fill: var(--bk-text);
+  font-weight: 650;
+}
 .bk-cartesian .bk-axis-name {
   font-size: 9px;
 }
@@ -219,6 +223,23 @@
   }
   .bk-cartesian[data-horizontal="true"] .bk-bar {
     animation-name: bk-sweep;
+  }
+  /* The shared category transform grows a signed stack from zero. Individual
+     segments stay flush, including when a breakdown has missing categories. */
+  .bk-cartesian .bk-stack-category {
+    transform-box: view-box;
+    animation: bk-rise 1.1s cubic-bezier(0.45, 0, 0.25, 1) var(--bk-delay) both;
+  }
+  .bk-cartesian[data-horizontal="true"] .bk-stack-category {
+    animation-name: bk-sweep;
+  }
+  .bk-cartesian .bk-stack-category .bk-bar {
+    animation: none;
+  }
+  .bk-chart[data-kind="bar"]
+    .bk-stack-category
+    :is(.bk-stack-value, .bk-stack-total) {
+    animation: bk-appear 140ms ease-out calc(750ms + var(--bk-delay)) backwards;
   }
   .board-chart:has(canvas) {
     animation: bk-appear 0.35s ease-out both;

@@ -166,7 +166,9 @@ export function SkeletonMarks({
   });
 
   // A sample of each series style keeps dense overlaid placeholders legible.
-  const bars = styles.filter((s) => s.mark === "bar").slice(0, 6);
+  const stackedBar = kind === "bar" && !!spec?.series && !!spec.stacked;
+  const barSeries = styles.filter((s) => s.mark === "bar");
+  const bars = stackedBar ? barSeries : barSeries.slice(0, 6);
   const areas = styles.filter((s) => s.mark === "area").slice(0, 4);
   const lines = styles.filter((s) => s.mark === "line").slice(0, 4);
   const scatter = styles.filter((s) => s.mark === "scatter").slice(0, 6);
@@ -224,7 +226,9 @@ export function SkeletonMarks({
                   pass={pass}
                   horizontal={horizontal}
                   baseline={zero}
-                  stacked={kind === "bar" && !!spec?.series && !!spec.stacked}
+                  stacked={stackedBar}
+                  metricOrder={spec?.y}
+                  plotLength={horizontal ? viewport.height : viewport.width}
                 />
               )}
               {scatter.length > 0 && (
