@@ -9,6 +9,10 @@
   position: relative;
 }
 
+.chart-load-content {
+  container: chart-content / size;
+}
+
 .chart-load-status {
   position: absolute;
   inset: 0;

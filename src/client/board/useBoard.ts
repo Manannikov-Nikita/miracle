@@ -763,7 +763,20 @@ export function useBoard(
         method: "POST",
         body: JSON.stringify({
           name,
-          document,
+          document: {
+            ...document,
+            // UI-created charts already have a frame. Preserve the displayed
+            // dimensions of legacy charts when saving a draft or pasting as a new board.
+            nodes: document.nodes.map((node) =>
+              node.data.kind === "result" && node.data.view === "chart"
+                ? {
+                    ...node,
+                    width: node.width ?? 480,
+                    height: node.height ?? 300,
+                  }
+                : node,
+            ),
+          },
           ...(kind === "presentation" ? { kind } : {}),
           mutationId,
         }),

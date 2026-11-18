@@ -17,6 +17,13 @@
 .bk-chart[data-legend-position="bottom"] {
   flex-direction: column-reverse;
 }
+/* Scale the SVG layout and HTML overlays together so their coordinates agree
+   at every board zoom. ECharts sizes its canvas annotations in chartOptions. */
+@container chart-content (min-width: 640px) and (min-height: 365px) {
+  .bk-chart {
+    zoom: 1.3;
+  }
+}
 .bk-chart[data-legend-position="left"] {
   flex-direction: row;
 }

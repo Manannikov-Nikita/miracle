@@ -177,16 +177,21 @@ export function chartOptions(
       items.map((item) => formatter(item.value).length * 7 + 10),
     ),
   );
-  const resolvedLabelWidth = (limit: number) =>
-    Math.min(Math.max(0, labelWidth - 10), limit);
+  const resolvedLabelWidth = (limit: number, scale = 1) =>
+    Math.min(Math.ceil(Math.max(0, labelWidth - 10) * scale), limit);
   const topLabelSpace = outsideLabelSpace && !horizontalBar ? 20 : 0;
   const bottomLabelSpace =
     outsideLabelSpace && spec.kind === "bar" && !horizontalBar ? 20 : 0;
   // Reserve a strip for the legend, outside the bounds containing BOTH axes,
   // their tick labels and names. ECharts 6 moves a middle axis name past ticks.
-  const layout = (sideWidth: number, textWidth: number, labelLimit = 160) => {
-    const width = resolvedLabelWidth(labelLimit);
-    const gutter = outsideLabelSpace ? width + 10 : 0;
+  const layout = (
+    sideWidth: number,
+    textWidth: number,
+    labelLimit = 160,
+    labelScale = 1,
+  ) => {
+    const width = resolvedLabelWidth(labelLimit, labelScale);
+    const gutter = outsideLabelSpace ? width + 10 * labelScale : 0;
     const sideLabelSpace = horizontalBar ? gutter : gutter / 2;
     return {
       // Long values truncate only on the canvas; tooltips retain the full value.
@@ -242,10 +247,40 @@ export function chartOptions(
         right:
           (spec.legend && position === "right" ? sideWidth + 24 : 24) +
           sideLabelSpace,
-        top: (spec.legend && position === "top" ? 42 : 12) + topLabelSpace,
+        top:
+          (spec.legend && position === "top" ? 42 : 12) +
+          topLabelSpace * labelScale,
         bottom:
-          (spec.legend && position === "bottom" ? 42 : 8) + bottomLabelSpace,
+          (spec.legend && position === "bottom" ? 42 : 8) +
+          bottomLabelSpace * labelScale,
       },
+    };
+  };
+  // ECharts redraws these in its own coordinate system when the card resizes.
+  // The bitmap resolution remains tied to the device pixel ratio.
+  const chartScale = (factor: number) => {
+    const px = (value: number) => Math.round(value * factor);
+    const axis = {
+      axisLabel: { fontSize: px(12) },
+      nameTextStyle: { fontSize: px(12) },
+    };
+    const label = { fontSize: px(11), distance: px(5) };
+    return {
+      xAxis: { ...axis, nameGap: px(32) },
+      yAxis: { ...axis, nameGap: px(20) },
+      legend: {
+        itemWidth: px(14),
+        itemHeight: px(10),
+        pageIconSize: px(10),
+        textStyle: { fontSize: px(12) },
+        pageTextStyle: { fontSize: px(12) },
+      },
+      tooltip: { textStyle: { fontSize: px(14) } },
+      series: series.map((_, index) => ({
+        label,
+        symbolSize: px(spec.kind === "scatter" ? 7 : 4),
+        ...(totals.has(index) ? { markPoint: { label } } : {}),
+      })),
     };
   };
   const normalLayout = layout(180, vertical ? 150 : 160);
@@ -486,6 +521,10 @@ export function chartOptions(
     // Media options are recalculated on chart.resize(), including when a board
     // card is resized. The explicit wide query restores the full legend gutter.
     media: [
+      // Media options merge. Reapply the compact scale before the large override
+      // so crossing either threshold restores the original sizes.
+      { query: {}, option: chartScale(1) },
+      { query: { minWidth: 640, minHeight: 365 }, option: chartScale(1.3) },
       { query: { minWidth: 650 }, option: normalLayout },
       {
         query: { minWidth: 450, maxWidth: 649 },
@@ -529,6 +568,20 @@ export function chartOptions(
         query: { minHeight: 260 },
         option: { yAxis: { nameTruncate: { maxWidth: 150 } } },
       },
+      ...(outsideLabelSpace
+        ? [
+            {
+              query: { minWidth: 640, minHeight: 365 },
+              // Horizontal bars need two value gutters alongside a vertical legend.
+              option: layout(
+                180,
+                vertical ? 150 : 160,
+                horizontalBar && vertical && spec.legend ? 160 : 208,
+                1.3,
+              ),
+            },
+          ]
+        : []),
     ],
   };
 }

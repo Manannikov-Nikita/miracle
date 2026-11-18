@@ -70,6 +70,7 @@ import type {
   ResultSet,
 } from "../../shared/types";
 import { api, waitForRun } from "../api";
+import { DEFAULT_RESULT_SIZE } from "../../shared/chart-size";
 import {
   readCanvasSearchText,
   type CanvasSearchTarget,
@@ -1236,8 +1237,8 @@ function Workspace({
         const id = insertionSlide(target.document, destination);
         const centerPoint = id
           ? {
-              x: (PRESENTATION_WIDTH - 540) / 2,
-              y: (PRESENTATION_HEIGHT - 350) / 2,
+              x: (PRESENTATION_WIDTH - DEFAULT_RESULT_SIZE.width) / 2,
+              y: (PRESENTATION_HEIGHT - DEFAULT_RESULT_SIZE.height) / 2,
             }
           : destination
             ? center

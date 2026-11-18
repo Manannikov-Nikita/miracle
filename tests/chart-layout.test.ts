@@ -93,6 +93,60 @@ function verifyLayout(
 }
 
 describe("rendered chart layout", () => {
+  it("restores native chart typography and scatter points when either size drops below the large breakpoint", () => {
+    const chart = echarts.init(null, "dark", {
+      renderer: "svg",
+      ssr: true,
+      width: 540,
+      height: 350,
+    });
+    try {
+      chart.setOption(
+        chartOptions(
+          columns,
+          { kind: "scatter", x: "x", y: ["y"], legend: true, showLabels: true },
+          [
+            {
+              name: "Ряд",
+              data: [
+                [1, 10],
+                [2, 7],
+              ],
+            },
+          ],
+        ),
+      );
+      for (const [width, height, large] of [
+        [640, 365, true],
+        [639, 400, false],
+        [700, 400, true],
+        [700, 364, false],
+      ] as const) {
+        chart.resize({ width, height });
+        const axis = {
+          axisLabel: { fontSize: large ? 16 : 12 },
+          nameTextStyle: { fontSize: large ? 16 : 12 },
+        };
+        expect(chart.getOption()).toMatchObject({
+          xAxis: [axis],
+          yAxis: [axis],
+          legend: [
+            {
+              textStyle: { fontSize: large ? 16 : 12 },
+              itemWidth: large ? 18 : 14,
+            },
+          ],
+          tooltip: [{ textStyle: { fontSize: large ? 18 : 14 } }],
+          series: [
+            { label: { fontSize: large ? 14 : 11 }, symbolSize: large ? 9 : 7 },
+          ],
+        });
+      }
+    } finally {
+      chart.dispose();
+    }
+  });
+
   it.each(["top", "bottom", "left", "right"] as const)(
     "keeps a %s legend separate from names and ticks while resizing and switching kinds",
     (legendPosition) => {

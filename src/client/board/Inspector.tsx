@@ -3,6 +3,7 @@ import type { BoardNode, ResultSet } from "../../shared/types";
 import { ArrowsClockwise, Code, X } from "@phosphor-icons/react";
 import { ChartSettings } from "./ResultView";
 import { defaultChart } from "./model";
+import { firstChartFrame } from "../../shared/chart-size";
 import TableSettings from "./TableSettings";
 import { createTableSpec } from "./tableModel";
 import CustomChartDetails from "./CustomChartDetails";
@@ -212,6 +213,7 @@ export default function Inspector({
                   if (node.data.view === "chart") return;
                   change({
                     ...node,
+                    ...firstChartFrame(node),
                     data: {
                       ...node.data,
                       view: "chart",

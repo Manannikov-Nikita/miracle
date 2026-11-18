@@ -1,5 +1,6 @@
 import { isDateColumn, isNumericColumn } from "../../shared/column-types";
 import { compareDateValues } from "../../shared/date-values";
+import { DEFAULT_RESULT_SIZE } from "../../shared/chart-size";
 import type { TableColumnOptions } from "../../shared/tableTypes";
 export { isNumericColumn } from "../../shared/column-types";
 import type {
@@ -32,8 +33,7 @@ export function createResultNode(
     id: crypto.randomUUID(),
     type: "artifact",
     position,
-    width: 540,
-    height: 350,
+    ...DEFAULT_RESULT_SIZE,
     data: {
       title: `Результат запроса (${number})`,
       kind: "result",

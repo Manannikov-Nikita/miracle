@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { chartSpecSchema } from "../shared/board-schema.js";
+import { DEFAULT_CHART_SIZE } from "../shared/chart-size.js";
 import {
   CHART_PALETTES,
   CHART_METRIC_LIMIT,
@@ -127,6 +128,7 @@ export const chartGuide = {
       "#RRGGBB, case-insensitive; no alpha, named colors or short HEX.",
   },
   resize: {
+    defaultNewChartSize: DEFAULT_CHART_SIZE,
     contract:
       "Width and height are top-level node fields in board coordinates, not data.chart and not screen pixels. Read actual node.width/height, fallback480/300 only if omitted. To preserve aspect ratio, multiply BOTH by the same positive scale s in one update_node patch. Chart UI minimum is280x180, saved maximum10000 each: clamp s jointly to [max(280/w,180/h), min(10000/w,10000/h)] before applying. If the interval is empty, keep existing dimensions and explain. Clamp floating-point overshoots at bounds. There is no persistent Shift/aspect-lock setting: Shift is a browser gesture; MCP achieves the same geometry by setting both dimensions.",
     anchor:

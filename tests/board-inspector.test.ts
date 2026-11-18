@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import Inspector from "../src/client/board/Inspector";
+import { createResultNode } from "../src/client/board/model";
 import {
   createTableSpec,
   formatTableCell,
@@ -182,6 +183,61 @@ describe("board inspector settings integration", () => {
     expect(found, `checkbox ${text}`).toBeDefined();
     return found!;
   }
+  it("enlarges a default result once when its first chart is created", async () => {
+    const node = createResultNode(result);
+    expect(node).toMatchObject({ width: 540, height: 350 });
+    await render(node);
+    await click(button("График"));
+    expect(current).toMatchObject({
+      width: 702,
+      height: 455,
+      position: node.position,
+    });
+    await click(button("Таблица"));
+    await click(button("График"));
+    expect(current).toMatchObject({
+      width: 702,
+      height: 455,
+      position: node.position,
+    });
+  });
+  it.each([
+    { width: 400, height: 350 },
+    { width: 540, height: 600 },
+  ])("keeps the manually sized result frame %j", async (size) => {
+    await render({ ...createResultNode(result), ...size });
+    await click(button("График"));
+    expect(current).toMatchObject(size);
+  });
+  it.each([
+    [
+      { x: 530, y: 275 },
+      { x: 449, y: 222.5 },
+    ],
+    [
+      { x: 1060, y: 550 },
+      { x: 898, y: 445 },
+    ],
+  ])(
+    "fits the enlarged chart on its slide at %j",
+    async (position, expected) => {
+      await render(
+        { ...createResultNode(result, position), slideId: "slide" },
+        { presentation: true },
+      );
+      await click(button("График"));
+      expect(current).toMatchObject({
+        width: 702,
+        height: 455,
+        position: expected,
+      });
+    },
+  );
+  it("keeps a previously configured chart at its saved size", async () => {
+    await render({ ...fixture("table"), width: 540, height: 350 });
+    await click(button("График"));
+    expect(current).toMatchObject({ width: 540, height: 350 });
+  });
   async function click(element: HTMLElement) {
     await act(async () => element.click());
   }

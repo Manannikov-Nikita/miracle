@@ -27,6 +27,7 @@ describe("board creation echoes", () => {
   let root: Root;
   let host: HTMLDivElement;
   let store: ReturnType<typeof useBoard>;
+  let postedDocument: Board["document"];
   let finishCreate: (response: Response) => void;
   const notify = vi.fn();
   const existing = board("existing");
@@ -50,10 +51,12 @@ describe("board creation echoes", () => {
       removeItem: (key: string) => storage.delete(key),
     });
     vi.stubGlobal("fetch", async (path: string, options: RequestInit = {}) => {
-      if (path === "/api/boards" && options.method === "POST")
+      if (path === "/api/boards" && options.method === "POST") {
+        postedDocument = JSON.parse(String(options.body)).document;
         return new Promise<Response>((resolve) => {
           finishCreate = resolve;
         });
+      }
       if (path === "/api/boards") return response([existing]);
       if (path === "/api/boards/existing") return response(existing);
       throw new Error(`Unexpected request: ${path}`);
@@ -89,6 +92,31 @@ describe("board creation echoes", () => {
       });
     });
   }
+
+  it("keeps a legacy chart's displayed size in a copied board", async () => {
+    const document: Board["document"] = {
+      ...existing.document,
+      nodes: [
+        {
+          id: "legacy",
+          type: "artifact",
+          position: { x: 20, y: 50 },
+          height: 240,
+          data: { kind: "result", title: "Chart", view: "chart" },
+        },
+      ],
+    };
+    await act(async () => {
+      const creating = store.create("Copy", document);
+      finishCreate(response({ ...created, document: postedDocument }));
+      await creating;
+    });
+    expect(postedDocument.nodes[0]).toEqual({
+      ...document.nodes[0],
+      width: 480,
+    });
+    expect(document.nodes[0].width).toBeUndefined();
+  });
 
   it.each(["before", "after"])(
     "shows one title when the creation event arrives %s the HTTP response",

@@ -296,3 +296,135 @@ it("omits stored SQL and local table rows even when the scene includes text prev
     /private SQL|resultSetId|visualTable|rows|columns/,
   );
 });
+
+function resultForChartSizing(): BoardNode {
+  const resultSetId = randomUUID();
+  const source = { connectionId: randomUUID(), sql: "SELECT 1" };
+  db.query(
+    "INSERT INTO result_sets(id,columns,row_count,byte_count,source) VALUES(?1,?2,?3,?4,?5)",
+    [resultSetId, [], 0, 0, source],
+  );
+  return {
+    id: "result",
+    type: "artifact",
+    position: { x: 50, y: 30 },
+    data: {
+      kind: "result",
+      title: "Результат",
+      resultSetId,
+      source,
+      view: "chart",
+    },
+  };
+}
+
+it("sizes newly created and agent-added charts on each missing side, preserving supplied frames and idempotent responses", () => {
+  const node = resultForChartSizing();
+  const request = {
+    name: "Dashboard",
+    mutationId: randomUUID(),
+    document: {
+      schemaVersion: 1,
+      nodes: [
+        node,
+        { ...node, id: "width", width: 777 },
+        { ...node, id: "sized", width: 380, height: 220 },
+      ],
+      edges: [],
+    },
+  };
+  const created = ops.createBoard(request);
+  expect(created.document.nodes.map((n) => [n.width, n.height])).toEqual([
+    [702, 455],
+    [777, 455],
+    [380, 220],
+  ]);
+  expect(ops.createBoard(request)).toEqual(created);
+  const patch = {
+    baseRevision: created.revision,
+    mutationId: randomUUID(),
+    operations: [
+      { type: "add_node", node: { ...node, id: "height", height: 250 } },
+    ],
+  };
+  const added = ops.patchBoard(created.id, patch);
+  expect(added.document.nodes.at(-1)).toMatchObject({
+    width: 702,
+    height: 250,
+  });
+  expect(ops.patchBoard(created.id, patch)).toEqual(added);
+});
+
+it("grows only first chart conversions of default tables and preserves full-snapshot undo and implicit legacy geometry", () => {
+  const source = resultForChartSizing();
+  const table = {
+    ...source,
+    width: 540,
+    height: 350,
+    data: { ...source.data, view: "table" as const },
+  };
+  const configured = { kind: "bar" as const, x: "x", y: ["y"], legend: true };
+  const original = ops.createBoard({
+    name: "Board",
+    document: {
+      schemaVersion: 1,
+      edges: [],
+      nodes: [
+        table,
+        { ...table, id: "manual", width: 415 },
+        {
+          ...table,
+          id: "configured",
+          data: { ...table.data, chart: configured },
+        },
+        { ...table, id: "explicit" },
+      ],
+    },
+  });
+  const operations = original.document.nodes.map((n) => ({
+    type: "update_node",
+    id: n.id,
+    patch: {
+      data: { view: "chart", chart: configured },
+      ...(n.id === "explicit" ? { height: 200 } : {}),
+    },
+  }));
+  const saved = ops.patchBoard(original.id, {
+    baseRevision: original.revision,
+    mutationId: randomUUID(),
+    operations,
+  });
+  expect(saved.document.nodes.map((n) => [n.width, n.height])).toEqual([
+    [702, 455],
+    [415, 350],
+    [540, 350],
+    [540, 200],
+  ]);
+  const undone = ops.updateBoard(original.id, {
+    baseRevision: saved.revision,
+    document: original.document,
+  });
+  expect(undone.document).toEqual(original.document);
+  const oldDocument = {
+    ...undone.document,
+    nodes: [{ ...source, id: "legacy" }],
+  };
+  const restored = ops.updateBoard(original.id, {
+    baseRevision: undone.revision,
+    document: oldDocument,
+  });
+  expect(restored.document).toEqual(oldDocument);
+  const renamed = ops.patchBoard(original.id, {
+    baseRevision: restored.revision,
+    mutationId: randomUUID(),
+    operations: [
+      {
+        type: "update_node",
+        id: "legacy",
+        patch: { data: { title: "Новое имя" } },
+      },
+    ],
+  });
+  expect(renamed.document.nodes[0].width).toBeUndefined();
+  expect(renamed.document.nodes[0].height).toBeUndefined();
+});

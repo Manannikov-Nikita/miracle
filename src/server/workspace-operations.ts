@@ -14,6 +14,7 @@ import {
   boardValuesEqual,
   mergeBoardDocuments,
 } from "../shared/board-merge.js";
+import { DEFAULT_CHART_SIZE, firstChartFrame } from "../shared/chart-size.js";
 import { getNodeVisualBounds } from "../shared/board-geometry.js";
 import type { AgentWorkTarget } from "../shared/agent-work.js";
 import {
@@ -57,6 +58,17 @@ const queryDto = (r: any): QueryDocument => ({
   ...r.source,
   updatedAt: new Date(r.updated_at).toISOString(),
 });
+// Only creation commands supply dimensions. Full document saves preserve exact
+// geometry for undo, copies and legacy nodes whose dimensions were omitted.
+function withNewChartSize(node: BoardNode): BoardNode {
+  if (node?.data?.kind !== "result" || node.data.view !== "chart") return node;
+  const {
+    width = DEFAULT_CHART_SIZE.width,
+    height = DEFAULT_CHART_SIZE.height,
+  } = node;
+  return { ...node, width, height };
+}
+
 function checkBoardSize(document: BoardDocument) {
   const custom = document.nodes.some(
     (node) => node.data.customChart !== undefined,
@@ -368,7 +380,11 @@ export class WorkspaceOperations {
       b.mutationId || randomUUID(),
       request,
       () => {
-        const document = request.document ?? emptyPresentationDocument();
+        const initial = request.document ?? emptyPresentationDocument();
+        const document = {
+          ...initial,
+          nodes: initial.nodes.map(withNewChartSize),
+        };
         if (b.kind !== undefined && b.kind !== boardKind(document))
           throw problem(
             400,
@@ -713,7 +729,7 @@ export class WorkspaceOperations {
             break;
           }
           case "add_node":
-            document.nodes.push(op.node as any);
+            document.nodes.push(withNewChartSize(op.node as BoardNode));
             break;
           case "update_node": {
             const node = document.nodes.find((n) => n.id === key);
@@ -727,10 +743,16 @@ export class WorkspaceOperations {
               })
               .strict()
               .parse(op.patch);
-            Object.assign(node, {
-              ...patch,
-              data: { ...node.data, ...patch.data },
-            });
+            const data = { ...node.data, ...patch.data };
+            const frame =
+              data.kind === "result" &&
+              patch.data?.view === "chart" &&
+              patch.width === undefined &&
+              patch.height === undefined &&
+              patch.position === undefined
+                ? firstChartFrame(node)
+                : {};
+            Object.assign(node, frame, patch, { data });
             break;
           }
           case "remove_node":

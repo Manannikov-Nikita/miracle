@@ -300,6 +300,35 @@ describe("totals on stacked bars", () => {
     }
   });
 
+  it("displays large-font two-digit and long totals in full in a large chart", () => {
+    const { chart } = render(
+      { ...spec, y: ["revenue"], orientation: "horizontal" },
+      [
+        ["A", 12, 0, "one"],
+        ["A", 26, 0, "two"],
+        ["B", 123456789, 0, "one"],
+        ["B", 222222222, 0, "two"],
+      ],
+    );
+    try {
+      chart.resize({ width: 640, height: 365 });
+      const svg = chart.renderToSVGString();
+      for (const total of [38, 345679011])
+        expect(svg).toContain(`>${formatChartNumber(total)}</text>`);
+      const marked = chart
+        .getModel()
+        .getSeries()
+        .find((model) => model.option.markPoint?.data?.length);
+      const label = marked?.option.markPoint.label;
+      expect(label.fontSize).toBe(14);
+      expect(label.width).toBeGreaterThan(
+        formatChartNumber(345679011).length * 7,
+      );
+    } finally {
+      chart.dispose();
+    }
+  });
+
   it("renders no totals when all real series are hidden", () => {
     const plotted = chartSeries(columns, rows, spec);
     const initial = chartOptions(columns, spec, plotted);
@@ -328,12 +357,11 @@ describe("totals on stacked bars", () => {
             ),
           );
       const original = structuredClone(layouts());
-      // Keep the reserved label gutter: test the bar layout, independently of
-      // the intentional extra room that enabled totals add around the plot.
+      // Keep the same responsive typography and reserved gutters. Removing
+      // only marker data isolates its effect on bar positions.
       const withoutMarkers = {
         ...option,
         series: option.series.map(({ markPoint: _, ...item }) => item),
-        media: [],
       };
       chart.setOption(withoutMarkers, { notMerge: true });
       expect(layouts()).toEqual(original);
