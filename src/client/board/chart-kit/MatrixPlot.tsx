@@ -14,7 +14,9 @@ import { SkeletonMarks } from "../ChartSkeleton";
 import { metricText, usePlotViewport } from "./compact-plot";
 import { heatmapRectCells } from "./bklit/heatmap-rect-cells";
 import ChartTooltip from "./ChartTooltip";
+import { useChartPaint } from "./mark-paint";
 import { unitPosition } from "./unit-position";
+import { pointAppearance } from "./point-appearance";
 import "./compact-plots.css";
 
 function shorten(value: string, pixels: number) {
@@ -30,6 +32,7 @@ export default function MatrixPlot({
   presentationBackground,
   loading,
 }: ChartPlotProps) {
+  const paint = useChartPaint(series, colors);
   const focusMask = useId();
   const tooltipId = useId();
   const pointerInspection = useRef(false);
@@ -116,8 +119,11 @@ export default function MatrixPlot({
                 : max === min
                   ? 0.8
                   : 0.2 + 0.8 * unitPosition(value, min, max);
-            const fill =
-              item.displayData?.[cell.bin.index]?.color ?? colors[row];
+            const { style, color } = pointAppearance(
+              item,
+              cell.bin.index,
+              colors[row],
+            );
             const text = spec.showLabels
               ? metricText(item, cell.bin.index, spec.numberFormat)
               : "";
@@ -131,11 +137,15 @@ export default function MatrixPlot({
                   width={cell.width}
                   height={cell.height}
                   rx={Math.min(2, xStep / 6, yStep / 6)}
-                  fill={value === undefined ? "none" : fill}
-                  fillOpacity={intensity}
-                  stroke={value === undefined ? "currentColor" : undefined}
-                  strokeOpacity={0.25}
-                  strokeWidth={Math.min(1, cell.width / 4)}
+                  {...(value === undefined
+                    ? {
+                        fill: "none",
+                        stroke: "currentColor",
+                        strokeOpacity: 0.25,
+                        strokeWidth: Math.min(1, cell.width / 4),
+                      }
+                    : paint.fill(style, color))}
+                  fillOpacity={intensity * (style?.opacity ?? 1)}
                 />
                 {showValue && (
                   <text
@@ -162,6 +172,7 @@ export default function MatrixPlot({
       cells,
       categories,
       colors,
+      paint,
       max,
       min,
       series,
@@ -279,6 +290,7 @@ export default function MatrixPlot({
             else setFocus(null);
           }}
         >
+          {paint.defs}
           {active && (
             <defs>
               <mask
@@ -432,8 +444,10 @@ export default function MatrixPlot({
               name: item.name,
               value: metricText(item, active.bin.index, spec.numberFormat),
               color:
-                item.displayData?.[active.bin.index]?.color ??
-                colors[active.row],
+                active.count === undefined
+                  ? (item.seriesStyle?.color ?? colors[active.row])
+                  : pointAppearance(item, active.bin.index, colors[active.row])
+                      .color,
               active: true,
             },
           ]}

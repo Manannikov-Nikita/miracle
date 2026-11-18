@@ -1,3 +1,4 @@
+import type { useChartPaint } from "./mark-paint";
 import { truncateTick } from "./cartesian-geometry";
 import { type Geometry, type Sample } from "./cartesian-focus";
 
@@ -67,6 +68,7 @@ export default function CartesianFocus({
   category,
   shared,
   highlighted,
+  paint,
   width,
   height,
 }: {
@@ -74,6 +76,7 @@ export default function CartesianFocus({
   category: number;
   shared: boolean;
   highlighted: Sample[];
+  paint: ReturnType<typeof useChartPaint>;
   width: number;
   height: number;
 }) {
@@ -100,32 +103,13 @@ export default function CartesianFocus({
           />
         </g>
       )}
-      {!shared && selected?.mark.stroke && (
-        <g>
-          {selected.mark.fill && (
-            <path
-              d={selected.mark.fill}
-              fill={selected.mark.color}
-              fillOpacity=".15"
-            />
-          )}
-          <path
-            d={selected.mark.stroke}
-            fill="none"
-            stroke={selected.mark.color}
-            strokeWidth="2.4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </g>
-      )}
       {highlighted.map((sample) => (
         <circle
           key={shared ? sample.key : "selected"}
           className="bk-focus-dot"
           style={{ transform: `translate(${sample.x}px, ${sample.y}px)` }}
           r="4.2"
-          fill={sample.color}
+          {...paint.fill(sample.point.style, sample.color)}
         />
       ))}
       <CategoryChip g={g} category={category} width={width} height={height} />

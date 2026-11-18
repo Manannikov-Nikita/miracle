@@ -1,0 +1,87 @@
+.chart-mark-fields,
+.chart-mark-rule-editor,
+.chart-mark-rules,
+.chart-mark-series-editor {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.chart-mark-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.chart-mark-fields > *,
+.chart-mark-rule-editor label {
+  min-width: 0;
+}
+.chart-mark-fields .select-trigger,
+.chart-mark-fields input {
+  width: 100%;
+  min-width: 0;
+}
+.chart-mark-color {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 58px auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--board-muted);
+  font-size: 12px;
+}
+.chart-mark-color-value {
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+}
+.chart-mark-series-editor,
+.chart-mark-rule-editor {
+  padding: 8px 2px 10px;
+}
+.chart-mark-series-editor > button {
+  justify-self: start;
+}
+.chart-mark-rule {
+  min-width: 0;
+  border-bottom: 1px solid var(--board-border-subtle);
+}
+.chart-mark-rule-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 24px);
+  align-items: center;
+  gap: 2px;
+}
+.board-workspace .chart-mark-disclosure,
+.board-workspace .chart-mark-icon {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  min-width: 0;
+  min-height: 24px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--board-muted);
+}
+.board-workspace .chart-mark-disclosure {
+  gap: 4px;
+  justify-content: start;
+  text-align: left;
+}
+.chart-mark-disclosure span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chart-mark-disclosure > svg {
+  flex-shrink: 0;
+}
+.board-workspace .chart-mark-icon {
+  justify-content: center;
+}
+.board-workspace .chart-mark-icon:hover:enabled,
+.board-workspace .chart-mark-disclosure:hover:enabled {
+  background: var(--board-hover);
+  color: var(--board-text);
+}
+.chart-mark-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

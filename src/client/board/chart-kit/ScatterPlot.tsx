@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { SkeletonMarks } from "../ChartSkeleton";
 import { formatChartNumber } from "../chart-number";
 import ChartTooltip from "./ChartTooltip";
+import { useChartPaint } from "./mark-paint";
 import { usePlotViewport } from "./compact-plot";
 import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
 import { scatterGeometry, scatterRadius } from "./scatter-geometry";
@@ -15,6 +16,7 @@ import "./scatter.css";
 export default function ScatterPlot(props: ChartPlotProps) {
   const { series, colors, columns, spec, label, loading } = props;
   const viewport = usePlotViewport();
+  const paint = useChartPaint(series, colors);
   const width = viewport.width || 460,
     height = viewport.height || 240;
   const tipId = useId();
@@ -128,6 +130,7 @@ export default function ScatterPlot(props: ChartPlotProps) {
           });
         }}
       >
+        {paint.defs}
         <ScatterAxes
           g={g}
           width={width}
@@ -151,7 +154,13 @@ export default function ScatterPlot(props: ChartPlotProps) {
             className="bk-scatter-cloud"
             data-dimmed={active ? true : undefined}
           >
-            <ScatterCloud g={g} width={width} series={series} spec={spec} />
+            <ScatterCloud
+              g={g}
+              width={width}
+              series={series}
+              spec={spec}
+              paint={paint}
+            />
           </g>
         )}
         {!loading && !g.points.length && (
@@ -177,7 +186,10 @@ export default function ScatterPlot(props: ChartPlotProps) {
               stroke={active.color}
               strokeWidth={1.5}
             />
-            <circle r={scatterRadius} fill={active.color} />
+            <circle
+              r={scatterRadius}
+              {...paint.fill(active.style, active.color)}
+            />
           </g>
         )}
       </svg>

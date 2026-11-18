@@ -2,10 +2,10 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, it, expect, vi } from "vitest";
+import { useChartPaint } from "../src/client/board/chart-kit/mark-paint";
 import CartesianMarks from "../src/client/board/chart-kit/CartesianMarks";
 import {
   focusColumns,
-  type Geometry,
   type Sample,
 } from "../src/client/board/chart-kit/cartesian-focus";
 import { cartesianGeometry } from "../src/client/board/chart-kit/cartesian-geometry";
@@ -62,30 +62,34 @@ afterEach(async () => {
   host.remove();
   vi.unstubAllGlobals();
 });
-const draw = (geometry: Geometry, emphasizedBars: readonly Sample[]) =>
-  act(async () =>
-    root.render(
-      createElement(
-        "svg",
-        null,
-        createElement(CartesianMarks, {
-          spec,
-          geometry,
-          width: 480,
-          emphasizedBars,
-        }),
-      ),
-    ),
-  );
+function setupMarks(items: ChartSeriesItem[], colors: string[]) {
+  const geometry = cartesianGeometry({ series: items, spec, colors }, 480, 240);
+  function Marks({ emphasizedBars }: { emphasizedBars: readonly Sample[] }) {
+    const paint = useChartPaint(items, colors);
+    return createElement(
+      "svg",
+      null,
+      paint.defs,
+      createElement(CartesianMarks, {
+        spec,
+        geometry,
+        paint,
+        width: 480,
+        emphasizedBars,
+      }),
+    );
+  }
+  return {
+    geometry,
+    draw: (emphasizedBars: readonly Sample[]) =>
+      act(async () => root.render(createElement(Marks, { emphasizedBars }))),
+  };
+}
 const activeRects = () => [...host.querySelectorAll(".bk-active-bar")];
 it("crossfades original bars by sample or entire category without replacing any rectangle/label or rewriting its geometry", async () => {
-  const g = cartesianGeometry(
-    { series, spec, colors: ["#666", "#999", "#ccc"] },
-    480,
-    240,
-  );
+  const { geometry: g, draw } = setupMarks(series, ["#666", "#999", "#ccc"]);
   const samples = focusColumns(g);
-  await draw(g, []);
+  await draw([]);
   const bars = [...host.querySelectorAll(".bk-bar")];
   const labels = [...host.querySelectorAll('[data-series-style="bar"] text')];
   const mutations: MutationRecord[] = [];
@@ -93,13 +97,13 @@ it("crossfades original bars by sample or entire category without replacing any 
     mutations.push(...records),
   );
   observer.observe(host, { childList: true, attributes: true, subtree: true });
-  await draw(g, [samples[0][1]]);
+  await draw([samples[0][1]]);
   expect(activeRects()).toEqual([bars[2]]);
-  await draw(g, samples[1]);
+  await draw(samples[1]);
   expect(activeRects()).toEqual([bars[1], bars[3]]);
-  await draw(g, samples[0]);
+  await draw(samples[0]);
   expect(activeRects()).toEqual([bars[0], bars[2]]);
-  await draw(g, []);
+  await draw([]);
   expect(activeRects()).toHaveLength(0);
   expect(host.querySelector(".bk-bar")).toBe(bars[0]);
   expect(bars[0].getAttribute("fill")).toBe("#f6a081");
@@ -121,17 +125,13 @@ it("does not traverse plotted marks on subsequent inspections and differentiates
     name: "Продажи",
     data: Array.from({ length: 128 }, (_, i) => ["Один период", i + 1]),
   };
-  const g = cartesianGeometry(
-    { series: [many], spec, colors: ["#934"] },
-    480,
-    240,
-  );
+  const { geometry: g, draw } = setupMarks([many], ["#934"]);
   const samples = focusColumns(g)[0];
-  await draw(g, []);
+  await draw([]);
   const bars = host.querySelectorAll(".bk-bar");
   const map = vi.spyOn(g.marks, "map");
-  await draw(g, [samples[0]]);
-  await draw(g, [samples[83]]);
+  await draw([samples[0]]);
+  await draw([samples[83]]);
   expect(activeRects()).toEqual([bars[83]]);
   expect(map).not.toHaveBeenCalled();
   map.mockRestore();

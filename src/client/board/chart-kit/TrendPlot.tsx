@@ -1,5 +1,14 @@
 // Adapted from the Bklit UI LineSparkline (bklit/bklit-ui@76299da, MIT).
-import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { curveMonotoneX } from "d3-shape";
 import { createPortal } from "react-dom";
 import type { ChartSeriesItem } from "../model";
 import type { ChartPlotProps } from "./plot-types";
@@ -7,6 +16,9 @@ import { trendLine } from "./bklit/trend-line";
 import { categoryText, metricText, usePlotViewport } from "./compact-plot";
 import ChartTooltip from "./ChartTooltip";
 import { SkeletonMarks } from "../ChartSkeleton";
+import { pointAppearance } from "./point-appearance";
+import { useChartPaint } from "./mark-paint";
+import { styledPathRuns } from "./styled-path";
 import "./compact-plots.css";
 
 interface Selection {
@@ -45,6 +57,11 @@ const TrendRow = memo(function TrendRow({
   offset: number;
 }) {
   const clip = useId();
+  const reveal = useId();
+  const strokes = useId();
+  const rowItems = useMemo(() => [item], [item]);
+  const rowColors = useMemo(() => [color], [color]);
+  const paint = useChartPaint(rowItems, rowColors);
   const tooltipId = useId();
   const pointerInspection = useRef(false);
   const last = item.data.length - 1;
@@ -60,7 +77,11 @@ const TrendRow = memo(function TrendRow({
     [item.data, width, height],
   );
   const point = active === null ? undefined : points[active];
-  const ink = (active !== null && item.displayData?.[active]?.color) || color;
+  const { style: activeStyle, color: ink } = pointAppearance(
+    item,
+    active ?? -1,
+    color,
+  );
   const valueText = (index: number) =>
     metricText(item, index, spec.numberFormat);
   const choose = (index: number) => {
@@ -73,17 +94,67 @@ const TrendRow = memo(function TrendRow({
   };
   const clear = () =>
     setSelection((prev) => (prev?.key === rowKey ? null : prev));
-  // SVG strokes skip isolated defined points between gaps. Keep those points visible.
-  const singles = useMemo(
-    () =>
-      points.filter(
-        (p, i) =>
-          Number.isFinite(p.y) &&
-          !Number.isFinite(points[i - 1]?.y) &&
-          !Number.isFinite(points[i + 1]?.y),
-      ),
-    [points],
-  );
+  const customized = Boolean(item.seriesStyle || item.pointStyles);
+  const marks = useMemo(() => {
+    const data = points.map((p, i) => ({
+      ...p,
+      value: item.data[i][1],
+      ...(customized
+        ? pointAppearance(item, i, color)
+        : { color, style: undefined }),
+    }));
+    const runs = customized
+      ? styledPathRuns(
+          data,
+          curveMonotoneX,
+          (p) => p.x,
+          (p) => p.y,
+        )
+      : [{ stroke: path, color, style: undefined }];
+    return (
+      <>
+        <g
+          id={strokes}
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {runs.map((run, i) => {
+            const outline = paint.outline(run.style, run.color, 2);
+            return (
+              <Fragment key={i}>
+                {outline && <path d={run.stroke} {...outline} />}
+                <path
+                  className="trend-line"
+                  data-styled={customized || undefined}
+                  d={run.stroke}
+                  pathLength={customized ? undefined : 1}
+                  {...paint.line(run.style, run.color, 2)}
+                />
+              </Fragment>
+            );
+          })}
+        </g>
+        {data.map((p, i) => {
+          // Keep isolated measurements and conditionally marked observations visible.
+          const single =
+            !Number.isFinite(points[i - 1]?.y) &&
+            !Number.isFinite(points[i + 1]?.y);
+          if (p.value === null || (!single && !item.pointStyles?.[i]))
+            return null;
+          return (
+            <circle
+              key={i}
+              cx={p.x}
+              cy={p.y}
+              r={single ? 2 : 2.5}
+              {...paint.fill(p.style, p.color)}
+            />
+          );
+        })}
+      </>
+    );
+  }, [item, color, points, path, paint, customized, strokes]);
   const highlightWidth = Math.min(width, Math.max(24, width * 0.16));
   const anchorY =
     offset + (point && Number.isFinite(point.y) ? point.y : height / 2);
@@ -164,20 +235,19 @@ const TrendRow = memo(function TrendRow({
           choose(Math.min(last, Math.max(0, next)));
         }}
       >
-        <g className="trend-context">
-          <path
-            className="trend-line"
-            d={path}
-            pathLength={1}
-            fill="none"
-            stroke={color}
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          {singles.map((p) => (
-            <circle key={p.x} cx={p.x} cy={p.y} r={2} fill={color} />
-          ))}
+        {paint.defs}
+        {customized && (
+          <defs>
+            <clipPath id={reveal}>
+              <rect className="trend-reveal" width={width} height={height} />
+            </clipPath>
+          </defs>
+        )}
+        <g
+          className="trend-context"
+          clipPath={customized ? `url(#${reveal})` : undefined}
+        >
+          {marks}
         </g>
         {point && (
           <g pointerEvents="none">
@@ -193,14 +263,18 @@ const TrendRow = memo(function TrendRow({
                 />
               </clipPath>
             </defs>
-            <path
-              d={path}
-              clipPath={`url(#${clip})`}
-              strokeWidth={2.5}
-              fill="none"
-              stroke={color}
-              strokeLinecap="round"
-            />
+            {customized ? (
+              <use href={`#${strokes}`} clipPath={`url(#${clip})`} />
+            ) : (
+              <path
+                d={path}
+                clipPath={`url(#${clip})`}
+                strokeWidth={2.5}
+                fill="none"
+                stroke={color}
+                strokeLinecap="round"
+              />
+            )}
             <line
               className="trend-guide"
               x1={0}
@@ -221,7 +295,7 @@ const TrendRow = memo(function TrendRow({
                   stroke="currentColor"
                   strokeWidth={1.2}
                 />
-                <circle r={2.5} fill={ink} />
+                <circle r={2.5} {...paint.fill(activeStyle, ink)} />
               </g>
             )}
           </g>

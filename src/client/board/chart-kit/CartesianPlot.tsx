@@ -19,6 +19,7 @@ import {
 import CartesianMarks from "./CartesianMarks";
 import { cartesianGeometry, truncateTick } from "./cartesian-geometry";
 import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
+import { useChartPaint } from "./mark-paint";
 import { SkeletonMarks } from "../ChartSkeleton";
 
 const noSamples: Sample[] = [];
@@ -31,6 +32,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
   const host = useRef<HTMLDivElement>(null);
   const clip = useId();
   const tooltipId = useId();
+  const paint = useChartPaint(props.series, props.colors);
   useLayoutEffect(() => {
     const el = host.current;
     if (!el) return;
@@ -162,6 +164,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
           setFocus((prev) => keyboardFocus(event.key, g, byCategory, prev));
         }}
       >
+        {!loading && paint.defs}
         {!loading && (
           <defs>
             <clipPath id={clip}>
@@ -268,6 +271,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
               spec={spec}
               width={width}
               emphasizedBars={highlighted}
+              paint={paint}
             />
           </g>
         )}
@@ -277,6 +281,7 @@ export default function CartesianPlot(props: ChartPlotProps) {
             category={active.category}
             shared={shared}
             highlighted={highlighted}
+            paint={paint}
             width={width}
             height={height}
           />

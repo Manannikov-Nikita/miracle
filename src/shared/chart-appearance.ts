@@ -1,10 +1,28 @@
-import type { Cell, ChartKind, ChartMetricStyle, ChartSpec } from "./types.js";
+import type {
+  Cell,
+  ChartKind,
+  ChartMarkRule,
+  ChartMetricStyle,
+  ChartSpec,
+} from "./types.js";
 
 export const CHART_SERIES_COLOR_KEY_LIMIT = 10000;
 export const CHART_SERIES_COLOR_LIMIT = 5000;
 export const CHART_METRIC_LIMIT = 20;
 export const CHART_POINT_LIMIT = 5000;
 export const HISTOGRAM_BIN_LIMIT = 100;
+export const CHART_MARK_RULE_LIMIT = 32;
+export const unfinishedPeriodRule: ChartMarkRule = {
+  when: { field: "position", op: "last" },
+  style: {
+    color: "#9299A4",
+    opacity: 0.78,
+    borderColor: "#BEC5D0",
+    borderStyle: "dashed",
+    borderWidth: 1.5,
+    pattern: "diagonal",
+  },
+};
 
 export function supportsChartStacking(kind: ChartKind) {
   return kind === "bar" || kind === "line" || kind === "area";
@@ -85,12 +103,13 @@ export function chartPalette(spec: PaletteSpec) {
 }
 
 export function chartSeriesColor(
-  spec: PaletteSpec & Pick<ChartSpec, "seriesColors">,
+  spec: PaletteSpec & Pick<ChartSpec, "seriesColors" | "seriesStyles">,
   series: { colorKey?: string },
   index: number,
 ) {
   const custom = series.colorKey
-    ? spec.seriesColors?.[series.colorKey]
+    ? (spec.seriesStyles?.[series.colorKey]?.color ??
+      spec.seriesColors?.[series.colorKey])
     : undefined;
   if (typeof custom === "string" && /^#[0-9a-f]{6}$/i.test(custom))
     return custom;

@@ -206,3 +206,42 @@ it("does not claim nulls as zero or place 5000 overlapping text labels and anima
   );
   expect(host.querySelectorAll(".bk-scatter-label").length).toBeLessThan(400);
 });
+
+it("paints matched dots and their keyboard focus with the same pattern, border and color", async () => {
+  await render({
+    ...props,
+    series: [
+      {
+        ...props.series[0],
+        seriesStyle: { color: "#665544", opacity: 0.7 },
+        pointStyles: [
+          {
+            color: "#ee9933",
+            pattern: "dots",
+            borderColor: "#3300aa",
+            borderWidth: 3,
+            borderStyle: "dotted",
+            opacity: 0.4,
+          },
+        ],
+      },
+    ],
+  });
+  const [first, next] = host.querySelectorAll(".bk-scatter-point");
+  const pattern = host.querySelector("pattern")!;
+  const fill = `url(#${pattern.id})`;
+  expect(first.getAttribute("fill")).toBe(fill);
+  expect(pattern.querySelector("rect")?.getAttribute("fill")).toBe("#ee9933");
+  expect(first.getAttribute("stroke")).toBe("#3300aa");
+  expect(first.getAttribute("stroke-dasharray")).toBe("1 3");
+  expect(next.getAttribute("fill")).toBe("#665544");
+  await key("Home");
+  const focusDot = host.querySelector(".bk-scatter-focus circle:last-child")!;
+  expect(focusDot.getAttribute("fill")).toBe(fill);
+  expect(focusDot.getAttribute("stroke-width")).toBe("3");
+  expect(focusDot.getAttribute("fill-opacity")).toBe("0.4");
+  expect(
+    tip()?.querySelector<HTMLElement>(".chart-tooltip-swatch")?.style
+      .backgroundColor,
+  ).toBe("rgb(238, 153, 51)");
+});

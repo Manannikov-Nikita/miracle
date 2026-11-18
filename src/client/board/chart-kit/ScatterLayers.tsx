@@ -9,6 +9,8 @@ import {
   type scatterGeometry,
 } from "./scatter-geometry";
 
+import type { useChartPaint } from "./mark-paint";
+
 type Geometry = ReturnType<typeof scatterGeometry>;
 
 export const ScatterAxes = memo(function ScatterAxes({
@@ -125,10 +127,12 @@ export const ScatterCloud = memo(function ScatterCloud({
   spec,
   series,
   width,
+  paint,
 }: {
   g: Geometry;
   spec: ChartPlotProps["spec"];
   series: ChartPlotProps["series"];
+  paint: ReturnType<typeof useChartPaint>;
   width: number;
 }) {
   // Claim screen-space tiles so dense clouds keep readable labels. Every point
@@ -193,7 +197,7 @@ export const ScatterCloud = memo(function ScatterCloud({
               cx={p.cx}
               cy={p.cy}
               r={scatterRadius}
-              fill={p.color}
+              {...paint.fill(p.style, p.color)}
             />
           ))}
           {spec.showLabels && band.map(label)}

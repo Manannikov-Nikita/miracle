@@ -211,3 +211,151 @@ it.each(["sparkline", "heatmap"] as const)(
     expect(tooltipText()).toContain("−30 шт.");
   },
 );
+
+it("multiplies tile intensity by style opacity and preserves missing tiles", async () => {
+  await act(async () =>
+    root.render(
+      createElement(MatrixPlot, {
+        ...props,
+        series: [
+          {
+            ...props.series[0],
+            seriesStyle: {
+              color: "#336699",
+              borderColor: "#222222",
+              borderWidth: 2,
+              opacity: 0.5,
+            },
+            pointStyles: [
+              undefined,
+              {
+                color: "#ee9933",
+                opacity: 0.25,
+                borderColor: "#113355",
+                borderStyle: "dotted",
+                pattern: "dots",
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  );
+  const [low, high, missing] = host.querySelectorAll(".matrix-column rect");
+  expect(low.getAttribute("fill")).toBe("#336699");
+  expect(low.getAttribute("fill-opacity")).toBe("0.1");
+  expect(high.getAttribute("fill")).toBe(
+    `url(#${host.querySelector("pattern")!.id})`,
+  );
+  expect(high.getAttribute("stroke")).toBe("#113355");
+  expect(high.getAttribute("stroke-dasharray")).toBe("1 3");
+  expect(high.getAttribute("fill-opacity")).toBe("0.25");
+  expect(missing.getAttribute("fill")).toBe("none");
+  expect(missing.getAttribute("stroke")).toBe("currentColor");
+  await key("ArrowRight");
+  expect(
+    host.querySelector<HTMLElement>(".chart-tooltip-swatch")?.style
+      .backgroundColor,
+  ).toBe("rgb(238, 153, 51)");
+});
+
+it("styles an incoming sparkline segment and marker while sharing its geometry with keyboard focus", async () => {
+  await act(async () =>
+    root.render(
+      createElement(TrendPlot, {
+        ...props,
+        spec: { ...props.spec, kind: "sparkline" },
+        series: [
+          {
+            name: "Север",
+            data: [
+              ["A", 0],
+              ["B", 2],
+              ["C", 1],
+              ["D", null],
+              ["E", 3],
+            ],
+            seriesStyle: { color: "#336699" },
+            pointStyles: [
+              undefined,
+              {
+                color: "#ee9933",
+                pattern: "dots",
+                borderColor: "#3300aa",
+                borderStyle: "dashed",
+                borderWidth: 2,
+                opacity: 0.5,
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  );
+  const lines = host.querySelectorAll(".trend-context .trend-line");
+  expect(lines).toHaveLength(2);
+  const pattern = `url(#${host.querySelector("pattern")!.id})`;
+  expect(lines[0].getAttribute("stroke")).toBe(pattern);
+  expect(lines[0].getAttribute("stroke-dasharray")).toBe("5 3");
+  expect(lines[0].hasAttribute("pathLength")).toBe(false);
+  expect(lines[0].previousElementSibling?.getAttribute("stroke")).toBe(
+    "#3300aa",
+  );
+  expect(lines[1].getAttribute("stroke")).toBe("#336699");
+  const [matched, single] = host.querySelectorAll(".trend-context circle");
+  expect(matched.getAttribute("fill")).toBe(pattern);
+  expect(single.getAttribute("fill")).toBe("#336699");
+  await key("ArrowRight");
+  expect(host.querySelector("use")?.getAttribute("href")).toBe(
+    `#${lines[0].parentElement!.id}`,
+  );
+  expect(
+    host.querySelector(".trend-marker circle:last-child")?.getAttribute("fill"),
+  ).toBe(pattern);
+  expect(
+    host.querySelector<HTMLElement>(".chart-tooltip-swatch")?.style
+      .backgroundColor,
+  ).toBe("rgb(238, 153, 51)");
+  await key("ArrowRight");
+  await key("ArrowRight");
+  expect(tooltipText()).toContain("—");
+  expect(host.querySelector(".trend-marker")).toBeNull();
+});
+
+it("keeps a legacy sparkline and isolated marks in its series color while inspection uses the table color", async () => {
+  await act(async () =>
+    root.render(
+      createElement(TrendPlot, {
+        ...props,
+        spec: { ...props.spec, kind: "sparkline" },
+        series: [
+          {
+            name: "Север",
+            data: [
+              ["A", 0],
+              ["B", 2],
+              ["C", null],
+              ["D", 1],
+            ],
+            displayData: [
+              { x: "A", value: "0", color: "#ee9933" },
+              { x: "B", value: "2" },
+              { x: "C", value: "—" },
+              { x: "D", value: "1", color: "#ee9933" },
+            ],
+          },
+        ],
+      }),
+    ),
+  );
+  const line = host.querySelector(".trend-line")!;
+  expect(line.getAttribute("stroke")).toBe(props.colors[0]);
+  expect(line.getAttribute("pathLength")).toBe("1");
+  expect(
+    host.querySelector(".trend-context circle")?.getAttribute("fill"),
+  ).toBe(props.colors[0]);
+  await key("End");
+  expect(
+    host.querySelector(".trend-marker circle:last-child")?.getAttribute("fill"),
+  ).toBe("#ee9933");
+});

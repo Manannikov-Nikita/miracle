@@ -28,7 +28,8 @@ export function splitSignedArea<T extends BandPoint>(points: T[]): T[] {
       const category = between(previous.category, current.category);
       if (previous.value !== 0) {
         const base = between(previous.base, current.oppositeBase);
-        path.push({ ...previous, category, base, end: base, value: 0 });
+        // Both halves belong to the same incoming observed segment.
+        path.push({ ...current, category, base, end: base, value: 0 });
       }
       // Distinct positive and negative baselines must not be joined by paint.
       path.push({ ...current, category, value: null });

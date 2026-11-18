@@ -1,7 +1,8 @@
 import { scaleLinear } from "d3-scale";
 import type { ChartPlotProps } from "./plot-types";
 import { formatChartNumber } from "../chart-number";
-import type { ChartSpec } from "../../../shared/types";
+import { pointAppearance } from "./point-appearance";
+import type { ChartMarkStyle, ChartSpec } from "../../../shared/types";
 
 function numericAxis(
   min: number,
@@ -46,6 +47,7 @@ export type ScatterDatum = {
   cx: number;
   cy: number;
   color: string;
+  style?: ChartMarkStyle;
   series: number;
   index: number;
 };
@@ -89,7 +91,7 @@ export function scatterGeometry(
         y,
         cx: 0,
         cy: 0,
-        color: item.displayData?.[i]?.color ?? colors[s],
+        ...pointAppearance(item, i, colors[s]),
         series: s,
         index: i,
       });

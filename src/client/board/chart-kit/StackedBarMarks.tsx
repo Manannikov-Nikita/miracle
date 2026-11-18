@@ -1,3 +1,4 @@
+import type { useChartPaint } from "./mark-paint";
 import { type CSSProperties, type ReactNode } from "react";
 import type { ChartSpec } from "../../../shared/types";
 import { formatChartNumber } from "../chart-number";
@@ -78,7 +79,9 @@ export default function StackedBarMarks({
   spec,
   width,
   register,
+  paint,
 }: {
+  paint: ReturnType<typeof useChartPaint>;
   g: Geometry;
   spec: ChartSpec;
   width: number;
@@ -204,7 +207,7 @@ export default function StackedBarMarks({
             <path
               ref={ref}
               className="bk-bar"
-              fill={color}
+              {...paint.fill(p.style, color)}
               d={roundedTip(
                 g.horizontal,
                 start,
@@ -215,7 +218,13 @@ export default function StackedBarMarks({
               )}
             />
           ) : (
-            <rect ref={ref} className="bk-bar" {...rect} rx={0} fill={color} />
+            <rect
+              ref={ref}
+              className="bk-bar"
+              {...rect}
+              rx={0}
+              {...paint.fill(p.style, color)}
+            />
           )}
           {label}
         </g>,

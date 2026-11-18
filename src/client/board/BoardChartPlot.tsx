@@ -6,7 +6,10 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { chartSeriesColor } from "../../shared/chart-appearance";
+import {
+  chartSeriesColor,
+  composedMetricStyle,
+} from "../../shared/chart-appearance";
 import { ErrorBox } from "../components/UI";
 import ChartSkeleton from "./ChartSkeleton";
 import ScatterPlot from "./chart-kit/ScatterPlot";
@@ -15,11 +18,50 @@ import CartesianPlot from "./chart-kit/CartesianPlot";
 import MatrixPlot from "./chart-kit/MatrixPlot";
 import HistogramPlot from "./chart-kit/HistogramPlot";
 import TrendPlot from "./chart-kit/TrendPlot";
+import { useChartPaint } from "./chart-kit/mark-paint";
 import type { ChartPlotProps } from "./chart-kit/plot-types";
-import type { ChartKind } from "../../shared/types";
+import type { ChartKind, ChartMarkStyle } from "../../shared/types";
 import "./chart-kit/charts.css";
 
 type Props = Omit<ChartPlotProps, "colors">;
+
+function StyledKey({
+  style,
+  color,
+  line,
+}: {
+  style: ChartMarkStyle;
+  color: string;
+  line: boolean;
+}) {
+  const series = useMemo(
+    () => [{ name: "", data: [], seriesStyle: style }],
+    [style],
+  );
+  const colors = useMemo(() => [color], [color]);
+  const paint = useChartPaint(series, colors);
+  const outline = line && paint.outline(style, color, 2);
+  return (
+    <svg aria-hidden="true" width="20" height="12" style={{ flex: "none" }}>
+      {paint.defs}
+      {line ? (
+        <>
+          {outline && <path d="M1 6H19" {...outline} />}
+          <path d="M1 6H19" {...paint.line(style, color, 2)} />
+        </>
+      ) : (
+        <rect
+          x="3"
+          y="2"
+          width="14"
+          height="8"
+          rx="2"
+          {...paint.fill(style, color)}
+        />
+      )}
+    </svg>
+  );
+}
 
 const plots = {
   bar: CartesianPlot,
@@ -147,7 +189,21 @@ function ChartKitPlot(props: Props) {
                 })
               }
             >
-              <span className="bk-key" style={{ background: color }} />
+              {item.seriesStyle ? (
+                <StyledKey
+                  style={item.seriesStyle}
+                  color={color}
+                  line={
+                    spec.kind === "line" ||
+                    spec.kind === "sparkline" ||
+                    (spec.kind === "composed" &&
+                      composedMetricStyle(spec, item.metricId ?? spec.y[0]) ===
+                        "line")
+                  }
+                />
+              ) : (
+                <span className="bk-key" style={{ background: color }} />
+              )}
               <span>{item.name}</span>
             </button>
           ))}

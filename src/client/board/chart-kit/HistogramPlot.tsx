@@ -20,6 +20,8 @@ import {
 } from "./histogram-display";
 import { plotLoadingSeries, type ChartPlotProps } from "./plot-types";
 import ChartTooltip from "./ChartTooltip";
+import { useChartPaint } from "./mark-paint";
+import { pointAppearance } from "./point-appearance";
 import "./histogram.css";
 
 const countText = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
@@ -29,6 +31,7 @@ const countText = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
 export default function HistogramPlot(props: ChartPlotProps) {
   const { spec, series, colors, columns, loading, label } = props;
   const viewport = usePlotViewport();
+  const paint = useChartPaint(series, colors);
   const width = viewport.width || 460,
     height = viewport.height || 240;
   const g = useMemo(
@@ -86,6 +89,7 @@ export default function HistogramPlot(props: ChartPlotProps) {
               if (g.stacked) stack += count;
               const y = g.y(from + count),
                 h = g.y(from) - y;
+              const { style, color } = pointAppearance(series[j], i, colors[j]);
               const text = countText.format(count);
               const labelY = g.stacked ? (g.y(from) + y) / 2 : y - 4;
               const fits =
@@ -101,8 +105,8 @@ export default function HistogramPlot(props: ChartPlotProps) {
                     data-bin={i}
                     data-count={count}
                     data-series={j}
-                    fill={colors[j]}
                     fillOpacity={spec.series && !g.stacked ? 0.55 : 1}
+                    {...paint.fill(style, color)}
                     d={binPath(
                       col.x0 + gap / 2,
                       y,
@@ -121,7 +125,7 @@ export default function HistogramPlot(props: ChartPlotProps) {
                       style={
                         g.stacked
                           ? {
-                              fill: presentationColors(colors[j]).text,
+                              fill: presentationColors(color).text,
                               stroke: "none",
                             }
                           : undefined
@@ -140,7 +144,7 @@ export default function HistogramPlot(props: ChartPlotProps) {
           </g>
         );
       }),
-    [g, series, colors, spec.showLabels, spec.series],
+    [g, series, colors, paint, spec.showLabels, spec.series],
   );
   const axisName = columns.find((c) => c.id === spec.x)?.name ?? spec.x;
   const empty = !g.columns.length && !loading;
@@ -233,6 +237,7 @@ export default function HistogramPlot(props: ChartPlotProps) {
           select(Math.max(0, Math.min(g.columns.length - 1, i)), true);
         }}
       >
+        {paint.defs}
         {!empty &&
           g.yTicks.map((t) => (
             <g key={t}>
@@ -362,7 +367,7 @@ export default function HistogramPlot(props: ChartPlotProps) {
           rows={series.map((s, j) => ({
             key: s.colorKey ?? String(j),
             name: s.name,
-            color: colors[j],
+            color: pointAppearance(s, focus.index, colors[j]).color,
             value: countText.format(active.counts[j]),
           }))}
         />

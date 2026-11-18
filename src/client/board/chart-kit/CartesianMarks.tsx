@@ -1,4 +1,5 @@
 import {
+  Fragment,
   memo,
   useCallback,
   useLayoutEffect,
@@ -12,6 +13,7 @@ import { formatChartNumber } from "../chart-number";
 import { barRect, type Sample } from "./cartesian-focus";
 import "./hover-bar.css";
 import StackedBarMarks from "./StackedBarMarks";
+import type { useChartPaint } from "./mark-paint";
 import { LinePath } from "./bklit/line-path";
 import { truncateTick } from "./cartesian-geometry";
 
@@ -20,11 +22,13 @@ export default memo(function CartesianMarks({
   spec,
   width,
   emphasizedBars,
+  paint,
 }: {
   geometry: ReturnType<typeof cartesianGeometry>;
   spec: ChartSpec;
   width: number;
   emphasizedBars: readonly Sample[];
+  paint: ReturnType<typeof useChartPaint>;
 }) {
   // Index the real rectangles once. Pointer inspection touches only bars that
   // enter or leave focus, retaining their position, animation and point colors.
@@ -36,6 +40,15 @@ export default memo(function CartesianMarks({
     },
     [],
   );
+  const seriesGroups = useRef(new Map<string, SVGGElement>());
+  useLayoutEffect(() => {
+    const selected = emphasizedBars[0]?.mark;
+    if (spec.kind === "composed" || !selected || selected.style === "bar")
+      return;
+    const group = seriesGroups.current.get(selected.key);
+    group?.classList.add("bk-active-series");
+    return () => group?.classList.remove("bk-active-series");
+  }, [emphasizedBars, spec.kind, g]);
   const previous = useRef(new Set<SVGGraphicsElement>());
   useLayoutEffect(() => {
     const next = new Set<SVGGraphicsElement>();
@@ -55,32 +68,71 @@ export default memo(function CartesianMarks({
   return useMemo(() => {
     if (g.stacked && spec.kind === "bar")
       return (
-        <StackedBarMarks g={g} spec={spec} width={width} register={register} />
+        <StackedBarMarks
+          g={g}
+          spec={spec}
+          width={width}
+          register={register}
+          paint={paint}
+        />
       );
     const number = (v: number) => formatChartNumber(v, spec.numberFormat);
     const zero = g.zero;
     return g.marks.map((m) => {
       const inside = spec.labelPosition === "inside" && m.style === "bar";
       return (
-        <g key={m.key} data-series-style={m.style}>
-          {m.fill && (
-            <path
-              d={m.fill}
-              fill={m.color}
-              fillOpacity={g.stacked ? 0.38 : 0.18}
-            />
-          )}
-          {m.stroke && (
-            <LinePath
-              className="bk-line"
-              d={m.stroke}
-              fill="none"
-              stroke={m.color}
-              strokeWidth="2.4"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-          )}
+        <g
+          key={m.key}
+          data-series-style={m.style}
+          ref={(el) => {
+            if (el) seriesGroups.current.set(m.key, el);
+            else seriesGroups.current.delete(m.key);
+          }}
+        >
+          {(
+            m.parts ?? [
+              {
+                stroke: m.stroke,
+                fill: m.fill,
+                style: m.seriesStyle,
+                color: m.color,
+              },
+            ]
+          ).map((part, index) => {
+            if (!part.stroke && !part.fill) return null;
+            const outline = paint.outline(part.style, part.color);
+            return (
+              <Fragment key={index}>
+                {part.fill && (
+                  <path
+                    d={part.fill}
+                    className="bk-area-fill"
+                    fillOpacity={g.stacked ? 0.38 : 0.18}
+                    {...paint.fill(part.style, part.color)}
+                    stroke="none"
+                  />
+                )}
+                {part.stroke && outline && (
+                  <LinePath
+                    className="bk-line-outline"
+                    d={part.stroke}
+                    fill="none"
+                    strokeLinejoin="round"
+                    {...outline}
+                  />
+                )}
+                {part.stroke && (
+                  <LinePath
+                    className="bk-line"
+                    d={part.stroke}
+                    fill="none"
+                    strokeLinejoin="round"
+                    {...paint.line(part.style, part.color)}
+                  />
+                )}
+              </Fragment>
+            );
+          })}
           {m.points.map((p, i) => {
             if (p.value === null) return null;
             const pos = g.center(p.category);
@@ -123,14 +175,19 @@ export default memo(function CartesianMarks({
                       } as CSSProperties
                     }
                     {...barRect(g, start, v)}
-                    fill={color}
+                    {...paint.fill(p.style, color)}
                   />
                 ) : (
-                  (p.color ||
+                  (p.keepMarker ||
                     m.points.length < 70 ||
                     (m.points[i - 1]?.value == null &&
                       m.points[i + 1]?.value == null)) && (
-                    <circle cx={pos} cy={v} r="2.5" fill={color} />
+                    <circle
+                      cx={pos}
+                      cy={v}
+                      r="2.5"
+                      {...paint.fill(p.style, color)}
+                    />
                   )
                 )}
                 {drawLabel && (
@@ -155,5 +212,5 @@ export default memo(function CartesianMarks({
         </g>
       );
     });
-  }, [g, spec, width, register]);
+  }, [g, spec, width, register, paint]);
 });

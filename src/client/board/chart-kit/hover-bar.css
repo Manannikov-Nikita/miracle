@@ -1,7 +1,7 @@
 /* Per-mark emphasis leaves the real rectangles in place: successive categories
    crossfade during a scrub, while their labels keep the same point colors. */
 .bk-marks[data-dimmed="true"]
-  > [data-series-style]:not([data-series-style="bar"]),
+  > [data-series-style]:not([data-series-style="bar"]):not(.bk-active-series),
 .bk-marks[data-dimmed="true"] .bk-bar:not(.bk-active-bar),
 .bk-marks[data-dimmed="true"] .bk-bar:not(.bk-active-bar) + text {
   opacity: 0.3;

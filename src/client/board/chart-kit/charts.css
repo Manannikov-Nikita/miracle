@@ -151,7 +151,7 @@
 .bk-focus {
   pointer-events: none;
 }
-.bk-focus-dot {
+.bk-focus-dot:not([stroke]) {
   stroke: var(--bk-surface);
   stroke-width: 2.25;
 }

@@ -573,6 +573,10 @@ it("exposes chart appearance and geometry controls through the actual MCP discov
     "vivid",
   ]);
   expect(chart.properties.seriesColors.type).toBe("object");
+  expect(
+    chart.properties.seriesStyles.additionalProperties.properties.pattern.enum,
+  ).toContain("diagonal");
+  expect(chart.properties.markRules.maxItems).toBe(32);
   expect(chart.properties.orientation.enum).toEqual(["vertical", "horizontal"]);
   expect(chart.properties.legend.type).toBe("boolean");
   expect(chart.properties.numberFormat.enum).toContain("compact");
@@ -585,6 +589,9 @@ it("exposes chart appearance and geometry controls through the actual MCP discov
     "labelPosition",
     "palette",
     "seriesColors",
+    "seriesStyles",
+    "markRules",
+    "unfinishedPeriod",
     "width",
     "height",
   ])
@@ -661,6 +668,28 @@ it("round-trips chart controls, resets and proportional sizes through MCP withou
     labelPosition: "inside",
     palette: "warm",
     seriesColors: colors,
+    seriesStyles: {
+      [Object.keys(colors)[0]]: {
+        opacity: 0.72,
+        borderWidth: 2,
+        borderColor: "#252525",
+      },
+    },
+    markRules: [
+      {
+        when: { field: "position", op: "last" },
+        style: { color: "#959BA4", borderStyle: "dashed", pattern: "diagonal" },
+      },
+      {
+        when: {
+          field: "column",
+          columnId: chart.series,
+          op: "eq",
+          value: "North",
+        },
+        style: { borderStyle: "dotted" },
+      },
+    ],
     numberFormat: "compact",
     sort: "desc",
     legendPosition: "right",
@@ -729,6 +758,8 @@ it("round-trips chart controls, resets and proportional sizes through MCP withou
     labelPosition: "auto",
     palette: "default",
     seriesColors: {},
+    seriesStyles: {},
+    markRules: [],
   };
   board = await patch({ data: { chart: reset } });
   reread = await agent.mcp("read_board", { id: board.id });

@@ -5,9 +5,11 @@ import {
   CHART_PALETTES,
   CHART_POINT_LIMIT,
   CHART_METRIC_LIMIT,
+  CHART_MARK_RULE_LIMIT,
   CHART_SERIES_COLOR_KEY_LIMIT,
   CHART_SERIES_COLOR_LIMIT,
   chartSeriesColorKey,
+  unfinishedPeriodRule,
 } from "../shared/chart-appearance.js";
 import type { ChartSpec } from "../shared/types.js";
 
@@ -47,6 +49,17 @@ export const chartInputSchema = {
       maxProperties: CHART_SERIES_COLOR_LIMIT,
       description:
         "HEX colors keyed by JSON.stringify([metricColumnId, breakdownColumnId ?? null, rawGroupValue ?? null]); without breakdown use [metricColumnId,null,null]. Histograms use the observation column ID (x) as the metric ID. Preserve raw group types. Empty object resets all overrides.",
+    },
+    seriesStyles: {
+      ...propertySchema("seriesStyles"),
+      maxProperties: CHART_SERIES_COLOR_LIMIT,
+      description:
+        "Per-series paint, keyed with the seriesColors key formula. All paint fields are optional. Styles apply to a whole line or breakdown, including marks without a matching rule.",
+    },
+    markRules: {
+      ...propertySchema("markRules"),
+      description:
+        "Ordered per-mark rules for all eight native chart types. Optionally restrict a rule to a seriesKey. Later matching rules override only the style fields they set. See chart_guide.markAppearance for positions and source column examples.",
     },
     xLabel: {
       ...propertySchema("xLabel"),
@@ -122,6 +135,42 @@ export const chartGuide = {
       "default, cool, warm or vivid. Palette changes keep explicit seriesColors overrides.",
     seriesColors:
       "Optional HEX map with stable series identities described below. To reset one color, remove that key from a copied map; send {} to reset all. Never use display names, row indexes or null as colors.",
+    seriesStyles:
+      "Optional map from the same stable series keys to partial mark styles. Remove individual properties to inherit them, or remove a key to reset the series.",
+    markRules:
+      "Ordered array of conditional mark styles. Each rule targets all series or one seriesKey. Reorder for priority; omit or send [] to clear all.",
+  },
+  markAppearance: {
+    style:
+      "color and borderColor use #RRGGBB. opacity is 0..1 (0 is transparent); borderWidth is 0..8 plot pixels; borderStyle is solid, dashed or dotted. pattern is none, diagonal, crosshatch or dots. A zero-width border removes the outline. Line color and outline are independent. Heatmap fill opacity scales its value-based intensity; missing cells retain their empty appearance.",
+    precedence:
+      "Paint starts with the palette or seriesColors and any table cell color. seriesStyles and then matching markRules override individual properties. The last matching explicit value for a property wins. Hide/show of a series keeps its identity.",
+    position:
+      "first/last on categorical charts selects the first/last displayed X category across breakdowns after sorting. Sparkline uses the first/last slot of each row; scatter selects all points tied at its series' minimum/maximum numeric X. Histogram uses the first/last bin. Missing marks are never created. Rules are reevaluated on refresh.",
+    conditions:
+      "field:'value' compares the plotted metric (before stacking) or histogram frequency. field:'x' compares raw X or a histogram bin's lower edge. field:'column' requires the columnId of a field in the transformed chart input, for example a status flag from SQL. A histogram bin aggregates observations and therefore supports position, x and value. Unknown columns and non-scalar cells do not match. Compare numeric columns as decimals, dates as dates, text and booleans with their native types. Use eq/ne and null for missing fields in an existing observation.",
+    lines:
+      "On lines, sparklines and area charts a conditional point style also paints the incoming segment, up to the matching point. A series style covers the entire line. Gaps stay open.",
+    unfinishedPeriod: unfinishedPeriodRule,
+    statusFlag: {
+      when: {
+        field: "column",
+        columnId: "period_complete",
+        op: "eq",
+        value: false,
+      },
+      style: { pattern: "diagonal", borderStyle: "dashed" },
+    },
+    seriesExample: {
+      [chartSeriesColorKey("plan", undefined, undefined)]: {
+        color: "#82AAFF",
+        opacity: 0.8,
+        borderColor: "#365E8C",
+        borderWidth: 1,
+        borderStyle: "dotted",
+      },
+    },
+    maxRules: CHART_MARK_RULE_LIMIT,
   },
   histogram: {
     automaticBins:

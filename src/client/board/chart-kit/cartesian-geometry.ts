@@ -10,6 +10,8 @@ import {
   supportsChartStacking,
 } from "../../../shared/chart-appearance";
 import type { ChartPlotProps } from "./plot-types";
+import type { ChartMarkStyle } from "../../../shared/types";
+import { styledPathRuns } from "./styled-path";
 
 /** Adapted from Bklit UI's series-bar-layout.ts. Allow subpixel bins on dense boards. */
 export function seriesBarLayout(slot: number, count: number) {
@@ -31,7 +33,9 @@ export function seriesBarLayout(slot: number, count: number) {
 
 interface Point extends BandPoint {
   display?: string;
-  color?: string;
+  color: string;
+  style?: ChartMarkStyle;
+  keepMarker: boolean;
   outer: boolean;
 }
 
@@ -66,10 +70,13 @@ export function cartesianGeometry(
       spec.kind === "composed"
         ? composedMetricStyle(spec, s.metricId ?? spec.y[0])
         : spec.kind;
+    const seriesColor = s.seriesStyle?.color ?? colors[i];
     const points: Point[] = s.data.map(([raw, value], index) => {
       const key = String(raw);
       if (!categories.has(key)) categories.set(key, categories.size);
       const display = s.displayData?.[index];
+      const pointStyle = s.pointStyles?.[index];
+      const style = pointStyle ?? s.seriesStyle;
       labels.set(key, display?.x ?? s.categoryLabels?.[key] ?? key);
       const segment = stacks?.segments[i][index];
       const end = segment?.end ?? (value ?? 0) / unit;
@@ -83,7 +90,9 @@ export function cartesianGeometry(
         category: categories.get(key)!,
         value,
         display: display?.value,
-        color: display?.color,
+        style,
+        color: style?.color ?? display?.color ?? seriesColor,
+        keepMarker: Boolean(pointStyle || display?.color),
       };
     });
     if (style !== "bar") points.sort((a, b) => a.category - b.category);
@@ -94,7 +103,8 @@ export function cartesianGeometry(
       key: s.colorKey ?? String(i),
       seriesIndex: i,
       metricId: stacks?.metricIds[i] ?? s.metricId,
-      color: colors[i],
+      color: seriesColor,
+      seriesStyle: s.seriesStyle,
     };
   });
   const outside =
@@ -206,12 +216,31 @@ export function cartesianGeometry(
               y0: (point) => axis(point.base),
             })
           : "";
+      // Legacy table colors apply to the marker. Only a chart style can recolor its incoming path.
+      const parts =
+        m.style !== "bar" &&
+        m.points.some(
+          (p) =>
+            p.value !== null &&
+            p.style !== undefined &&
+            (p.style !== m.seriesStyle || p.color !== m.color),
+        )
+          ? styledPathRuns(
+              pathPoints.map((p) =>
+                !p.style && p.color !== m.color ? { ...p, color: m.color } : p,
+              ),
+              path.curve,
+              path.x,
+              path.y,
+              m.style === "area" ? (p) => axis(p.base) : undefined,
+            )
+          : undefined;
       const points = m.points.map(({ base, end, ...point }) => ({
         ...point,
         basePx: axis(base),
         endPx: axis(end),
       }));
-      return { ...m, points, stroke, fill, offset };
+      return { ...m, points, stroke, fill, parts, offset };
     })
     .sort((a, b) => styles.indexOf(a.style) - styles.indexOf(b.style));
   return {

@@ -301,3 +301,34 @@ it("keeps axes on refresh, replaces old samples with the matching skeleton, and 
     host.querySelectorAll('[data-skeleton-mark="histogram"] path'),
   ).toHaveLength(8);
 });
+
+it("paints the selected group's frequency bin with its rule and keeps the overlay opacity for other bars", async () => {
+  const grouped = props.series.map((s, j) =>
+    j === 0
+      ? {
+          ...s,
+          pointStyles: [
+            {
+              color: "#ee9933",
+              pattern: "diagonal" as const,
+              opacity: 0.2,
+              borderStyle: "dashed" as const,
+            },
+          ],
+        }
+      : s,
+  );
+  await render({ ...props, series: grouped });
+  const [first, next] = marks();
+  const pattern = host.querySelector("pattern")!;
+  expect(first.getAttribute("fill")).toBe(`url(#${pattern.id})`);
+  expect(first.getAttribute("fill-opacity")).toBe("0.2");
+  expect(first.getAttribute("stroke-dasharray")).toBe("5 3");
+  expect(next.getAttribute("fill")).toBe(props.colors[1]);
+  expect(next.getAttribute("fill-opacity")).toBe("0.55");
+  await key("Home");
+  expect(
+    host.querySelector<HTMLElement>(".chart-tooltip-swatch")?.style
+      .backgroundColor,
+  ).toBe("rgb(238, 153, 51)");
+});

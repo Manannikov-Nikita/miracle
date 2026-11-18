@@ -1,5 +1,6 @@
 import { isDateColumn, isNumericColumn } from "../../shared/column-types";
 import { compareDateValues } from "../../shared/date-values";
+import { applyChartMarkRules, type ChartSourceRows } from "./chart-mark-rules";
 import { DEFAULT_RESULT_SIZE } from "../../shared/chart-size";
 import {
   autoHistogramBins,
@@ -14,6 +15,7 @@ import type {
   BoardDocument,
   BoardNode,
   Cell,
+  ChartMarkStyle,
   ChartSpec,
   Column,
   ResultSet,
@@ -140,6 +142,9 @@ export interface ChartPointDisplay {
   color?: string;
 }
 export interface ChartSeriesItem {
+  seriesStyle?: ChartMarkStyle;
+  /** Only matching marks have an entry, with series defaults already merged. */
+  pointStyles?: (ChartMarkStyle | undefined)[];
   metricId?: string;
   colorKey?: string;
   xCategories?: string[];
@@ -246,7 +251,11 @@ export function chartSeries(
   formatCell?: ChartCellFormatter,
 ) {
   if (spec.kind === "histogram")
-    return histogramSeries(columns, rows, spec, formatCell);
+    return applyChartMarkRules(
+      histogramSeries(columns, rows, spec, formatCell),
+      spec,
+      columns,
+    );
   const categoryAxis =
     spec.kind === "bar" && spec.orientation === "horizontal" ? "Y" : "X";
   const xi = columns.findIndex((c) => c.id === spec.x);
@@ -259,6 +268,11 @@ export function chartSeries(
       "График ограничен 5 000 точками во всём сохранённом результате. Агрегируйте данные в SQL.",
     );
   const groups = new Map<string, ChartSeriesItem>();
+  const source: ChartSourceRows | undefined = spec.markRules?.some(
+    ({ when }) => when.field === "x" || when.field === "column",
+  )
+    ? new WeakMap()
+    : undefined;
   const categoryLabels: Record<string, string> | undefined = formatCell
     ? Object.create(null)
     : undefined;
@@ -333,7 +347,12 @@ export function chartSeries(
           ...(formatCell ? { displayData: [], categoryLabels } : {}),
         });
       const series = groups.get(key)!;
-      series.data.push([x, chartNumber(row[yi], columns[yi])]);
+      const datum: ChartSeriesItem["data"][number] = [
+        x,
+        chartNumber(row[yi], columns[yi]),
+      ];
+      series.data.push(datum);
+      source?.set(datum, row);
       if (formatCell) {
         const display = formatCell(row[yi], columns[yi], "metric");
         series.displayData!.push({
@@ -374,7 +393,9 @@ export function chartSeries(
       if (stacked && spec.kind !== "bar") {
         // Line/area paths must follow the shared axis order. Explicit nulls
         // also prevent a lower band from bridging a missing breakdown value.
-        const byCategory = new Map(series.data);
+        const byCategory = new Map(
+          series.data.map((point) => [point[0], point]),
+        );
         if (formatCell && series.displayData) {
           const displayByCategory = new Map(
             series.data.map(([x], index) => [x, series.displayData![index]]),
@@ -390,11 +411,11 @@ export function chartSeries(
               },
           );
         }
-        series.data = categories.map((x) => [x, byCategory.get(x) ?? null]);
+        series.data = categories.map((x) => byCategory.get(x) ?? [x, null]);
       }
     }
   }
-  return result;
+  return applyChartMarkRules(result, spec, columns, source);
 }
 export function cellText(value: Cell | undefined) {
   return value === null || value === undefined

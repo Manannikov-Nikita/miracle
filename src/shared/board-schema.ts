@@ -1,4 +1,8 @@
 import { boardImageSchema } from "./board-images.js";
+import {
+  chartMarkRulesSchema,
+  chartSeriesStylesSchema,
+} from "./chart-mark-style.js";
 import { z } from "zod";
 import { tableSpecSchema } from "./table-schema.js";
 import { visualTableSpecSchema } from "./visual-table.js";
@@ -73,6 +77,8 @@ export const chartSpecSchema = z.object({
   showTotals: z.boolean().optional(),
   labelPosition: z.enum(["auto", "outside", "inside"]).optional(),
   palette: z.enum(["default", "cool", "warm", "vivid"]).optional(),
+  seriesStyles: chartSeriesStylesSchema.optional(),
+  markRules: chartMarkRulesSchema.optional(),
   seriesColors: z
     .record(
       z.string().min(1).max(CHART_SERIES_COLOR_KEY_LIMIT),
