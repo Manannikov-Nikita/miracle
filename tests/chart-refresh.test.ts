@@ -401,7 +401,7 @@ it.each(["vertical", "horizontal"] as const)(
   },
 );
 
-it("bins the full numeric snapshot and keeps the selected groups when it refreshes", async () => {
+it("bins the full numeric snapshot and restores every histogram group after refresh", async () => {
   vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(640);
   vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(320);
   const spec: ChartSpec = {
@@ -431,31 +431,40 @@ it("bins the full numeric snapshot and keeps the selected groups when it refresh
     host.querySelector('.chart-skeleton[data-kind="histogram"]'),
   ).not.toBeNull();
   await act(async () => full.resolve(saved));
-  const plottedCount = () =>
-    [...host.querySelectorAll(".bk-histogram-bar")].reduce(
-      (sum, p) => sum + Number(p.getAttribute("data-count")),
-      0,
-    );
-  expect(plottedCount()).toBe(6187);
+  const countsByGroup = () => {
+    const counts = new Map<string, number>();
+    for (const mark of host.querySelectorAll<SVGPathElement>(
+      ".bk-histogram-bar",
+    )) {
+      const group = mark.dataset.series!;
+      counts.set(group, (counts.get(group) ?? 0) + Number(mark.dataset.count));
+    }
+    return [...counts.values()].sort((a, b) => a - b);
+  };
+  expect(countsByGroup()).toEqual([3062, 3125]);
   expect(host.querySelectorAll(".bk-histogram-bin")).toHaveLength(4);
-  const keys = [
-    ...host.querySelectorAll<HTMLButtonElement>(".bk-legend button"),
-  ];
-  expect(keys).toHaveLength(2);
-  const south = keys.find((key) => key.textContent?.includes("Юг"))!;
-  await act(async () => south.click());
-  expect(plottedCount()).toBe(3062);
+  expect(host.querySelector(".bk-legend")).toBeNull();
   await render(saved.result.id, true, spec);
   expect(
     host.querySelector('.chart-skeleton[data-kind="histogram"]'),
   ).not.toBeNull();
   expect(host.querySelector(".bk-histogram-bar")).toBeNull();
   await render(saved.result.id, false, spec);
-  expect(south.getAttribute("aria-pressed")).toBe("false");
-  expect(plottedCount()).toBe(3062);
+  expect(host.querySelector(".bk-legend")).toBeNull();
+  expect(countsByGroup()).toEqual([3062, 3125]);
+  await act(async () =>
+    plot()!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+    ),
+  );
+  expect(
+    [...host.querySelectorAll(".chart-tooltip-name")]
+      .map((el) => el.textContent)
+      .sort(),
+  ).toEqual(["Север", "Юг"]);
 });
 
-it("distinguishes an all-null histogram from a legend with all groups turned off", async () => {
+it("explains an all-null histogram even when its saved spec enables the legend", async () => {
   const saved = page("no-values", 3);
   saved.rows = [
     ["А", null],
@@ -470,6 +479,7 @@ it("distinguishes an all-null histogram from a legend with all groups turned off
     y: [],
     legend: true,
   });
+  expect(host.querySelector(".bk-legend")).toBeNull();
   expect(host.textContent).toMatch(/нет числовых (значений|наблюдений)/i);
   expect(host.textContent).not.toContain("Все ряды скрыты");
   expect(host.querySelector(".bk-histogram-bar")).toBeNull();

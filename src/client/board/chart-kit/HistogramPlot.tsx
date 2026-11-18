@@ -26,18 +26,8 @@ const countText = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
 
 /** Numeric, adjacent frequency intervals as in shadcn.io histogram-default,
  * histogram-overlay and histogram-stacked. Values are already binned by Miracle. */
-export default function HistogramPlot(
-  props: ChartPlotProps & { highlightedSeries?: number },
-) {
-  const {
-    spec,
-    series,
-    colors,
-    columns,
-    loading,
-    label,
-    highlightedSeries = -1,
-  } = props;
+export default function HistogramPlot(props: ChartPlotProps) {
+  const { spec, series, colors, columns, loading, label } = props;
   const viewport = usePlotViewport();
   const width = viewport.width || 460,
     height = viewport.height || 240;
@@ -105,13 +95,7 @@ export default function HistogramPlot(
                 !used.some((pos) => Math.abs(pos - labelY) < 13);
               if (fits) used.push(labelY);
               return (
-                <g
-                  key={series[j].colorKey ?? j}
-                  data-muted-series={
-                    (highlightedSeries >= 0 && highlightedSeries !== j) ||
-                    undefined
-                  }
-                >
+                <g key={series[j].colorKey ?? j}>
                   <path
                     className="bk-histogram-bar"
                     data-bin={i}
@@ -156,7 +140,7 @@ export default function HistogramPlot(
           </g>
         );
       }),
-    [g, series, colors, spec.showLabels, spec.series, highlightedSeries],
+    [g, series, colors, spec.showLabels, spec.series],
   );
   const axisName = columns.find((c) => c.id === spec.x)?.name ?? spec.x;
   const empty = !g.columns.length && !loading;

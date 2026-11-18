@@ -454,24 +454,26 @@ function ChartSettingsFields({
           />
         </label>
       )}
-      <div className="board-chart-legend">
-        <label>
-          <input
-            type="checkbox"
-            checked={spec.legend}
-            onChange={(e) => set({ legend: e.target.checked })}
-          />
-          Легенда
-        </label>
-        {spec.legend && (
-          <LegendPositionPicker
-            position={spec.legendPosition}
-            align={spec.legendAlign}
-            disabled={disabled}
-            onChange={set}
-          />
-        )}
-      </div>
+      {!histogram && (
+        <div className="board-chart-legend">
+          <label>
+            <input
+              type="checkbox"
+              checked={spec.legend}
+              onChange={(e) => set({ legend: e.target.checked })}
+            />
+            Легенда
+          </label>
+          {spec.legend && (
+            <LegendPositionPicker
+              position={spec.legendPosition}
+              align={spec.legendAlign}
+              disabled={disabled}
+              onChange={set}
+            />
+          )}
+        </div>
+      )}
       <details className="board-chart-appearance">
         <summary>Оформление</summary>
         <div className="board-chart-appearance-fields">

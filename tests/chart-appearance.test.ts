@@ -220,7 +220,7 @@ describe("rendered chart appearance", () => {
       colors: ["#2b7fff", "#8ec5ff"],
     },
   ])(
-    "uses the $style histogram colors consistently for marks, legend and tooltip on light and dark slides",
+    "uses the $style histogram colors consistently for marks and tooltip on light and dark slides",
     async ({ grouped, stacked, colors }) => {
       const spec: ChartSpec = {
         kind: "histogram",
@@ -248,11 +248,7 @@ describe("rendered chart appearance", () => {
         expect([...marks].map((mark) => mark.getAttribute("fill"))).toEqual(
           colors,
         );
-        expect(
-          [
-            ...chart.host.querySelectorAll<HTMLElement>(".bk-legend .bk-key"),
-          ].map((s) => s.style.backgroundColor),
-        ).toEqual(cssColors);
+        expect(chart.host.querySelector(".bk-legend")).toBeNull();
         const svg = chart.host.querySelector('svg[role="img"]')!;
         await act(async () =>
           svg.dispatchEvent(
@@ -270,7 +266,7 @@ describe("rendered chart appearance", () => {
     },
   );
 
-  it("keeps histogram palette selections and explicit group colors through stacking and legend filtering", async () => {
+  it("preserves explicit histogram group colors when switching palettes and stacking", async () => {
     const key = JSON.stringify(["value", "group", "two"]);
     const spec: ChartSpec = {
       kind: "histogram",
@@ -291,16 +287,12 @@ describe("rendered chart appearance", () => {
       await chart.render({ columns, spec: { ...spec, stacked }, series });
       expect(fills()).toEqual(["#f0ad72", "#705bdb"]);
     }
-    await act(async () =>
-      chart.host.querySelector<HTMLButtonElement>(".bk-legend button")!.click(),
-    );
-    expect(fills()).toEqual(["#705bdb"]);
     await chart.render({
       columns,
       spec: { ...spec, palette: "default" },
       series,
     });
-    expect(fills()).toEqual(["#705bdb"]);
+    expect(fills()).toEqual(["#155dfc", "#705bdb"]);
   });
   it("keeps explicit colors attached to stable typed metric/breakdown identities after reordering", async () => {
     const configured = {

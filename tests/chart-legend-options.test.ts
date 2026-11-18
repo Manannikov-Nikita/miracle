@@ -41,44 +41,32 @@ function button(name: string) {
 const toggle = (name: string) => act(async () => button(name).click());
 const totals = () => textNodes(chart.host, ".bk-stack-total");
 
-it("previews histogram layers from the legend without toggling them or changing their bounds", async () => {
+it("shows every histogram group and its tooltip after a saved chart had filtered matching series", async () => {
+  await render(before);
+  await toggle("Значение · two");
+  expect(totals()).toEqual(["12"]);
   const histogram: ChartSpec = {
     kind: "histogram",
     x: "value",
     y: [],
     series: "group",
     legend: true,
-    binCount: 3,
+    binCount: 1,
   };
   await render(before, histogram);
-  const preview = button("two");
-  const marks = () => [
+  expect(chart.host.querySelector(".bk-legend")).toBeNull();
+  const counts = [
     ...chart.host.querySelectorAll<SVGPathElement>(".bk-histogram-bar"),
-  ];
-  const bounds = marks().map((mark) => mark.getAttribute("d"));
-  const muted = () =>
-    marks()
-      .filter((mark) => mark.closest("[data-muted-series]"))
-      .map((mark) => mark.dataset.series);
+  ].map((mark) => mark.dataset.count);
+  expect(counts).toEqual(["1", "1"]);
+  const svg = chart.host.querySelector('svg[role="img"]')!;
   await act(async () =>
-    preview.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })),
+    svg.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+    ),
   );
-  expect(muted()).toEqual(["0"]);
-  expect(marks().map((mark) => mark.getAttribute("d"))).toEqual(bounds);
-  expect(preview.getAttribute("aria-pressed")).toBe("true");
-  await act(async () =>
-    preview.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })),
-  );
-  expect(muted()).toEqual([]);
-  await act(async () => preview.focus());
-  expect(muted()).toEqual(["0"]);
-  await toggle("two");
-  expect(muted()).toEqual([]);
-  expect(marks()).toHaveLength(1);
-  await toggle("two");
-  await act(async () => preview.blur());
-  expect(muted()).toEqual([]);
-  expect(marks().map((mark) => mark.getAttribute("d"))).toEqual(bounds);
+  expect(textNodes(chart.host, ".chart-tooltip-name")).toEqual(["one", "two"]);
+  expect(textNodes(chart.host, ".chart-tooltip-value")).toEqual(["1", "1"]);
 });
 
 it("keeps selection across resize and refresh while showing new series and recalculating visible totals", async () => {

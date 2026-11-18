@@ -114,7 +114,7 @@ export const chartGuide = {
     labelPosition:
       "auto (default), outside or inside for bars. Auto places stacked bar values inside and other bars outside. Line/area/scatter labels sit above points. Long labels may truncate in narrow blocks; tooltip retains full value.",
     legend:
-      "Required boolean. legendPosition top(default)/bottom/left/right; legendAlign start/center(default)/end.",
+      "Required boolean. On charts with a legend, legendPosition is top (default), bottom, left or right and legendAlign is start, center (default) or end. For histograms these fields retain preferences for other chart types. Histograms show every distribution and identify its color and count in the bin tooltip.",
     numberFormat:
       "auto(default), integer, decimal(2 digits), percent(value*100) or compact. Applies to axes, values and tooltips; does not change stored rows.",
     sort: "none(default: SQL row order), asc or desc by category/X.",
@@ -131,7 +131,7 @@ export const chartGuide = {
       x: "duration_ms",
       y: [],
       series: "channel",
-      legend: true,
+      legend: false,
       binCount: 20,
     },
     formatting:

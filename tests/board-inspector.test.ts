@@ -1025,6 +1025,38 @@ describe("board inspector settings integration", () => {
     ).not.toBeNull();
   });
 
+  it.each([true, false])(
+    "keeps the saved legend preference %s and placement through histogram mode",
+    async (legend) => {
+      const node = fixture();
+      node.data.chart = {
+        ...node.data.chart!,
+        legend,
+        legendPosition: "bottom",
+        legendAlign: "end",
+      };
+      await render(node);
+      await chooseChartType("Гистограмма");
+      expect(container.querySelector(".board-chart-legend")).toBeNull();
+      expect(
+        container.querySelector('[aria-label="Положение легенды"]'),
+      ).toBeNull();
+      expect(current.data.chart).toMatchObject({
+        legend,
+        legendPosition: "bottom",
+        legendAlign: "end",
+      });
+      await chooseChartType("Линии");
+      expect(checkbox("Легенда").checked).toBe(legend);
+      if (!legend) await click(checkbox("Легенда"));
+      expect(
+        container.querySelector<HTMLInputElement>(
+          'input[type="radio"][aria-label="Снизу справа"]',
+        )?.checked,
+      ).toBe(true);
+    },
+  );
+
   it("binds a histogram to the numeric observation column, stores an optional bin count and returns to a plottable line chart", async () => {
     const node = fixture();
     node.data.chart = {

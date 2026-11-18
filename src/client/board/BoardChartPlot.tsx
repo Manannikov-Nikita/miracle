@@ -74,8 +74,7 @@ class PlotBoundary extends Component<
 function ChartKitPlot(props: Props) {
   const { series, spec, presentationBackground } = props;
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
-  const [legendPreview, setLegendPreview] = useState<string>();
-  const overlay = spec.kind === "histogram" && !!spec.series && !spec.stacked;
+  const showLegend = spec.kind !== "histogram" && spec.legend;
   const entries = useMemo(
     () =>
       series.map((item, index) => ({
@@ -98,15 +97,14 @@ function ChartKitPlot(props: Props) {
     });
   }, [entries, props.loading]);
   const data = useMemo(() => {
-    const visible = entries.filter(
-      (entry) => !spec.legend || !hidden.has(entry.key),
-    );
+    const visible = showLegend
+      ? entries.filter((entry) => !hidden.has(entry.key))
+      : entries;
     return {
       series: visible.map((entry) => entry.item),
       colors: visible.map((entry) => entry.color),
-      visible,
     };
-  }, [entries, hidden, spec.legend]);
+  }, [entries, hidden, showLegend]);
   const ink = presentationBackground
     ? presentationColors(presentationBackground)
     : undefined;
@@ -116,7 +114,7 @@ function ChartKitPlot(props: Props) {
     <div
       className="board-chart bk-chart"
       data-kind={spec.kind}
-      data-legend-position={position}
+      data-legend-position={showLegend ? position : undefined}
       style={
         {
           "--bk-text": ink?.text ?? "var(--board-text, #eeeff0)",
@@ -127,7 +125,7 @@ function ChartKitPlot(props: Props) {
         } as CSSProperties
       }
     >
-      {spec.legend && (
+      {showLegend && (
         <div
           className="bk-legend nowheel nodrag"
           role="group"
@@ -140,12 +138,6 @@ function ChartKitPlot(props: Props) {
               key={key}
               title={item.name}
               aria-pressed={!hidden.has(key)}
-              {...(overlay && {
-                onPointerEnter: () => setLegendPreview(key),
-                onPointerLeave: () => setLegendPreview(undefined),
-                onFocus: () => setLegendPreview(key),
-                onBlur: () => setLegendPreview(undefined),
-              })}
               onClick={() =>
                 setHidden((prev) => {
                   const next = new Set(prev);
@@ -174,11 +166,6 @@ function ChartKitPlot(props: Props) {
             {...props}
             series={data.series}
             colors={data.colors}
-            highlightedSeries={
-              overlay && spec.legend && legendPreview !== undefined
-                ? data.visible.findIndex((entry) => entry.key === legendPreview)
-                : -1
-            }
           />
         ) : (
           <div className="bk-no-series" role="status">
