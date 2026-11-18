@@ -21,6 +21,7 @@ import type {
 } from "../../shared/types";
 import {
   CHART_METRIC_LIMIT,
+  chartPalette,
   composedMetricStyle,
   supportsChartStacking,
 } from "../../shared/chart-appearance";
@@ -50,7 +51,7 @@ function Chart({
   refreshing,
   waitingForMetadata,
 }: {
-  result: ResultSet;
+  result: ResultSet | null;
   spec?: ChartSpec;
   table?: TableSpec;
   visibleColumns?: string[];
@@ -92,7 +93,7 @@ function Chart({
     if (!waitingForRows || failure) lastPlot.current = prepared?.plot;
   }, [waitingForRows, prepared, failure]);
 
-  if (failure)
+  if (failure && !refreshing)
     return (
       <ErrorBox
         className="board-error nowheel"
@@ -118,11 +119,20 @@ function Chart({
       />
     );
   const plot = waitingForRows ? lastPlot.current : prepared?.plot;
+  const busy = refreshing || waitingForRows;
   return (
-    <ChartLoadFrame busy={refreshing || waitingForRows}>
+    <ChartLoadFrame
+      busy={busy}
+      inlineSkeleton={!!plot}
+      refreshing={refreshing}
+      horizontal={
+        savedSpec?.kind === "bar" && savedSpec.orientation === "horizontal"
+      }
+      color={chartPalette(savedSpec ?? {}).colors[0]}
+    >
       {plot ? (
-        <BoardChartPlot {...plot} />
-      ) : !waitingForRows ? (
+        <BoardChartPlot {...plot} loading={busy} />
+      ) : !busy ? (
         <div className="board-loading">
           {table?.filters?.length
             ? "Нет строк, подходящих под фильтры."
@@ -589,6 +599,15 @@ export default function ResultView({
       />
     );
   }
+  if (error && view === "chart" && refreshing)
+    return (
+      <ChartLoadFrame
+        busy
+        refreshing
+        horizontal={chart?.kind === "bar" && chart.orientation === "horizontal"}
+        color={chartPalette(chart ?? {}).colors[0]}
+      />
+    );
   const content = error ? (
     <ErrorBox
       className="board-error nowheel"
@@ -601,18 +620,16 @@ export default function ResultView({
         </button>
       }
     />
-  ) : view === "chart" && result ? (
+  ) : view === "chart" ? (
     <Chart
       refreshing={refreshing}
-      waitingForMetadata={result.id !== id}
+      waitingForMetadata={result?.id !== id}
       result={result}
       spec={chart}
       table={table}
       visibleColumns={visibleColumns}
       presentationBackground={presentationBackground}
     />
-  ) : view === "chart" ? (
-    <ChartLoadFrame busy />
   ) : !result || result.id !== id ? (
     <div className="board-loading" role="status">
       Загрузка снимка…

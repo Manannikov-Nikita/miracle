@@ -18,6 +18,7 @@ type Instance = {
   getOption: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  clear: ReturnType<typeof vi.fn>;
   listeners: Map<string, Set<LegendHandler>>;
 };
 const renderer = vi.hoisted(() => ({ instances: [] as Instance[] }));
@@ -38,6 +39,7 @@ vi.mock("echarts", () => ({
       getOption: vi.fn(() => ({ legend: [{ scrollDataIndex: 0 }] })),
       resize: vi.fn(),
       dispose: vi.fn(),
+      clear: vi.fn(),
     };
     renderer.instances.push(chart);
     return chart;
@@ -111,6 +113,7 @@ describe("chart legend-dependent options", () => {
   async function render(
     option: ChartOption,
     createOption?: (selected: Selection) => ChartOption,
+    loading = false,
   ) {
     await act(async () =>
       root.render(
@@ -118,6 +121,7 @@ describe("chart legend-dependent options", () => {
           option,
           createOption,
           label: "График",
+          loading,
         }),
       ),
     );
@@ -229,5 +233,86 @@ describe("chart legend-dependent options", () => {
     await act(async () => handler({ selected: {} }));
     expect(builder).toHaveBeenCalledTimes(builderCalls);
     expect(chart().setOption).toHaveBeenCalledTimes(beforeResize);
+  });
+
+  it("keeps the native legend through a refresh, defers updates and replaces superseded data exactly once", async () => {
+    const first = optionFor();
+    const builder = builderFor(first);
+    await render(first, builder);
+    const hidden = first.series[0].name;
+    await select({ [hidden]: false });
+    chart().getOption.mockReturnValue({
+      legend: [{ scrollDataIndex: 1, selected: { [hidden]: false } }],
+    });
+    const earlier = chart().setOption.mock.calls.length;
+    await render(first, builder, true);
+    expect(host.querySelector(".chart-skeleton")).toBeTruthy();
+    expect(host.querySelector('[role="img"]')).toBeNull();
+    expect(chart().clear).toHaveBeenCalledTimes(1);
+    const stale = optionFor(["one", "stale"]);
+    await render(stale, builderFor(stale), true);
+    const latest = optionFor(["one", "final"]);
+    const nextBuilder = builderFor(latest);
+    await render(latest, nextBuilder, true);
+    await act(async () => {
+      for (const cb of observers) cb([], {} as ResizeObserver);
+    });
+    expect(chart().resize).not.toHaveBeenCalled();
+    expect(chart().setOption).toHaveBeenCalledTimes(earlier);
+    await render(latest, nextBuilder);
+    expect(host.querySelector(".chart-skeleton")).toBeNull();
+    expect(chart().resize).toHaveBeenCalledTimes(1);
+    expect(chart().setOption).toHaveBeenCalledTimes(earlier + 1);
+    expect(applied().legend.selected).toEqual({ [hidden]: false });
+    expect(applied().legend).toHaveProperty("scrollDataIndex", 1);
+    expect(applied().series.map((s) => s.name)).toEqual(
+      latest.series.map((s) => s.name),
+    );
+    expect(applied().series[0]).toMatchObject({
+      animation: true,
+      animationDuration: 1100,
+      animationDurationUpdate: 0,
+    });
+    await render(latest, nextBuilder, true);
+    await act(async () => root.render(null));
+    expect(chart().dispose).toHaveBeenCalledOnce();
+    expect(chart().setOption).toHaveBeenCalledTimes(earlier + 1);
+  });
+  it("restores native selections even without a totals builder and skips reveal for reduced motion", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    const option = optionFor();
+    await render(option, undefined, true);
+    expect(chart().setOption).not.toHaveBeenCalled();
+    await render(option);
+    const hidden = option.series[0].name;
+    chart().getOption.mockReturnValue({
+      legend: [{ selected: { [hidden]: false } }],
+    });
+    await render(option, undefined, true);
+    await render(option);
+    expect(applied().legend.selected).toEqual({ [hidden]: false });
+    expect(applied().animation).toBe(false);
+    expect(applied().series[0]).not.toHaveProperty("animation", true);
+  });
+  it("shows a skeleton instead of the previous render error during retry and renders the replacement", async () => {
+    const option = optionFor();
+    await render(option);
+    const failed = { ...option };
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      chart().setOption.mockImplementationOnce(() => {
+        throw Error("invalid previous rendering");
+      });
+      await render(failed);
+      expect(host.querySelector('[role="alert"]')).toBeTruthy();
+      await render(failed, undefined, true);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+      expect(host.querySelector(".chart-skeleton")).toBeTruthy();
+      await render(optionFor(["replacement"]));
+      expect(host.querySelector('[role="alert"], .chart-skeleton')).toBeNull();
+      expect(host.querySelector('[role="img"]')).toBeTruthy();
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

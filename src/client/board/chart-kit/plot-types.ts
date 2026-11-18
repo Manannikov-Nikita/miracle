@@ -8,4 +8,5 @@ export interface ChartPlotProps {
   colors: string[];
   label: string;
   presentationBackground?: string;
+  loading?: boolean;
 }

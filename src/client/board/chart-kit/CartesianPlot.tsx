@@ -12,11 +12,12 @@ import {
 import CartesianMarks from "./CartesianMarks";
 import { cartesianGeometry, truncateTick } from "./cartesian-geometry";
 import type { ChartPlotProps } from "./plot-types";
+import { SkeletonBars } from "../ChartSkeleton";
 
 const noSamples: Sample[] = [];
 
 export default function CartesianPlot(props: ChartPlotProps) {
-  const { spec, label, columns } = props;
+  const { spec, label, columns, loading } = props;
   const [size, setSize] = useState({ width: 460, height: 240 });
   const [focus, setFocus] = useState<PlotFocus | null>(null);
   const [keyboard, setKeyboard] = useState(false);
@@ -49,7 +50,10 @@ export default function CartesianPlot(props: ChartPlotProps) {
     Math.ceil((g.horizontal ? 22 : 66) / g.slot),
   );
   const byCategory = useMemo(() => focusColumns(g), [g]);
-  const active = focus && byCategory[focus.category] ? focus : null;
+  useEffect(() => {
+    if (loading) setFocus(null);
+  }, [loading]);
+  const active = !loading && focus && byCategory[focus.category] ? focus : null;
   const samples = active ? byCategory[active.category] : noSamples;
   const selected = active ? (samples[active.sample] ?? samples[0]) : undefined;
   const shared = spec.kind === "composed";
@@ -143,11 +147,13 @@ export default function CartesianPlot(props: ChartPlotProps) {
           setFocus((prev) => keyboardFocus(event.key, g, byCategory, prev));
         }}
       >
-        <defs>
-          <clipPath id={clip}>
-            <rect className="bk-reveal" width={width} height={height} />
-          </clipPath>
-        </defs>
+        {!loading && (
+          <defs>
+            <clipPath id={clip}>
+              <rect className="bk-reveal" width={width} height={height} />
+            </clipPath>
+          </defs>
+        )}
         {g.ticks.map((t) => (
           <g key={t}>
             {spec.showGrid !== false && (
@@ -215,19 +221,36 @@ export default function CartesianPlot(props: ChartPlotProps) {
             {truncateTick(nameY || "", g.bottom - g.top)}
           </text>
         )}
-        <g
-          className="bk-marks"
-          data-dimmed={highlighted.length > 0}
-          data-keyboard={keyboard || undefined}
-          clipPath={`url(#${clip})`}
-        >
-          <CartesianMarks
-            geometry={g}
-            spec={spec}
-            width={width}
-            emphasizedBars={highlighted}
+        {loading ? (
+          <SkeletonBars
+            x={g.left}
+            y={g.top}
+            width={g.right - g.left}
+            height={g.bottom - g.top}
+            count={g.categories.length}
+            color={props.colors[0]}
+            horizontal={g.horizontal}
+            baseline={
+              g.horizontal
+                ? (g.zero - g.left) / (g.right - g.left)
+                : (g.zero - g.top) / (g.bottom - g.top)
+            }
           />
-        </g>
+        ) : (
+          <g
+            className="bk-marks"
+            data-dimmed={highlighted.length > 0}
+            data-keyboard={keyboard || undefined}
+            clipPath={`url(#${clip})`}
+          >
+            <CartesianMarks
+              geometry={g}
+              spec={spec}
+              width={width}
+              emphasizedBars={highlighted}
+            />
+          </g>
+        )}
         {active && (
           <CartesianFocus
             g={g}

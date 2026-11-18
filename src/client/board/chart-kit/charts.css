@@ -108,7 +108,7 @@
   width: 100%;
   height: 100%;
 }
-.bk-cartesian svg {
+.bk-cartesian > svg {
   display: block;
   width: 100%;
   height: 100%;
@@ -208,6 +208,14 @@
   .bk-cartesian .bk-bar {
     animation: bk-rise 0.42s cubic-bezier(0.2, 0.68, 0.2, 1)
       var(--bk-delay, 0ms) both;
+  }
+  .bk-chart[data-kind="bar"] .bk-reveal {
+    animation: none;
+  }
+  .bk-chart[data-kind="bar"] .bk-bar {
+    animation-duration: 1.1s;
+    animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1);
+    animation-delay: calc(2 * var(--bk-delay, 0ms));
   }
   .bk-cartesian[data-horizontal="true"] .bk-bar {
     animation-name: bk-sweep;

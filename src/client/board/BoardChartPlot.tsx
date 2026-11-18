@@ -11,6 +11,7 @@ import {
 } from "../../shared/chart-appearance";
 import { ErrorBox } from "../components/UI";
 import ChartCanvas from "./ChartCanvas";
+import ChartSkeleton from "./ChartSkeleton";
 import { chartOptions } from "./chartOptions";
 import { presentationColors } from "./presentation-colors";
 import CartesianPlot from "./chart-kit/CartesianPlot";
@@ -27,6 +28,7 @@ function CompatibilityPlot({
   series,
   presentationBackground,
   label,
+  loading,
 }: Props) {
   const { option, createOption } = useMemo(() => {
     const build = (selected?: Record<string, boolean>) =>
@@ -38,7 +40,12 @@ function CompatibilityPlot({
     };
   }, [columns, spec, series, presentationBackground]);
   return (
-    <ChartCanvas option={option} createOption={createOption} label={label} />
+    <ChartCanvas
+      option={option}
+      createOption={createOption}
+      label={label}
+      loading={loading}
+    />
   );
 }
 
@@ -59,6 +66,7 @@ class PlotBoundary extends Component<
       this.setState({ error: undefined });
   }
   render() {
+    if (this.state.error && this.props.reset.loading) return <ChartSkeleton />;
     return this.state.error ? (
       <ErrorBox
         className="board-error nowheel"
@@ -152,7 +160,12 @@ function ChartKitPlot(props: Props) {
         </div>
       )}
       <div className="bk-plot">
-        {data.series.length ? (
+        {props.loading && (!data.series.length || Plot !== CartesianPlot) ? (
+          <ChartSkeleton
+            color={data.colors[0] ?? entries[0]?.color}
+            count={series[0]?.data.length}
+          />
+        ) : data.series.length ? (
           <Plot key={spec.kind} {...props} {...data} />
         ) : (
           <div className="bk-no-series" role="status">

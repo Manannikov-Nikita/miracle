@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
 import type { chartOptions } from "./chartOptions";
 import { ErrorBox } from "../components/UI";
+import ChartSkeleton from "./ChartSkeleton";
 
 type ChartOption = ReturnType<typeof chartOptions>;
 
@@ -9,12 +10,16 @@ export default function ChartCanvas({
   option,
   label,
   createOption,
+  loading = false,
 }: {
   option: ChartOption;
   label: string;
+  loading?: boolean;
   createOption?: (selected: Record<string, boolean>) => ChartOption;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const latestLoading = useRef(loading);
+  latestLoading.current = loading;
   const latestOption = useRef(option);
   latestOption.current = option;
   const latestCreateOption = useRef(createOption);
@@ -36,6 +41,9 @@ export default function ChartCanvas({
     let appliedBuilder: typeof createOption;
     let listening = false;
     let attempted = latestOption.current;
+    let reveal = true;
+    let deferredResize = false;
+    let pageAfterLoading: number | undefined;
     const dispose = () => {
       observer?.disconnect();
       observer = undefined;
@@ -86,17 +94,39 @@ export default function ChartCanvas({
         return;
       }
       const builder = latestCreateOption.current;
-      if (!chart || (!force && applied === next && appliedBuilder === builder))
-        return;
+      if (!chart) return;
       attempted = next;
       try {
+        if (latestLoading.current) {
+          if (!reveal && applied) {
+            const legend = chart.getOption().legend;
+            const state = Array.isArray(legend)
+              ? (legend[0] as {
+                  selected?: Record<string, boolean>;
+                  scrollDataIndex?: number;
+                })
+              : undefined;
+            selectedSeries.current = {
+              ...selectedSeries.current,
+              ...state?.selected,
+            };
+            pageAfterLoading = state?.scrollDataIndex;
+            // Remove old series views and their running transitions. The chart
+            // instance, its canvas size and its legend event subscription survive.
+            chart.clear();
+          }
+          reveal = true;
+          return;
+        }
+        if (!reveal && !force && applied === next && appliedBuilder === builder)
+          return;
         if (builder && !listening) {
           chart.on("legendselectchanged", legendChanged);
           listening = true;
         } else if (!builder && listening) {
           chart.off("legendselectchanged", legendChanged);
           listening = false;
-          selectedSeries.current = {};
+          if (!reveal) selectedSeries.current = {};
         }
         const names = new Set(next.series.map((series) => series.name));
         selectedSeries.current = Object.fromEntries(
@@ -110,16 +140,49 @@ export default function ChartCanvas({
         const scrollDataIndex = Array.isArray(legend)
           ? (legend[0] as { scrollDataIndex?: number } | undefined)
               ?.scrollDataIndex
-          : undefined;
+          : pageAfterLoading;
+        const animate =
+          reveal &&
+          !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        if (deferredResize) chart.resize();
         chart.setOption(
-          scrollDataIndex === undefined
-            ? resolved
-            : {
-                ...resolved,
-                legend: { ...resolved.legend, scrollDataIndex },
-              },
+          {
+            ...resolved,
+            legend: {
+              ...resolved.legend,
+              ...(reveal
+                ? {
+                    selected: {
+                      ...resolved.legend.selected,
+                      ...selectedSeries.current,
+                    },
+                  }
+                : {}),
+              ...(scrollDataIndex !== undefined ? { scrollDataIndex } : {}),
+            },
+            ...(animate
+              ? {
+                  series: resolved.series.map((item) => ({
+                    ...item,
+                    animation: true,
+                    animationThreshold: 5000,
+                    animationDuration: item.type === "bar" ? 1100 : 350,
+                    animationEasing: "cubicInOut",
+                    animationDurationUpdate: 0,
+                    animationDelay:
+                      item.type === "bar"
+                        ? (index: number) =>
+                            (index * 440) / Math.max(1, item.data.length)
+                        : 0,
+                  })),
+                }
+              : {}),
+          },
           { notMerge: true },
         );
+        reveal = false;
+        deferredResize = false;
+        pageAfterLoading = undefined;
         applied = next;
         appliedBuilder = builder;
       } catch (error) {
@@ -133,6 +196,10 @@ export default function ChartCanvas({
       if (!stopped) {
         observer = new ResizeObserver(() => {
           if (stopped) return;
+          if (latestLoading.current) {
+            deferredResize = true;
+            return;
+          }
           try {
             chart?.resize();
           } catch (error) {
@@ -151,21 +218,37 @@ export default function ChartCanvas({
     };
   }, [retry]);
 
-  useEffect(() => {
+  // Install the resolved data before the now-visible canvas can paint a stale frame.
+  useLayoutEffect(() => {
     session.current?.update(option);
-  }, [option, createOption]);
+  }, [option, createOption, loading]);
 
   return (
-    <div className="board-chart">
+    <div className="board-chart" style={{ position: "relative" }}>
       {/* ECharts owns this element's descendants; React messages stay siblings. */}
       <div
         ref={host}
-        style={{ width: "100%", height: "100%" }}
+        style={{
+          width: "100%",
+          height: "100%",
+          visibility: loading ? "hidden" : undefined,
+        }}
         hidden={failed}
-        role={failed ? undefined : "img"}
-        aria-label={failed ? undefined : label}
+        role={failed || loading ? undefined : "img"}
+        aria-label={failed || loading ? undefined : label}
       />
-      {failed && (
+      {loading && (
+        <ChartSkeleton
+          count={
+            option.xAxis.data?.length ??
+            option.yAxis.data?.length ??
+            option.series[0]?.data.length
+          }
+          color={option.series[0]?.itemStyle.color}
+          horizontal={option.yAxis.type === "category"}
+        />
+      )}
+      {failed && !loading && (
         <ErrorBox
           className="board-error nowheel"
           error={error}
